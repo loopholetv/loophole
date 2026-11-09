@@ -47,12 +47,12 @@ private class Glow(
     val dx: Float, val dy: Float, val grow: Float, val turn: Float,
     val periodMs: Long, color: Color, alpha: Float,
 ) {
-    // A radial falloff shaped like a blurred disc: a soft core with a long, gentle edge.
+    // A radial falloff shaped like a blurred disc: a subdued core with a long, gentle edge.
     val brush = Brush.radialGradient(
-        0.00f to color.copy(alpha = alpha),
-        0.20f to color.copy(alpha = alpha * 0.92f),
-        0.40f to color.copy(alpha = alpha * 0.72f),
-        0.60f to color.copy(alpha = alpha * 0.45f),
+        0.00f to color.copy(alpha = alpha * 0.85f),
+        0.20f to color.copy(alpha = alpha * 0.79f),
+        0.40f to color.copy(alpha = alpha * 0.64f),
+        0.60f to color.copy(alpha = alpha * 0.42f),
         0.80f to color.copy(alpha = alpha * 0.18f),
         0.92f to color.copy(alpha = alpha * 0.05f),
         1.00f to color.copy(alpha = 0f),
