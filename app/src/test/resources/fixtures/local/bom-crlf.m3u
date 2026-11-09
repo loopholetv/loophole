@@ -1,0 +1,5 @@
+﻿#EXTM3U
+#EXTINF:-1 tvg-id="one.example" group-title="News",Local One
+http://example.test/live/1.ts
+#EXTINF:-1 group-title="Sport",Local Two
+http://example.test/live/2.ts

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fallback for API 25; API 26+ uses mipmap-anydpi-v26 (adaptive icon). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/loophole_background" />
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

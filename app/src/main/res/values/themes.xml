@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Loophole" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/loophole_background</item>
+        <item name="android:colorBackground">@color/loophole_background</item>
+        <item name="android:statusBarColor">@color/loophole_background</item>
+        <item name="android:navigationBarColor">@color/loophole_background</item>
+    </style>
+</resources>

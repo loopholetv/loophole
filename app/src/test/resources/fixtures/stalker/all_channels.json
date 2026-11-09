@@ -1,0 +1,7 @@
+{"js":{"total_items":5,"max_page_items":14,"selected_item":0,"cur_page":0,"data":[
+ {"id":"101","name":"News One","number":"1","cmd":"ffmpeg http://localhost/ch/101_","tv_genre_id":"12","logo":"a.png","xmltv_id":"news.one.test","censored":0,"tv_archive":1,"use_http_tmp_link":"1","use_load_balancing":"0","status":1,"cmds":[{"id":"5678","ch_id":"101","url":"ffmpeg http://localhost/ch/101_","use_http_tmp_link":"1"}]},
+ {"id":"102","name":"Sport Two","number":2,"cmd":"ffmpeg http://cdn.example.test/live/102.ts","tv_genre_id":"13","logo":"http://img.example.test/b.png","xmltv_id":"","use_http_tmp_link":0,"use_load_balancing":false,"epg":[{"name":"x"}]},
+ {"id":"103","name":"Movies Three","number":"3","cmd":"","tv_genre_id":"12","logo":"/stalker_portal/misc/logos/320/c.png","use_http_tmp_link":true,"cmds":[{"id":"1","url":"ffrt http://localhost/ch/103"}]},
+ {"id":"104","number":"4","cmd":"ffmpeg http://cdn.example.test/104.ts"},
+ {"id":"105","name":"Balanced Five","number":"5","cmd":"ffmpeg http://cdn.example.test/105.ts","tv_genre_id":"99","logo":"","use_http_tmp_link":"0","use_load_balancing":"1"}
+]}}

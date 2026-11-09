@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="512" height="512">
+  <title>Loophole mark (V8: loop-de-loop on screen)</title>
+  <!-- Screen outline + stand: white (#F4F6F7) on dark, use #0B0C0E on light backgrounds -->
+  <rect x="10" y="16" width="100" height="76" rx="16" fill="none" stroke="#F4F6F7" stroke-width="6"/>
+  <path d="M46 104 L74 104" stroke="#F4F6F7" stroke-width="6" stroke-linecap="round"/>
+  <!-- Loop-de-loop ribbon ending in a play head: teal (#0ABAB5) -->
+  <g transform="translate(17 10) scale(.72)">
+    <path d="M28 82 C28 50 40 30 62 30 C84 30 92 52 80 64 C68 76 50 66 56 54 C62 42 84 46 94 59" fill="none" stroke="#0ABAB5" stroke-width="13" stroke-linecap="round"/>
+    <path d="M85 63 L99 52 L103 73 Z" fill="#0ABAB5" stroke="#0ABAB5" stroke-width="8" stroke-linejoin="round"/>
+  </g>
+</svg>

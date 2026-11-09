@@ -1,0 +1,22 @@
+# Brainstorm / agent scratch
+.superpowers/
+# Signing secrets
+*.jks
+*.keystore
+keystore.properties
+# Local machine config
+local.properties
+.idea/
+*.iml
+.DS_Store
+# Build output
+build/
+.gradle/
+.kotlin/
+captures/
+
+# Agent worktrees
+.claude/worktrees/
+
+# Local planning notes (not published)
+docs/superpowers/

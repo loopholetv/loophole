@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="synthetic-test">
+  <channel id="news.example">
+    <display-name lang="en">Example News</display-name>
+    <display-name>EXN</display-name>
+    <display-name>101</display-name>
+    <icon src="http://example.test/logos/news.png"/>
+  </channel>
+  <channel id="movies.example">
+    <display-name>Example Movies</display-name>
+  </channel>
+  <programme start="20261107113000 +1100" stop="20261107120000 +1100" channel="news.example">
+    <title lang="en">Morning Bulletin</title>
+    <sub-title>Headlines</sub-title>
+    <desc lang="en">The latest news.</desc>
+    <category lang="en">News</category>
+    <category lang="en">Current Affairs</category>
+  </programme>
+  <programme start="20261107120000 +1100" stop="20261107130000 +1100" channel="news.example">
+    <title lang="de"> </title>
+    <title lang="en">Tom &amp; Jerry</title>
+    <desc><![CDATA[Cat & mouse <chase> classic]]></desc>
+    <credits><director>Made Up</director><actor role="Cat">Nobody <b>Special</b></actor></credits>
+    <date>1999</date>
+    <icon src="http://example.test/p.png"/>
+    <episode-num system="xmltv_ns">0.1.</episode-num>
+    <rating system="MPAA"><value>G</value></rating>
+    <video><aspect>16:9</aspect></video>
+  </programme>
+  <programme start="20261107130000" stop="20261107133000" channel="movies.example">
+    <title>UTC Show</title>
+  </programme>
+  <programme start="20261004015900 +1000" stop="20261004030000 +1100" channel="movies.example">
+    <title>DST Show</title>
+  </programme>
+  <programme start="20261107140000 +1100" stop="20261107140000 +1100" channel="movies.example">
+    <title>Zero Length</title>
+  </programme>
+  <programme start="20261107150000 +1100" stop="20261107140000 +1100" channel="movies.example">
+    <title>Backwards</title>
+  </programme>
+  <programme start="20261107160000 +1100" channel="movies.example">
+    <title>No Stop</title>
+  </programme>
+  <programme start="garbage" stop="20261107170000 +1100" channel="movies.example">
+    <title>Bad Start</title>
+  </programme>
+  <programme start="202611071800 +1100" stop="202611071900 +1100" channel="movies.example">
+    <title>Minutes Only</title>
+  </programme>
+</tv>

@@ -1,0 +1,7 @@
+{"js":{"data":{
+ "101":[{"id":"1","ch_id":"101","name":"Morning News","descr":"Headlines","time":"2025-11-09 14:00:00","time_to":"2025-11-09 14:30:00","duration":"1800","start_timestamp":"1762696800","stop_timestamp":"1762698600","t_time":"14:00","mark_archive":0},
+        {"id":"2","ch_id":"101","name":"Noon News","descr":"","start_timestamp":1762698600,"duration":1800},
+        {"id":"3","ch_id":"101","name":"No times"}],
+ "102":[{"id":"4","ch_id":"102","name":"Match","descr":"Live","start_timestamp":"1762696800","stop_timestamp":"1762704000","category":"Sport"}],
+ "777":[]
+}}}

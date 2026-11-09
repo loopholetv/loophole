@@ -1,0 +1,11 @@
+#EXTM3U url-tvg="http://epg.example.test/guide.xml,http://epg.example.test/extra.xml.gz"
+#EXTINF:-1 tvg-id="s1.test" tvg-logo="http://img.example.test/s1.png" group-title="Sports",Sport One
+http://stream.example.test/s1.ts
+#EXTINF:-1 tvg-id="n1.test" group-title="News",News One
+http://stream.example.test/n1.ts
+#EXTINF:-1 group-title="Sports",Sport Two
+http://stream.example.test/s2.ts
+#EXTINF:-1 group-title="Movies",Movie One
+http://stream.example.test/m1.ts
+#EXTINF:-1 group-title="News",News Two
+http://stream.example.test/n2.ts

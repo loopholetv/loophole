@@ -1,0 +1,8 @@
+[
+{"num":"5","name":"Channel One","stream_type":"live","stream_id":101,"stream_icon":"http://img.example.test/1.png","epg_channel_id":"one.test","added":"1600000000","category_id":"1","custom_sid":"","tv_archive":1,"direct_source":"","tv_archive_duration":"3","extra":{"x":[1,2,{"y":null}]}},
+{"num":6,"name":"Channel Two","stream_type":"live","stream_id":"102","stream_icon":"","epg_channel_id":"","category_id":2,"tv_archive":"1","tv_archive_duration":7},
+{"num":7,"name":"Channel Three","stream_id":103,"stream_icon":null,"epg_channel_id":null,"category_id":null,"tv_archive":0,"tv_archive_duration":0},
+{"num":8,"name":"No Id Channel"},
+"garbage",
+{"num":9,"name":"Channel Four","stream_id":104,"tv_archive":"0"}
+]

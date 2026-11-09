@@ -1,0 +1,13 @@
+#EXTM3U url-tvg="http://e.test/a.xml,http://e.test/b.xml.gz"
+#EXTINF:-1 tvg-id="one.test" tvg-name="One HD" tvg-logo="http://img.test/one.png" group-title="News, World" tvg-chno="7" catchup="default" catchup-days="3" catchup-source="http://cu.test/{utc}",News, Weather & Sport
+#EXTVLCOPT:http-user-agent=UA1
+#EXTVLCOPT:http-referrer=R1
+http://s.test/one.ts
+#EXTINF:-1 tvg-id="two.test",Two
+#KODIPROP:inputstream.adaptive.stream_headers=User-Agent=UA2
+http://s.test/two.ts
+#EXTINF:0,Three
+#EXTGRP:Sports
+http://s.test/three.ts
+#EXTINF:-1,Four
+http://s.test/four.ts

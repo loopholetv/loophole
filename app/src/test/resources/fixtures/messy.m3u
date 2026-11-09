@@ -1,0 +1,6 @@
+﻿#EXTINF:-1 TVG-ID="a.test" Group-Title="G",Alpha
+http://s.test/a.ts
+
+#EXTINF:-1,Orphan
+#EXTINF:-1 tvg-chno="x" catchup-days="y",Beta
+http://s.test/b.ts

@@ -1,0 +1,5 @@
+{"js":{"data":[
+ {"id":"1","ch_id":"101","name":"Morning News","descr":"Headlines","start_timestamp":"1762696800","stop_timestamp":"1762698600"},
+ {"id":"4","ch_id":"102","name":"Match","descr":"Live","start_timestamp":"1762696800","stop_timestamp":"1762704000","category":"Sport"},
+ {"id":"2","ch_id":"101","name":"Noon News","start_timestamp":"1762698600","stop_timestamp":"1762700400"}
+]}}
