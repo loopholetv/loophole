@@ -1,5 +1,6 @@
 package io.github.loopholetv.ui.player
 
+import io.github.loopholetv.ui.splash.StartGate
 import android.text.format.DateFormat
 import android.view.KeyEvent
 import androidx.lifecycle.ViewModel
@@ -59,6 +60,8 @@ class PlayerViewModel(
     toggleFavourite: suspend (ChannelEntity) -> Boolean = { false },
     /** Recently watched channels, newest first (History). */
     private val recent: Flow<List<ChannelEntity>> = flowOf(emptyList()),
+    /** The first play waits for it (closed while the start-up splash covers this screen). */
+    private val startGate: StartGate = StartGate(),
 ) : ViewModel() {
 
     private val toggle = toggleFavourite
@@ -101,6 +104,9 @@ class PlayerViewModel(
     /** Set once the user left for the guide: nothing may switch channel after that. */
     private var exited = false
 
+    /** Set once the first play went out (after [startGate]); resuming before that never plays. */
+    private var started = false
+
     init {
         viewModelScope.launch {
             favouriteRefs.catch { }.collect { refs ->
@@ -121,9 +127,11 @@ class PlayerViewModel(
                 bannerVisible = true, numberEntry = null, message = null, error = null, clock = formatClock(at),
                 groupLabel = groupLabel(), at = at, favourite = channel.ref in _favourites.value,
             ).withPlayback(playback.state.value)
-            // The channel previewing in the guide is already loading or playing: this only resumes it.
-            playback.play(channel)
             loadProgrammes(channel)
+            startGate.await()
+            // The channel previewing in the guide is already loading or playing: this only resumes it.
+            if (!exited) playback.play(_ui.value?.channel ?: channel)
+            started = true
             restartHideTimer()
             playback.state.collect { s -> update { it.withPlayback(s) } }
         }
@@ -524,7 +532,7 @@ class PlayerViewModel(
 
     /** The screen came (back) to the foreground: resume if leaving the app stopped playback. */
     fun onScreenStarted() {
-        if (exited) return
+        if (exited || !started) return
         val ui = _ui.value ?: return
         if (playback.state.value is PlaybackState.Idle) playback.play(ui.channel)
     }
@@ -640,6 +648,7 @@ class PlayerViewModel(
                     favouriteRefs = c.favourites.refs,
                     toggleFavourite = c.favourites::toggle,
                     recent = c.history.recent(),
+                    startGate = c.startGate,
                 )
             }
         }

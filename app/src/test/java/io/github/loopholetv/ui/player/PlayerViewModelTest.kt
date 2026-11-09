@@ -1,5 +1,7 @@
 package io.github.loopholetv.ui.player
 
+import io.github.loopholetv.ui.splash.StartGate
+
 import android.view.KeyEvent
 import androidx.media3.common.Player
 import io.github.loopholetv.data.db.ChannelEntity
@@ -121,6 +123,7 @@ class PlayerViewModelTest {
         recent: List<ChannelEntity> = emptyList(),
         labels: Map<ChannelScope, String> = emptyMap(),
         nowAndNext: suspend (ChannelEntity, Instant) -> List<ProgrammeEntity> = { _, _ -> emptyList() },
+        startGate: StartGate = StartGate(),
     ): PlayerViewModel {
         source = FakeChannels(channels, favourites).also { it.labels = labels }
         return PlayerViewModel(
@@ -138,6 +141,7 @@ class PlayerViewModelTest {
                 added
             },
             recent = flowOf(recent),
+            startGate = startGate,
         )
     }
 
@@ -153,6 +157,25 @@ class PlayerViewModelTest {
     private val dpadDown = KeyEvent.KEYCODE_DPAD_DOWN
     private val chDown = KeyEvent.KEYCODE_CHANNEL_DOWN
     private val ok = KeyEvent.KEYCODE_DPAD_CENTER
+
+    @Test fun playbackWaitsForTheStartGate() = runTest {
+        val playback = FakePlayback()
+        val gate = StartGate().apply { close() }
+        val vm = vm(playback, start = 3, startGate = gate)
+        runCurrent()
+        assertEquals("the screen is ready behind the gate", 3L, vm.channelId())
+        assertEquals("nothing plays while the gate is closed", emptyList<Long>(), playback.played)
+        vm.onScreenStarted() // the screen starting under the splash must not play either
+        runCurrent()
+        assertEquals(emptyList<Long>(), playback.played)
+
+        gate.open()
+        runCurrent()
+        assertEquals(listOf(3L), playback.played)
+        vm.onScreenStarted() // already playing: no second start
+        runCurrent()
+        assertEquals(listOf(3L), playback.played)
+    }
 
     @Test fun channelKeysMoveWithinScopeAndWrap() = runTest {
         val playback = FakePlayback()

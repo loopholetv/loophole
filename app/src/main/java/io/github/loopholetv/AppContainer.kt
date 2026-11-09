@@ -79,6 +79,9 @@ class AppContainer(context: Context) {
         )
     }
 
+    /** Holds back the first playback while the start-up splash shows. */
+    val startGate = io.github.loopholetv.ui.splash.StartGate()
+
     /** The one player for the app lifetime (never released). */
     val playback: Playback by lazy {
         // Start collecting settings now, not at the first play.

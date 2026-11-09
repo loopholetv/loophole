@@ -52,6 +52,9 @@ class MainActivity : ComponentActivity() {
         // Cold start only; a configuration change recreates the activity without it.
         splashShown = shouldShowSplash(savedInstanceState != null, firstActivityInProcess.take())
         val splashVisible = mutableStateOf(splashShown)
+        // A start channel opened behind the splash connects only once the splash is gone or skipped.
+        val gate = app.container.startGate
+        if (splashShown) gate.close() else gate.open()
 
         // Decide the start screen from the DB before showing any NavHost (no flash of the wrong
         // screen), and kick off the once-per-process background refresh only if a playlist exists.
@@ -96,7 +99,10 @@ class MainActivity : ComponentActivity() {
                     }
                     // Drawn over the next screen, which composes underneath and is revealed by the fade.
                     if (splashVisible.value) {
-                        SplashScreen(splash, onDone = { splashVisible.value = false })
+                        SplashScreen(splash, onDone = {
+                            splashVisible.value = false
+                            gate.open()
+                        })
                     }
                 }
             }
@@ -116,6 +122,7 @@ class MainActivity : ComponentActivity() {
                 SplashKeyResult.PASS -> Unit
                 SplashKeyResult.SKIP -> {
                     splash.skip(now)
+                    (application as LoopholeApp).container.startGate.open()
                     return true
                 }
                 SplashKeyResult.CONSUME -> return true
