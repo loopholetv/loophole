@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ shows a system splash before the first frame. Keep it the plain app background
+         with no icon, so the in-app splash is the only logo on screen. -->
+    <style name="Theme.Loophole" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/loophole_background</item>
+        <item name="android:colorBackground">@color/loophole_background</item>
+        <item name="android:statusBarColor">@color/loophole_background</item>
+        <item name="android:navigationBarColor">@color/loophole_background</item>
+        <item name="android:windowSplashScreenBackground">@color/loophole_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
+    </style>
+</resources>
