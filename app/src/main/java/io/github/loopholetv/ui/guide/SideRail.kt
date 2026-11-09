@@ -1,6 +1,7 @@
 package io.github.loopholetv.ui.guide
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -151,12 +152,16 @@ fun SideRail(
 
 /**
  * Decoration only (never focusable): the mark, centred over the icons, and beside it the
- * wordmark, which fades in while the rail is expanded. Clipped to the rail, so the collapsed
- * rail never shows it.
+ * wordmark, which fades in when the rail expands. Clipped to the rail.
  */
 @Composable
 private fun RailLogo(expanded: Boolean) {
-    val word by animateFloatAsState(if (expanded) 1f else 0f, tween(durationMillis = 220), label = "railWordmark")
+    // Fades in on expand; gone at once on collapse, together with the rest of the wide rail.
+    val word by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = if (expanded) tween(durationMillis = 220) else snap(),
+        label = "railWordmark",
+    )
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
