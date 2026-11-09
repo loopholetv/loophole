@@ -14,14 +14,24 @@ class SplashSessionTest {
         SplashSession(gate, SplashTimeline(minShowMs = 2_000, maxShowMs = 5_000, fadeMs = 300)).apply { begin(show) }
 
     @Test
-    fun `with the splash the gate closes and the content waits`() {
+    fun `with the splash the gate closes and nothing is drawn underneath`() {
         val gate = StartGate()
         val s = session(show = true, gate = gate)
         assertFalse(gate.isOpen)
         assertTrue(s.visible)
-        assertFalse(s.contentAllowed)
         assertFalse(s.drawContentUnder)
         assertTrue(s.isActive(t0))
+    }
+
+    @Test
+    fun `content ready before the first splash frame composes at once and stays`() {
+        val s = session(show = true)
+        assertTrue("may compose before the first frame", s.contentAllowed)
+        s.onContentComposed(t0 - 50)
+        s.onFrame(t0)
+        assertTrue(s.contentAllowed)
+        s.onFrame(t0 + 500)
+        assertTrue(s.contentAllowed)
     }
 
     @Test
@@ -37,24 +47,38 @@ class SplashSessionTest {
     }
 
     @Test
-    fun `frames allow the content once the logo settled, and draw it only once the fade starts`() {
+    fun `content not ready by the first frame waits until the logo settled`() {
         val s = session(show = true)
         assertTrue(s.onFrame(t0))
+        assertFalse(s.contentAllowed)
+        assertTrue(s.onFrame(t0 + 1_399))
         assertFalse(s.contentAllowed)
         assertTrue(s.onFrame(t0 + 1_400))
         assertTrue(s.contentAllowed)
         assertFalse("opaque: nothing drawn underneath", s.drawContentUnder)
-        s.onReady(t0 + 1_500)
+        s.onContentComposed(t0 + 1_500)
         assertTrue(s.onFrame(t0 + 2_100))
         assertTrue("fading: content drawn", s.drawContentUnder)
+    }
+
+    @Test
+    fun `the splash holds until the content has composed`() {
+        val s = session(show = true)
+        s.onFrame(t0)
+        s.onFrame(t0 + 1_400)
+        assertTrue(s.onFrame(t0 + 2_500))
+        assertFalse(s.drawContentUnder)
+        s.onContentComposed(t0 + 2_600)
+        assertTrue(s.onFrame(t0 + 2_700))
+        assertTrue(s.drawContentUnder)
     }
 
     @Test
     fun `the end of the fade hides the splash and opens the gate`() {
         val gate = StartGate()
         val s = session(show = true, gate = gate)
+        s.onContentComposed(t0)
         s.onFrame(t0)
-        s.onReady(t0)
         assertFalse(s.onFrame(t0 + 2_300))
         assertFalse(s.visible)
         assertTrue(gate.isOpen)

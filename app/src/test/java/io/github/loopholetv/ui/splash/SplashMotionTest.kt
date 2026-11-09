@@ -50,4 +50,12 @@ class SplashMotionTest {
         assertEquals(180f, SplashMotion.spinDegrees(9_000), eps)
         assertEquals(0f, SplashMotion.spinDegrees(18_000), eps)
     }
+
+    @Test
+    fun `the background layer keeps the screen aspect at a small fixed width`() {
+        assertEquals(320 to 180, SplashMotion.backgroundSize(1920f, 1080f))
+        assertEquals(320 to 180, SplashMotion.backgroundSize(960f, 540f))
+        assertEquals(320 to 240, SplashMotion.backgroundSize(800f, 600f))
+        assertEquals(320 to 1, SplashMotion.backgroundSize(1000f, 0f))
+    }
 }

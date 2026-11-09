@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,22 +85,29 @@ class MainActivity : ComponentActivity() {
                 val settings by settingsFlow.collectAsState(initial = AppSettings())
                 val decided = hasPlaylist.value
                 Box(Modifier.fillMaxSize()) {
-                    // The next screen composes under the splash once the logo has settled, and is
-                    // drawn only once the splash starts to fade (never under the opaque splash).
+                    // The next screen composes under the splash (at launch, or once the logo has
+                    // settled) and is drawn only once the splash starts to fade.
                     Box(
                         Modifier.fillMaxSize()
-                            .background(Tokens.Background)
-                            .drawWithContent { if (session.drawContentUnder) drawContent() },
+                            .drawWithContent { if (session.drawContentUnder) drawContent() }
+                            .background(Tokens.Background),
                     ) {
                         if (decided != null && session.contentAllowed) {
-                            LaunchedEffect(Unit) { session.onReady(SystemClock.uptimeMillis()) }
+                            LaunchedEffect(Unit) { session.onContentComposed(SystemClock.uptimeMillis()) }
                             AppNav(
                                 rememberNavController(), startDestination(decided),
                                 startPlayback = startSlot, confirmExit = settings.confirmExit,
                             )
                         }
                     }
-                    if (session.visible) SplashScreen(session)
+                    if (session.visible) {
+                        // The opaque splash covers the window: skip the window background fill.
+                        DisposableEffect(Unit) {
+                            window.setBackgroundDrawable(null)
+                            onDispose { window.setBackgroundDrawableResource(R.color.loophole_background) }
+                        }
+                        SplashScreen(session)
+                    }
                 }
             }
         }

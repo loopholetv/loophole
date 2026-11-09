@@ -8,8 +8,8 @@ import androidx.compose.runtime.setValue
 /**
  * One activity's splash: ties the [timeline], the remote keys and the playback [gate] together and
  * exposes what the screen needs as snapshot state. Call [begin] once from onCreate; then [onFrame]
- * from each splash frame, [onKey] from key dispatch, [onReady] once start-up work is done and
- * [onDispose] when the splash leaves composition. Main thread only.
+ * from each splash frame, [onKey] from key dispatch, [onContentComposed] once the next screen has
+ * composed and [onDispose] when the splash leaves composition. Main thread only.
  */
 class SplashSession(
     private val gate: StartGate,
@@ -21,9 +21,15 @@ class SplashSession(
     var visible by mutableStateOf(false)
         private set
 
-    /** The next screen may compose underneath (the logo has settled, or the splash was skipped). */
+    /**
+     * The next screen may compose underneath: before the first splash frame (its composition then
+     * folds into the launch), or once the logo has settled, or after a skip.
+     */
     var contentAllowed by mutableStateOf(true)
         private set
+
+    private var started = false
+    private var contentComposed = false
 
     /** Opacity of the overlay; read in the draw phase only. */
     var overlayAlpha by mutableFloatStateOf(0f)
@@ -34,7 +40,7 @@ class SplashSession(
 
     fun begin(showSplash: Boolean) {
         visible = showSplash
-        contentAllowed = !showSplash
+        contentAllowed = true
         overlayAlpha = if (showSplash) 1f else 0f
         if (showSplash) gate.close() else gate.open()
     }
@@ -43,7 +49,13 @@ class SplashSession(
 
     /** One splash frame; false once the splash has finished (it is then hidden). */
     fun onFrame(now: Long): Boolean {
-        timeline.start(now)
+        if (!started) {
+            started = true
+            timeline.start(now)
+            // Not composed by the first frame: wait until the logo has settled, so composing it
+            // does not stall the logo animation.
+            if (!contentComposed) contentAllowed = false
+        }
         if (!contentAllowed && timeline.contentMayCompose(now)) contentAllowed = true
         overlayAlpha = timeline.overlayAlpha(now)
         if (timeline.isActive(now)) return true
@@ -51,7 +63,11 @@ class SplashSession(
         return false
     }
 
-    fun onReady(now: Long) = timeline.markReady(now)
+    /** The next screen has composed: the splash may end. */
+    fun onContentComposed(now: Long) {
+        contentComposed = true
+        timeline.markReady(now)
+    }
 
     fun onKey(down: Boolean, keyCode: Int, repeatCount: Int, now: Long): SplashKeyResult {
         val result = keys.onKey(down, keyCode, isActive(now), repeatCount)

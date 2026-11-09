@@ -15,6 +15,7 @@ object SplashMotion {
     private const val HALO_SETTLE_MS = 1_200L
     private const val HALO_REST = 0.45f
     private const val SPIN_MS = 18_000L
+    private const val BACKGROUND_WIDTH = 320
 
     private fun progress(t: Long, delay: Long, duration: Long): Float =
         ((t - delay).toFloat() / duration).coerceIn(0f, 1f)
@@ -44,4 +45,10 @@ object SplashMotion {
 
     /** One clockwise turn per [SPIN_MS]. */
     fun spinDegrees(t: Long): Float = (t % SPIN_MS).toFloat() / SPIN_MS * 360f
+
+    /** Pixel size of the small background layer for a screen of [width] x [height]. */
+    fun backgroundSize(width: Float, height: Float): Pair<Int, Int> {
+        val h = if (width > 0f) Math.round(BACKGROUND_WIDTH * height / width) else 0
+        return BACKGROUND_WIDTH to h.coerceAtLeast(1)
+    }
 }

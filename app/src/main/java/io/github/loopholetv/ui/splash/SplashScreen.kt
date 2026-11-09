@@ -19,10 +19,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import io.github.loopholetv.R
@@ -129,9 +133,37 @@ private fun DrawScope.drawHalo(alpha: Float) {
 }
 
 /**
+ * Draws its content at a small fixed width into its own GPU layer, then scales that layer up to
+ * fill the screen (filtered). The soft gradients upscale invisibly, the gradients are filled at
+ * the small size only, and the screen is filled once by the scaled layer.
+ */
+private fun Modifier.smallScaledLayer(): Modifier = layout { measurable, constraints ->
+    val fullW = constraints.maxWidth
+    val fullH = constraints.maxHeight
+    val (w, h) = SplashMotion.backgroundSize(fullW.toFloat(), fullH.toFloat())
+    val placeable = measurable.measure(Constraints.fixed(w, h))
+    layout(fullW, fullH) {
+        placeable.placeWithLayer(0, 0) {
+            transformOrigin = TransformOrigin(0f, 0f)
+            scaleX = fullW.toFloat() / w
+            scaleY = fullH.toFloat() / h
+            compositingStrategy = CompositingStrategy.Offscreen
+        }
+    }
+}
+
+private fun DrawScope.drawBackground(t: Long) {
+    drawRect(Tokens.Background)
+    drawGlows(t)
+    drawVignette()
+    drawHalo(SplashMotion.haloAlpha(t))
+}
+
+/**
  * Full-screen start-up splash: moving teal glows on the app background, a vignette, and the logo
- * fading in over a soft halo. Everything is drawn from a single frame clock read only in the draw
- * phase, so frames are redrawn without recomposing. [session] decides when it fades out and hides
+ * fading in over a soft halo. The background is drawn small in its own layer and upscaled; the
+ * logo is a cached layer whose opacity and scale change every frame. Both read the frame clock
+ * in the draw phase only, so frames never recompose. [session] decides when it fades out and hides
  * it once it is fully transparent.
  */
 @Composable
@@ -143,18 +175,19 @@ fun SplashScreen(session: SplashSession, modifier: Modifier = Modifier) {
         while (true) {
             val frameMs = withFrameNanos { it } / 1_000_000L
             if (first < 0) first = frameMs
-            elapsed.longValue = frameMs - first
+            val t = frameMs - first
+            elapsed.longValue = t
             if (!session.onFrame(SystemClock.uptimeMillis())) break
         }
     }
-    Box(modifier.fillMaxSize().graphicsLayer { alpha = session.overlayAlpha }) {
-        Canvas(Modifier.fillMaxSize()) {
-            val t = elapsed.longValue
-            drawRect(Tokens.Background)
-            drawGlows(t)
-            drawVignette()
-            drawHalo(SplashMotion.haloAlpha(t))
-        }
+    // ModulateAlpha: the fade-out applies its alpha to each draw instead of a full-screen offscreen layer.
+    Box(
+        modifier.fillMaxSize().graphicsLayer {
+            alpha = session.overlayAlpha
+            compositingStrategy = CompositingStrategy.ModulateAlpha
+        },
+    ) {
+        Canvas(Modifier.fillMaxSize().smallScaledLayer()) { drawBackground(elapsed.longValue) }
         Image(
             painter = painterResource(R.drawable.loophole_logo),
             contentDescription = stringResource(R.string.app_name),
@@ -168,6 +201,7 @@ fun SplashScreen(session: SplashSession, modifier: Modifier = Modifier) {
                     val s = SplashMotion.logoScale(t)
                     scaleX = s
                     scaleY = s
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
                 },
         )
     }
