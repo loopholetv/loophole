@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import io.github.loopholetv.data.db.channelScopeFromArg
@@ -17,19 +18,17 @@ import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.orDefaultsOnError
 import androidx.compose.runtime.remember
 import io.github.loopholetv.ui.nav.StartSlot
-import io.github.loopholetv.ui.nav.StartPlayback
 import io.github.loopholetv.ui.nav.resolveStartPlayback
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
 import io.github.loopholetv.ui.nav.AppNav
 import io.github.loopholetv.ui.nav.startDestination
 import io.github.loopholetv.ui.splash.FirstInProcess
-import io.github.loopholetv.ui.splash.SplashKeyGate
 import io.github.loopholetv.ui.splash.SplashKeyResult
 import io.github.loopholetv.ui.splash.SplashScreen
-import io.github.loopholetv.ui.splash.SplashTimeline
-import io.github.loopholetv.ui.splash.nextScreen
+import io.github.loopholetv.ui.splash.SplashSession
 import io.github.loopholetv.ui.splash.shouldShowSplash
 import io.github.loopholetv.ui.theme.LoopholeTheme
 import io.github.loopholetv.ui.theme.Tokens
@@ -40,25 +39,22 @@ import kotlinx.coroutines.launch
 private val firstActivityInProcess = FirstInProcess()
 
 class MainActivity : ComponentActivity() {
-    private val splash = SplashTimeline()
-    private val splashKeys = SplashKeyGate()
-    private var splashShown = false
+    private var splash: SplashSession? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as LoopholeApp
         val repo = app.container.playlistRepository
 
-        // Cold start only; a configuration change recreates the activity without it.
-        splashShown = shouldShowSplash(savedInstanceState != null, firstActivityInProcess.take())
-        val splashVisible = mutableStateOf(splashShown)
-        // A start channel opened behind the splash connects only once the splash is gone or skipped.
-        val gate = app.container.startGate
-        if (splashShown) gate.close() else gate.open()
+        // Cold start only; a configuration change recreates the activity without it. While the
+        // splash shows, a start channel opened behind it does not connect (the session's gate).
+        val session = SplashSession(app.container.startGate)
+        session.begin(shouldShowSplash(savedInstanceState != null, firstActivityInProcess.take()))
+        splash = session
 
         // Decide the start screen from the DB before showing any NavHost (no flash of the wrong
         // screen), and kick off the once-per-process background refresh only if a playlist exists.
-        // This runs behind the splash, which waits for it (up to its cap).
+        // This runs behind the splash, independent of composition.
         val hasPlaylist = mutableStateOf<Boolean?>(null)
         // One-shot (StartSlot): taken by the first guide composition, so a later return to the guide
         // (e.g. all playlists deleted -> onboarding -> new playlist) can't replay it.
@@ -68,19 +64,18 @@ class MainActivity : ComponentActivity() {
             val exists = repo.playlists().first().isNotEmpty()
             // Resolve before the refresh starts so it cannot remove the channel in between;
             // never on recreation.
-            var start: StartPlayback? = null
             if (exists && fresh) {
                 val c = app.container
                 val s = c.settingsStore.current()
-                start = resolveStartPlayback(
-                    s.lastChannelOnStart, c.history::latest, channelScopeFromArg(s.lastGuideScope), c.scopedChannels::contains,
-                    c.scopedChannels::resolve,
+                startSlot = StartSlot(
+                    resolveStartPlayback(
+                        s.lastChannelOnStart, c.history::latest, channelScopeFromArg(s.lastGuideScope), c.scopedChannels::contains,
+                        c.scopedChannels::resolve,
+                    ),
                 )
-                startSlot = StartSlot(start)
             }
             if (exists) app.startupRefresher.start()
             hasPlaylist.value = exists
-            if (nextScreen(exists, start) != null) splash.markReady(SystemClock.uptimeMillis())
         }
 
         setContent {
@@ -89,21 +84,22 @@ class MainActivity : ComponentActivity() {
                 val settings by settingsFlow.collectAsState(initial = AppSettings())
                 val decided = hasPlaylist.value
                 Box(Modifier.fillMaxSize()) {
-                    if (decided == null) {
-                        Box(Modifier.fillMaxSize().background(Tokens.Background))
-                    } else {
-                        AppNav(
-                            rememberNavController(), startDestination(decided),
-                            startPlayback = startSlot, confirmExit = settings.confirmExit,
-                        )
+                    // The next screen composes under the splash once the logo has settled, and is
+                    // drawn only once the splash starts to fade (never under the opaque splash).
+                    Box(
+                        Modifier.fillMaxSize()
+                            .background(Tokens.Background)
+                            .drawWithContent { if (session.drawContentUnder) drawContent() },
+                    ) {
+                        if (decided != null && session.contentAllowed) {
+                            LaunchedEffect(Unit) { session.onReady(SystemClock.uptimeMillis()) }
+                            AppNav(
+                                rememberNavController(), startDestination(decided),
+                                startPlayback = startSlot, confirmExit = settings.confirmExit,
+                            )
+                        }
                     }
-                    // Drawn over the next screen, which composes underneath and is revealed by the fade.
-                    if (splashVisible.value) {
-                        SplashScreen(splash, onDone = {
-                            splashVisible.value = false
-                            gate.open()
-                        })
-                    }
+                    if (session.visible) SplashScreen(session)
                 }
             }
         }
@@ -116,17 +112,11 @@ class MainActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val action = event.action
         if (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP) {
-            val now = SystemClock.uptimeMillis()
-            val active = splashShown && splash.isActive(now)
-            when (splashKeys.onKey(action == KeyEvent.ACTION_DOWN, event.keyCode, active)) {
-                SplashKeyResult.PASS -> Unit
-                SplashKeyResult.SKIP -> {
-                    splash.skip(now)
-                    (application as LoopholeApp).container.startGate.open()
-                    return true
-                }
-                SplashKeyResult.CONSUME -> return true
-            }
+            val session = splash
+            val result = session?.onKey(
+                action == KeyEvent.ACTION_DOWN, event.keyCode, event.repeatCount, SystemClock.uptimeMillis(),
+            )
+            if (result != null && result != SplashKeyResult.PASS) return true
         }
         return super.dispatchKeyEvent(event)
     }

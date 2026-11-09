@@ -37,7 +37,7 @@ class SplashKeyGateTest {
     fun `repeats of a held consumed key are consumed after the splash ended`() {
         val gate = SplashKeyGate()
         gate.onKey(down = true, keyCode = ok, splashActive = true)
-        assertEquals(SplashKeyResult.CONSUME, gate.onKey(down = true, keyCode = ok, splashActive = false))
+        assertEquals(SplashKeyResult.CONSUME, gate.onKey(down = true, keyCode = ok, splashActive = false, repeatCount = 1))
         assertEquals(SplashKeyResult.CONSUME, gate.onKey(down = false, keyCode = ok, splashActive = false))
     }
 
@@ -45,8 +45,17 @@ class SplashKeyGateTest {
     fun `further downs during the splash are consumed without another skip`() {
         val gate = SplashKeyGate()
         gate.onKey(down = true, keyCode = ok, splashActive = true)
-        assertEquals(SplashKeyResult.CONSUME, gate.onKey(down = true, keyCode = ok, splashActive = true))
+        assertEquals(SplashKeyResult.CONSUME, gate.onKey(down = true, keyCode = ok, splashActive = true, repeatCount = 1))
         assertEquals(SplashKeyResult.SKIP, gate.onKey(down = true, keyCode = back, splashActive = true))
+    }
+
+    @Test
+    fun `a lost up does not swallow the next fresh press after the splash`() {
+        val gate = SplashKeyGate()
+        gate.onKey(down = true, keyCode = ok, splashActive = true)
+        // The up never arrives; later a new press (repeat count 0) comes after the splash.
+        assertEquals(SplashKeyResult.PASS, gate.onKey(down = true, keyCode = ok, splashActive = false, repeatCount = 0))
+        assertEquals(SplashKeyResult.PASS, gate.onKey(down = false, keyCode = ok, splashActive = false))
     }
 
     @Test

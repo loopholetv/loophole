@@ -8,13 +8,11 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.withFrameMillis
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -28,6 +26,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import io.github.loopholetv.R
+import io.github.loopholetv.ui.theme.Tokens
 import kotlin.math.sqrt
 
 /** Local radius of every gradient; shapes are scaled from it, so each brush is built once. */
@@ -62,7 +61,7 @@ private class Glow(
 }
 
 // The glows live on a layer 1.7 times the screen, centred, that turns slowly about the centre.
-private val Glows = listOf(
+private val Glows = arrayOf(
     Glow(0.160f, 0.2875f, 0.680f, 0.4675f, 0.612f, 0.234f, 0.30f, 25f, 3_500, Color(0xFF087A74), 1f),
     Glow(0.925f, 0.8400f, 0.595f, 0.4250f, -0.5355f, -0.255f, 0.25f, -20f, 4_200, Color(0xFF055050), 1f),
     Glow(0.585f, 0.7125f, 0.510f, 0.3825f, -0.357f, -0.306f, 0.50f, 15f, 5_000, Color(0xFF0C8A82), 0.5f),
@@ -89,7 +88,8 @@ private fun DrawScope.drawGlows(t: Long) {
     val w = size.width
     val h = size.height
     rotate(SplashMotion.spinDegrees(t)) {
-        for (g in Glows) {
+        for (i in Glows.indices) {
+            val g = Glows[i]
             val d = SplashMotion.drift(t, g.periodMs)
             val s = 1f + g.grow * d
             withTransform({
@@ -129,35 +129,28 @@ private fun DrawScope.drawHalo(alpha: Float) {
 }
 
 /**
- * Full-screen start-up splash: moving teal glows on black, a vignette, and the logo fading in
- * over a soft halo. Everything is drawn from a single frame clock read only in the draw phase,
- * so frames are redrawn without recomposing. [timeline] decides when it fades out; [onDone] runs
- * once it is fully transparent.
+ * Full-screen start-up splash: moving teal glows on the app background, a vignette, and the logo
+ * fading in over a soft halo. Everything is drawn from a single frame clock read only in the draw
+ * phase, so frames are redrawn without recomposing. [session] decides when it fades out and hides
+ * it once it is fully transparent.
  */
 @Composable
-fun SplashScreen(timeline: SplashTimeline, onDone: () -> Unit, modifier: Modifier = Modifier) {
+fun SplashScreen(session: SplashSession, modifier: Modifier = Modifier) {
     val elapsed = remember { mutableLongStateOf(0L) }
-    val overlay = remember { mutableFloatStateOf(1f) }
-    val done by rememberUpdatedState(onDone)
-    LaunchedEffect(timeline) {
+    DisposableEffect(session) { onDispose { session.onDispose() } }
+    LaunchedEffect(session) {
         var first = -1L
         while (true) {
-            val frame = withFrameMillis { it }
-            val now = SystemClock.uptimeMillis()
-            if (first < 0) {
-                first = frame
-                timeline.start(now)
-            }
-            elapsed.longValue = frame - first
-            overlay.floatValue = timeline.overlayAlpha(now)
-            if (!timeline.isActive(now)) break
+            val frameMs = withFrameNanos { it } / 1_000_000L
+            if (first < 0) first = frameMs
+            elapsed.longValue = frameMs - first
+            if (!session.onFrame(SystemClock.uptimeMillis())) break
         }
-        done()
     }
-    Box(modifier.fillMaxSize().graphicsLayer { alpha = overlay.floatValue }) {
+    Box(modifier.fillMaxSize().graphicsLayer { alpha = session.overlayAlpha }) {
         Canvas(Modifier.fillMaxSize()) {
             val t = elapsed.longValue
-            drawRect(Color.Black)
+            drawRect(Tokens.Background)
             drawGlows(t)
             drawVignette()
             drawHalo(SplashMotion.haloAlpha(t))

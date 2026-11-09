@@ -130,4 +130,20 @@ class SplashTimelineTest {
         assertTrue(s.isActive(t0 + 2_299))
         assertFalse(s.isActive(t0 + 2_300))
     }
+
+    @Test
+    fun `content may compose once the logo has settled`() {
+        val s = timeline()
+        assertFalse(s.contentMayCompose(t0))
+        s.start(t0)
+        assertFalse(s.contentMayCompose(t0 + 1_399))
+        assertTrue(s.contentMayCompose(t0 + 1_400))
+    }
+
+    @Test
+    fun `content may compose at once after a skip`() {
+        val s = timeline()
+        s.skip(t0)
+        assertTrue(s.contentMayCompose(t0))
+    }
 }

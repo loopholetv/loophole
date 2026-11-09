@@ -2,7 +2,6 @@ package io.github.loopholetv.ui.splash
 
 import android.view.KeyEvent
 import androidx.compose.animation.core.FastOutSlowInEasing
-import io.github.loopholetv.ui.nav.StartPlayback
 
 enum class SplashPhase {
     /** Before the minimum show time. */
@@ -73,6 +72,16 @@ class SplashTimeline(
         }
     }
 
+    /**
+     * Whether the screen underneath may compose: once the logo has settled ([settleMs] after the
+     * first frame), or at once after a skip, so composing it never competes with the logo animation.
+     */
+    fun contentMayCompose(now: Long, settleMs: Long = 1_400): Boolean {
+        if (skipAt != null) return true
+        val s = startAt ?: return false
+        return now >= s + settleMs
+    }
+
     fun isActive(now: Long): Boolean = phase(now) != SplashPhase.DONE
 
     /** Opacity of the splash over the next screen: 1 until the exit, then eased down to 0. */
@@ -111,10 +120,14 @@ fun isSystemKey(keyCode: Int): Boolean = when (keyCode) {
 class SplashKeyGate {
     private val held = HashSet<Int>()
 
-    fun onKey(down: Boolean, keyCode: Int, splashActive: Boolean): SplashKeyResult {
+    fun onKey(down: Boolean, keyCode: Int, splashActive: Boolean, repeatCount: Int = 0): SplashKeyResult {
         if (isSystemKey(keyCode)) return SplashKeyResult.PASS
         if (!down) return if (held.remove(keyCode)) SplashKeyResult.CONSUME else SplashKeyResult.PASS
-        if (keyCode in held) return SplashKeyResult.CONSUME
+        if (keyCode in held) {
+            if (repeatCount > 0) return SplashKeyResult.CONSUME
+            // A fresh press of a key still marked held: its release was lost; start over.
+            held.remove(keyCode)
+        }
         if (!splashActive) return SplashKeyResult.PASS
         held += keyCode
         return SplashKeyResult.SKIP
@@ -137,13 +150,4 @@ class FirstInProcess {
         taken = true
         return first
     }
-}
-
-enum class NextScreen { ONBOARDING, GUIDE, PLAYER }
-
-/** The screen the splash fades into; null while the playlist check has not finished. */
-fun nextScreen(hasPlaylist: Boolean?, start: StartPlayback?): NextScreen? = when (hasPlaylist) {
-    null -> null
-    false -> NextScreen.ONBOARDING
-    true -> if (start != null) NextScreen.PLAYER else NextScreen.GUIDE
 }
