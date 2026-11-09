@@ -1,5 +1,8 @@
 package io.github.loopholetv.ui.guide
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
@@ -15,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -23,11 +27,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -36,14 +42,19 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import io.github.loopholetv.R
 import io.github.loopholetv.ui.theme.Tokens
 
 val RAIL_WIDTH = 56.dp
 private val RAIL_EXPANDED_WIDTH = 210.dp
+private val LOGO_HEIGHT = 32.dp
+private val MARK_WIDTH = 36.dp
+private val WORDMARK_WIDTH = 92.dp
 
 enum class RailItem(val label: String, val path: String) {
     SEARCH(
@@ -117,6 +128,8 @@ fun SideRail(
             .focusGroup()
             .padding(vertical = 24.dp, horizontal = 6.dp),
     ) {
+        RailLogo(expanded)
+        Spacer(Modifier.height(10.dp))
         for (item in RailItem.entries) {
             RailButton(
                 item = item,
@@ -132,6 +145,39 @@ fun SideRail(
                     },
             )
             if (item == RailItem.SEARCH) Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+/**
+ * Decoration only (never focusable): the mark, centred over the icons, and beside it the
+ * wordmark, which fades in while the rail is expanded. Clipped to the rail, so the collapsed
+ * rail never shows it.
+ */
+@Composable
+private fun RailLogo(expanded: Boolean) {
+    val word by animateFloatAsState(if (expanded) 1f else 0f, tween(durationMillis = 220), label = "railWordmark")
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(LOGO_HEIGHT)
+            .clipToBounds()
+            .wrapContentWidth(Alignment.Start, unbounded = true)
+            .padding(start = 4.dp),
+    ) {
+        Image(painterResource(R.drawable.loophole_mark), contentDescription = null, modifier = Modifier.size(MARK_WIDTH, LOGO_HEIGHT))
+        if (word > 0f) {
+            Image(
+                painterResource(R.drawable.loophole_wordmark),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(WORDMARK_WIDTH, LOGO_HEIGHT)
+                    .graphicsLayer {
+                        alpha = word
+                        translationX = -(1f - word) * 6.dp.toPx()
+                    },
+            )
         }
     }
 }
