@@ -38,6 +38,16 @@ class VersionsTest {
     }
 
     @Test
+    fun preReleaseIdentifiersFollowSemVerPrecedence() {
+        assertTrue(isNewerVersion("0.4.2-rc.10", "0.4.2-rc.2"))
+        assertTrue(isNewerVersion("v0.4.10", "0.4.9"))
+        assertTrue(SemVer.parse("1.0.0-alpha.1")!! > SemVer.parse("1.0.0-alpha")!!)
+        assertTrue(SemVer.parse("1.0.0-alpha.beta")!! > SemVer.parse("1.0.0-alpha.1")!!)
+        assertTrue(SemVer.parse("1.0.0-rc.1")!! > SemVer.parse("1.0.0-beta.11")!!)
+        assertEquals(0, SemVer.parse("1.0.0-rc.1")!!.compareTo(SemVer.parse("1.0.0-rc.1+b")!!))
+    }
+
+    @Test
     fun isNewerOnlyForAStrictlyHigherVersion() {
         assertTrue(isNewerVersion("v0.4.2", "0.4.1"))
         assertTrue(isNewerVersion("v0.5.0", "0.4.1"))

@@ -2,7 +2,7 @@ package io.github.loopholetv.update
 
 /**
  * A `MAJOR.MINOR.PATCH[-pre][+build]` version. A pre-release sorts before its release; build
- * metadata is ignored. Pre-release labels compare as plain strings (enough for `-test`, `-beta`).
+ * metadata is ignored. Pre-release labels follow SemVer precedence (`rc.2` < `rc.10` < `rc.x`).
  */
 data class SemVer(val major: Int, val minor: Int, val patch: Int, val pre: String? = null) : Comparable<SemVer> {
 
@@ -14,8 +14,28 @@ data class SemVer(val major: Int, val minor: Int, val patch: Int, val pre: Strin
             pre == other.pre -> 0
             pre == null -> 1
             other.pre == null -> -1
-            else -> pre.compareTo(other.pre)
+            else -> comparePre(pre, other.pre)
         }
+    }
+
+    /** SemVer precedence: dot-separated, numeric parts as numbers and below alphanumeric ones. */
+    private fun comparePre(a: String, b: String): Int {
+        val x = a.split('.')
+        val y = b.split('.')
+        for (i in 0 until minOf(x.size, y.size)) {
+            val p = x[i]
+            val q = y[i]
+            val pn = p.toBigIntegerOrNull()
+            val qn = q.toBigIntegerOrNull()
+            val c = when {
+                pn != null && qn != null -> pn.compareTo(qn)
+                pn != null -> -1
+                qn != null -> 1
+                else -> p.compareTo(q)
+            }
+            if (c != 0) return c
+        }
+        return x.size.compareTo(y.size)
     }
 
     /** "0.4.2" or "0.4.2-test", without a `v` prefix. */
