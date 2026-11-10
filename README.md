@@ -120,11 +120,14 @@ Enter the portal address and the MAC address your provider registered (usually s
 
 Loophole isn't in any app store. Download the latest `loophole-<version>.apk` from the [Releases page](https://github.com/loopholetv/loophole/releases/latest) and sideload it.
 
+> [!TIP]
+> **Quickest way on a TV:** in the **Downloader** app, enter code **`8595455`**. It always downloads the latest release. Or use the link [aftv.news/8595455](http://aftv.news/8595455), or the direct download [`releases/latest/download/loophole.apk`](https://github.com/loopholetv/loophole/releases/latest/download/loophole.apk).
+
 ### Fire TV (Fire TV Stick, Fire TV Cube)
 
 1. Settings → My Fire TV → Developer options: turn on *Apps from Unknown Sources* (or allow the Downloader app to install apps).
 2. Install the **Downloader** app from the Amazon Appstore.
-3. In Downloader, enter the APK's download link and choose *Install* when the download finishes.
+3. In Downloader, type the code **`8595455`** and press **Go**. Choose *Install* when the download finishes. The code always fetches the latest release.
 
 ### Android TV and Google TV
 
@@ -135,6 +138,7 @@ Loophole isn't in any app store. Download the latest `loophole-<version>.apk` fr
   adb install loophole-<version>.apk
   ```
 
+- **With the Downloader app** (from Google Play): enter code `8595455`, then allow Downloader to install apps when asked.
 - **Without a computer:** copy the APK to the TV (on a USB drive or through a cloud drive) and open it with a file manager app, allowing that app to install unknown apps when asked.
 
 ### Optional: a smoother first run
