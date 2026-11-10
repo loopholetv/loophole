@@ -527,6 +527,7 @@ fun GuideScreen(
                         onOk = ::openPreview,
                         onLongPress = { channel -> options = OptionsTarget(channel, fromPreview = true) },
                         subtitleStyle = subtitleStyle,
+                        rightTo = cardFocus.takeIf { updateCard?.buttons?.isNotEmpty() == true },
                         onDown = { if (channels.itemCount > 0) focusGrid() else focusSelectedGroup() },
                         modifier = Modifier.fillMaxHeight().onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Preview) },
                     )

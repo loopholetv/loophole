@@ -70,7 +70,8 @@ fun previewSubtitleStyle(style: SubtitleStyle): SubtitleStyle =
  * The live preview (with sound) bound to the app's single player. Focusable (Up from the grid's top
  * row or the groups' first item): an accent border, and a "Full screen" pill while something is
  * previewing. OK calls [onOk] (full screen on the previewing channel), holding it (or Menu) [onLongPress]; Down calls [onDown] (back into
- * the grid); Left is ordinary focus search (the rail); Up and Right go nowhere.
+ * the grid); Left is ordinary focus search (the rail); Up goes nowhere, Right only to [rightTo]
+ * (the update card) when given.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -85,6 +86,7 @@ fun PreviewPane(
     onLongPress: (ChannelEntity) -> Unit = {},
     /** How subtitles are drawn when a channel previews with them on. */
     subtitleStyle: SubtitleStyle = SubtitleStyle(),
+    rightTo: FocusRequester? = null,
 ) {
     val state by playback.state.collectAsState()
     var focused by remember { mutableStateOf(false) }
@@ -95,7 +97,7 @@ fun PreviewPane(
             .focusRequester(focusRequester)
             .focusProperties {
                 up = FocusRequester.Cancel
-                right = FocusRequester.Cancel
+                right = rightTo ?: FocusRequester.Cancel
             }
             .onKeyEvent { e ->
                 if (e.key != Key.DirectionDown) return@onKeyEvent false

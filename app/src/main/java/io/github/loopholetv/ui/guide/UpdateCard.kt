@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -108,7 +109,7 @@ internal fun UpdateCard(
             overflow = TextOverflow.Ellipsis,
         )
         if (progress != null) {
-            Box(Modifier.fillMaxWidth().height(4.dp).background(Tokens.Surface, RoundedCornerShape(2.dp))) {
+            Box(Modifier.width(220.dp).height(4.dp).background(Tokens.Surface, RoundedCornerShape(2.dp))) {
                 Box(
                     Modifier.fillMaxWidth(progress.coerceIn(0, 100) / 100f).fillMaxHeight()
                         .background(Tokens.Accent, RoundedCornerShape(2.dp)),
