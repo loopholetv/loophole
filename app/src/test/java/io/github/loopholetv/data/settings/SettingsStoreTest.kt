@@ -50,6 +50,7 @@ class SettingsStoreTest {
             epgStoreDescriptions = false,
             lastChannelOnStart = true,
             confirmExit = false,
+            checkForUpdates = false,
             lastGuideScope = "group:42",
         )
         store.update { changed }

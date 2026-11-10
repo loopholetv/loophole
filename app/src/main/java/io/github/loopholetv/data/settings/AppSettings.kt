@@ -11,6 +11,8 @@ data class AppSettings(
     val epgStoreDescriptions: Boolean = true,
     val lastChannelOnStart: Boolean = false,
     val confirmExit: Boolean = true,
+    /** Look for a new Loophole release on app start (at most once a day). */
+    val checkForUpdates: Boolean = true,
     val lastGuideScope: String? = null,
     /** General User-Agent; null means the built-in default. */
     val userAgent: String? = null,

@@ -57,8 +57,11 @@ class MainActivity : ComponentActivity() {
         // Cold start only; a configuration change recreates the activity without it. While the
         // splash shows, a start channel opened behind it does not connect (the session's gate).
         val session = SplashSession(app.container.startGate)
-        session.begin(shouldShowSplash(savedInstanceState != null, firstActivityInProcess.take()))
+        val firstInProcess = firstActivityInProcess.take()
+        session.begin(shouldShowSplash(savedInstanceState != null, firstInProcess))
         splash = session
+        // The update check runs once per process, after the splash (it waits on the start gate).
+        if (firstInProcess) app.container.updater.onColdStart()
 
         // Decide the start screen from the DB before showing any NavHost (no flash of the wrong
         // screen), and kick off the once-per-process background refresh only if a playlist exists.
@@ -144,6 +147,12 @@ class MainActivity : ComponentActivity() {
             if (result != null && result != SplashKeyResult.PASS) return true
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Back from the install-permission screen or the system installer.
+        container.updater.onResumed()
     }
 
     /** Home while the full-screen player plays opens picture-in-picture, when that is turned on. */

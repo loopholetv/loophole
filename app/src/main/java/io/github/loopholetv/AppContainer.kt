@@ -72,12 +72,28 @@ class AppContainer(context: Context) {
         )
     }
 
-    /** The only DataStore instance for the "settings" file. */
-    val settingsStore: SettingsStore by lazy {
-        SettingsStore(
-            PreferenceDataStoreFactory.create(
-                corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
-            ) { appContext.preferencesDataStoreFile("settings") },
+    /** The only DataStore instance for the "settings" file (settings and update-check state). */
+    private val settingsDataStore by lazy {
+        PreferenceDataStoreFactory.create(
+            corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+        ) { appContext.preferencesDataStoreFile("settings") }
+    }
+
+    val settingsStore: SettingsStore by lazy { SettingsStore(settingsDataStore) }
+
+    /** Release check, download and install of app updates; lives for the process. */
+    val updater: io.github.loopholetv.update.Updater by lazy {
+        val ua = io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME)
+        val client = io.github.loopholetv.update.ReleaseClient(http, { io.github.loopholetv.update.releaseUrl(appContext) }, ua)
+        io.github.loopholetv.update.Updater(
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
+            checker = io.github.loopholetv.update.UpdateChecker(
+                client::latest, io.github.loopholetv.update.UpdatePrefs(settingsDataStore), BuildConfig.VERSION_NAME,
+            ),
+            downloader = io.github.loopholetv.update.UpdateDownloader(http, java.io.File(appContext.cacheDir, "updates"), ua),
+            platform = io.github.loopholetv.update.AndroidInstallPlatform(appContext),
+            enabled = { settingsStore.current().checkForUpdates },
+            gate = startGate::await,
         )
     }
 

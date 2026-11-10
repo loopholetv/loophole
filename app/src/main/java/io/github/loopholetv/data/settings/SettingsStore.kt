@@ -43,6 +43,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             epgStoreDescriptions = this[EPG_DESCRIPTIONS] ?: d.epgStoreDescriptions,
             lastChannelOnStart = this[LAST_CHANNEL_ON_START] ?: d.lastChannelOnStart,
             confirmExit = this[CONFIRM_EXIT] ?: d.confirmExit,
+            checkForUpdates = this[CHECK_FOR_UPDATES] ?: d.checkForUpdates,
             lastGuideScope = this[LAST_GUIDE_SCOPE],
             userAgent = this[USER_AGENT]?.trim()?.takeIf { it.isNotEmpty() },
             udpProxy = this[UDP_PROXY]?.trim()?.takeIf { it.isNotEmpty() },
@@ -85,6 +86,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         this[EPG_DESCRIPTIONS] = s.epgStoreDescriptions
         this[LAST_CHANNEL_ON_START] = s.lastChannelOnStart
         this[CONFIRM_EXIT] = s.confirmExit
+        this[CHECK_FOR_UPDATES] = s.checkForUpdates
         val scope = s.lastGuideScope
         if (scope == null) remove(LAST_GUIDE_SCOPE) else this[LAST_GUIDE_SCOPE] = scope
         putOrRemove(USER_AGENT, s.userAgent)
@@ -139,6 +141,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         val EPG_DESCRIPTIONS = booleanPreferencesKey("epg_store_descriptions")
         val LAST_CHANNEL_ON_START = booleanPreferencesKey("last_channel_on_start")
         val CONFIRM_EXIT = booleanPreferencesKey("confirm_exit")
+        val CHECK_FOR_UPDATES = booleanPreferencesKey("check_for_updates")
         val LAST_GUIDE_SCOPE = stringPreferencesKey("last_guide_scope")
         val USER_AGENT = stringPreferencesKey("user_agent")
         val UDP_PROXY = stringPreferencesKey("udp_proxy")
