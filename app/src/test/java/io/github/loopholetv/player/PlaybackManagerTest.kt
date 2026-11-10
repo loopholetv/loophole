@@ -38,7 +38,14 @@ import io.github.loopholetv.data.settings.BufferPreset
 import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.data.settings.Passthrough
 import io.github.loopholetv.data.settings.PlaybackSettings
+import io.github.loopholetv.player.catchup.ArchiveRequest
+import io.github.loopholetv.player.catchup.PlayMode
 import io.github.loopholetv.player.engine.EngineParts
+import androidx.media3.test.utils.FakeMediaSource
+import androidx.media3.test.utils.FakeTimeline
+import android.os.SystemClock
+import java.net.SocketException
+import java.time.Instant
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
@@ -76,6 +83,13 @@ private class SeamPlayer(private val real: ExoPlayer) : ExoPlayer by real {
     val events = mutableListOf<String>()
     var onPrepare: () -> Unit = {}
     var lastSource: MediaSource? = null
+    /** When set, plays this instead of the source the manager built (a known timeline). */
+    var substituteSource: MediaSource? = null
+    val seeks = mutableListOf<Long>()
+    /** Start positions given with a media source (null: the default position). */
+    val startPositions = mutableListOf<Long?>()
+    var fakePosition: Long? = null
+    var onStop: () -> Unit = {}
 
     override fun prepare() {
         prepareCount++
@@ -88,12 +102,27 @@ private class SeamPlayer(private val real: ExoPlayer) : ExoPlayer by real {
 
     override fun stop() {
         events += "stop"
+        onStop()
         real.stop()
     }
 
     override fun setMediaSource(mediaSource: MediaSource) {
         lastSource = mediaSource
-        real.setMediaSource(mediaSource)
+        startPositions += null
+        real.setMediaSource(substituteSource ?: mediaSource)
+    }
+
+    override fun setMediaSource(mediaSource: MediaSource, startPositionMs: Long) {
+        lastSource = mediaSource
+        startPositions += startPositionMs
+        real.setMediaSource(substituteSource ?: mediaSource, startPositionMs)
+    }
+
+    override fun getCurrentPosition(): Long = fakePosition ?: real.currentPosition
+
+    override fun seekTo(positionMs: Long) {
+        seeks += positionMs
+        real.seekTo(positionMs)
     }
 
     override fun getCurrentTracks(): Tracks = fakeTracks ?: real.currentTracks
@@ -123,6 +152,13 @@ private class FakeResolver(var urlFor: (ChannelEntity) -> String = { it.streamUr
     var onResolve: () -> Unit = {}
     var keepAlives = 0
     var activeKeepAlives = 0
+    /** The archive URL for a request; null means the channel can't play that time. */
+    var archiveUrlFor: (ChannelEntity, ArchiveRequest) -> String? = { ch, _ -> ch.streamUrl }
+    val archiveCalls = mutableListOf<Pair<Long, ArchiveRequest>>()
+    var archiveFailure: Throwable? = null
+    var onResolveArchive: () -> Unit = {}
+    /** Holds [resolveArchive] until completed. */
+    var archiveGate: CompletableDeferred<Unit>? = null
 
     override suspend fun resolve(channel: ChannelEntity): ResolvedStream {
         onResolve()
@@ -141,6 +177,14 @@ private class FakeResolver(var urlFor: (ChannelEntity) -> String = { it.streamUr
     }
 
     override suspend fun canRemint(channel: ChannelEntity) = remint
+
+    override suspend fun resolveArchive(channel: ChannelEntity, request: ArchiveRequest, now: Instant): ResolvedStream? {
+        onResolveArchive()
+        archiveCalls += channel.id to request
+        archiveGate?.await()
+        archiveFailure?.let { throw it }
+        return archiveUrlFor(channel, request)?.let { ResolvedStream(it, "UA-R", emptyMap()) }
+    }
 
     override suspend fun keepAlive(channel: ChannelEntity) {
         keepAlives++
@@ -785,10 +829,20 @@ class PlaybackManagerTest {
             awaitSettings = { settingsGate?.await(); staleSnapshot ?: settingsFlow.value },
             channelPrefs = { prefs },
             observeChannelPrefs = { prefsFlow },
-            evictConnections = { seam.events += "evict" },
+            // Runs on the main looper in call order; a set gate holds the open inside its eviction.
+            evictIdleConnections = {
+                seam.events += "evict"
+                evictGate?.await()
+            },
+            retryDelay = { ms -> retryDelays += ms; delay(ms) },
         )
         return resolver
     }
+
+    private val retryDelays = mutableListOf<Long>()
+
+    /** When set, each eviction suspends until it is completed. */
+    private var evictGate: CompletableDeferred<Unit>? = null
 
     private val params get() = exo.trackSelectionParameters as DefaultTrackSelector.Parameters
 
@@ -1369,5 +1423,604 @@ class PlaybackManagerTest {
         val handoff = runBlocking { manager.handOff(channel(2, "/unused")) }
         assertTrue(handoff!!.hls)
         assertEquals(0, prepareCount)
+    }
+
+    // ---- Archive playback and switch retries ----
+
+    private val programme = ArchiveRequest(Instant.parse("2026-11-09T20:00:00Z"), Instant.parse("2026-11-09T21:00:00Z"))
+    private val laterProgramme = ArchiveRequest(Instant.parse("2026-11-09T21:00:00Z"), Instant.parse("2026-11-09T22:00:00Z"))
+
+    private fun awaitPrepares(n: Int) = RobolectricUtil.runMainLooperUntil { prepareCount >= n }
+
+    private fun failWith(error: ExoPlaybackException) {
+        seam.fakeError = error
+        seam.listeners.forEach { it.onPlayerError(error) }
+    }
+
+    private fun httpError(code: Int): ExoPlaybackException {
+        val cause = HttpDataSource.InvalidResponseCodeException(
+            code, "status", null, emptyMap(), DataSpec(Uri.parse("http://example.test/x")), ByteArray(0),
+        )
+        return ExoPlaybackException.createForSource(cause, PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS)
+    }
+
+    private fun resetError(): ExoPlaybackException {
+        val cause = HttpDataSource.HttpDataSourceException(
+            SocketException("Connection reset"), DataSpec(Uri.parse("http://example.test/x")),
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED, HttpDataSource.HttpDataSourceException.TYPE_OPEN,
+        )
+        return ExoPlaybackException.createForSource(cause, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED)
+    }
+
+    private fun reportEnded() {
+        seam.fakeState = Player.STATE_ENDED
+        seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_ENDED) }
+    }
+
+    @Test
+    fun archiveSwitchStopsBeforeResolve() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.play(ch)
+        idleMain()
+        assertEquals(1, prepareCount)
+        seam.events.clear()
+        var seen: Pair<Int, Int>? = null
+        fake.onResolveArchive = {
+            seam.events += "resolveArchive"
+            seen = seam.playbackState to exo.mediaItemCount
+        }
+
+        manager.playArchive(ch, programme)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        assertEquals(PlayMode.Archive(1, programme), manager.mode.value)
+        awaitPrepares(2)
+
+        assertEquals(listOf("stop", "evict", "resolveArchive", "evict", "prepare"), seam.events)
+        assertEquals(Player.STATE_IDLE to 0, seen)
+        assertEquals(1, exo.mediaItemCount)
+        assertEquals(listOf(1L to programme), fake.archiveCalls)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+    }
+
+    @Test
+    fun playArchiveSameChannelReconnects() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.playArchive(ch, programme)
+        awaitPrepares(1)
+        seam.events.clear()
+        fake.onResolveArchive = { seam.events += "resolveArchive" }
+
+        manager.playArchive(ch, programme)
+        awaitPrepares(2)
+
+        assertEquals(listOf(1L to programme, 1L to programme), fake.archiveCalls)
+        assertEquals(listOf("stop", "evict", "resolveArchive", "evict", "prepare"), seam.events)
+        assertEquals(1, exo.mediaItemCount)
+    }
+
+    @Test
+    fun playLiveFromArchiveReconnects() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.playArchive(ch, programme)
+        awaitPrepares(1)
+        reportReady()
+        seam.events.clear()
+        fake.onResolve = { seam.events += "resolve" }
+
+        manager.play(ch)
+        assertEquals(PlayMode.Live, manager.mode.value)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        awaitPrepares(2)
+
+        // The archive stream is released, and its idle connections closed, before the live link is resolved.
+        assertEquals(listOf("stop", "evict", "resolve", "prepare"), seam.events)
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(1, exo.mediaItemCount)
+        assertEquals(Uri.parse(ch.streamUrl), exo.currentMediaItem!!.localConfiguration!!.uri)
+
+        // Live again: the same channel is a no-op once more.
+        manager.play(ch)
+        idleMain()
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(2, prepareCount)
+    }
+
+    @Test
+    fun archiveResolveNullIsError() {
+        val fake = engineManager()
+        fake.archiveUrlFor = { _, _ -> null }
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        RobolectricUtil.runMainLooperUntil { manager.state.value is PlaybackState.Error }
+
+        assertEquals(PlaybackState.Error(1, "Couldn't play this programme back."), manager.state.value)
+        assertEquals(0, exo.mediaItemCount)
+        assertEquals(0, prepareCount)
+    }
+
+    @Test
+    fun archiveResolveFailureIsErrorWithoutUrl() {
+        val fake = engineManager()
+        fake.archiveFailure = IOException("failed http://secret.example.test/timeshift/u/p/60/2026-11-09:20-00/1.ts")
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        RobolectricUtil.runMainLooperUntil { manager.state.value is PlaybackState.Error }
+
+        assertEquals(PlaybackState.Error(1, "Couldn't play this programme back."), manager.state.value)
+        assertEquals(0, exo.mediaItemCount)
+    }
+
+    @Test
+    fun archiveEndIsNotError() {
+        engineManager()
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+        reportEnded()
+
+        assertTrue((manager.mode.value as PlayMode.Archive).ended)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+
+        // A live stream that ends is still an error.
+        manager.play(channel(2, "/live/2.ts"))
+        awaitPrepares(2)
+        reportEnded()
+        assertEquals(PlayMode.Live, manager.mode.value)
+        assertEquals(PlaybackState.Error(2, "Channel 2: can't play this stream"), manager.state.value)
+    }
+
+    @Test
+    fun archiveHlsUrlLoadsAsHlsAndIsMarked() {
+        val fake = engineManager()
+        fake.archiveUrlFor = { ch, _ -> ch.streamUrl.replace("/live/1.ts", "/timeshift/1/index.m3u8") }
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+
+        assertEquals(MimeTypes.APPLICATION_M3U8, exo.currentMediaItem!!.localConfiguration!!.mimeType)
+        assertTrue((manager.mode.value as PlayMode.Archive).hls)
+
+        fake.archiveUrlFor = { ch, _ -> ch.streamUrl }
+        manager.playArchive(channel(1, "/live/1.ts"), laterProgramme)
+        awaitPrepares(2)
+        assertNull(exo.currentMediaItem!!.localConfiguration!!.mimeType)
+        assertFalse((manager.mode.value as PlayMode.Archive).hls)
+        assertEquals(laterProgramme, (manager.mode.value as PlayMode.Archive).request)
+    }
+
+    @Test
+    fun firstOpenAfterSwitchRetriesWithBackoff() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+        val base = prepareCount
+        val states = mutableListOf<PlaybackState>()
+
+        failWith(httpError(509))
+        states += manager.state.value
+        idleMain(500)
+        awaitPrepares(base + 1)
+        states += manager.state.value
+
+        failWith(httpError(509))
+        states += manager.state.value
+        idleMain(1_000)
+        awaitPrepares(base + 2)
+        states += manager.state.value
+        reportReady()
+
+        // Three loads of channel 2: the first open and two retries.
+        assertEquals(base + 2, prepareCount)
+        assertEquals(listOf(500L, 1_000L), retryDelays)
+        assertTrue(states.all { it == PlaybackState.Buffering(2) })
+        assertEquals(listOf(1L, 2L, 2L, 2L), fake.resolved)
+        assertEquals(1, exo.mediaItemCount)
+        // Only the stream playing now keeps its keep-alive.
+        idleMain()
+        assertEquals(1, fake.activeKeepAlives)
+    }
+
+    @Test
+    fun connectionResetAfterSwitchRetries() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+
+        failWith(resetError())
+        assertEquals(PlaybackState.Buffering(2), manager.state.value)
+        idleMain(500)
+        awaitPrepares(3)
+        assertEquals(listOf(1L, 2L, 2L), fake.resolved)
+    }
+
+    @Test
+    fun backoffGivesUpAfterFourRetries() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.play(ch)
+        idleMain()
+        manager.playArchive(ch, programme)
+        awaitPrepares(2)
+        val started = SystemClock.uptimeMillis()
+
+        val delays = listOf(500L, 1_000L, 2_000L, 4_000L)
+        delays.forEachIndexed { i, ms ->
+            failWith(httpError(503))
+            assertEquals(PlaybackState.Buffering(1), manager.state.value)
+            idleMain(ms)
+            awaitPrepares(3 + i)
+        }
+        failWith(httpError(503))
+
+        assertEquals(PlaybackState.Error(1, "Couldn't play this programme back."), manager.state.value)
+        assertEquals(delays, retryDelays)
+        assertTrue(SystemClock.uptimeMillis() - started >= 7_500)
+        assertEquals(5, fake.archiveCalls.size)
+        idleMain(10_000)
+        assertEquals(5, fake.archiveCalls.size)
+        assertEquals(6, prepareCount)
+    }
+
+    @Test
+    fun noRetryWhenNotAfterSwitch() {
+        val fake = engineManager()
+        // The first open of the session: nothing was released before it.
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        failWith(httpError(403))
+        assertEquals(PlaybackState.Error(1, "Channel 1: access denied by provider"), manager.state.value)
+        idleMain(10_000)
+        assertEquals(listOf(1L), fake.resolved)
+
+        // An open long after the last release does not retry either.
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+        reportReady()
+        manager.stop()
+        nowMs += 11_000
+        manager.play(channel(3, "/live/3.ts"))
+        idleMain()
+        failWith(httpError(509))
+        assertTrue(manager.state.value is PlaybackState.Error)
+        assertTrue(retryDelays.isEmpty())
+    }
+
+    @Test
+    fun remintComesBeforeSwitchRetry() {
+        val fake = engineManager()
+        fake.remint = true
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+
+        failWith(httpError(403))
+        idleMain()
+        assertEquals(listOf(1L, 2L, 2L), fake.resolved)
+        assertTrue(retryDelays.isEmpty())
+
+        // A re-minted portal link that is refused again is an error, not a backoff.
+        failWith(httpError(403))
+        assertEquals(PlaybackState.Error(2, "Channel 2: access denied by provider"), manager.state.value)
+        assertTrue(retryDelays.isEmpty())
+    }
+
+    @Test
+    fun seekableArchiveReportsDuration() {
+        engineManager()
+        seam.substituteSource = FakeMediaSource(FakeTimeline(FakeTimeline.TimelineWindowDefinition(true, false, 3_600_000_000L)))
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        RobolectricUtil.runMainLooperUntil { (manager.mode.value as PlayMode.Archive).seekable }
+
+        assertEquals(3_600_000L, (manager.mode.value as PlayMode.Archive).durationMs)
+
+        manager.seekWithin(120_000)
+        assertEquals(listOf(120_000L), seam.seeks)
+    }
+
+    @Test
+    fun seekWithinIgnoredWhenNotSeekable() {
+        engineManager()
+        manager.seekWithin(5_000) // live
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+        assertFalse((manager.mode.value as PlayMode.Archive).seekable)
+
+        manager.seekWithin(5_000)
+
+        assertTrue(seam.seeks.isEmpty())
+    }
+
+    @Test
+    fun pauseResumeAndPosition() {
+        engineManager()
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+
+        manager.pause()
+        assertFalse(exo.playWhenReady)
+        manager.resume()
+        assertTrue(exo.playWhenReady)
+        assertEquals(exo.currentPosition, manager.positionMs())
+    }
+
+    @Test
+    fun staleRetryNeverLoads() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(2)
+        failWith(httpError(503)) // a retry is now pending
+
+        manager.playArchive(channel(2, "/live/2.ts"), programme)
+        awaitPrepares(3)
+        idleMain(10_000)
+
+        assertEquals(listOf(1L to programme, 2L to programme), fake.archiveCalls)
+        assertEquals(3, prepareCount)
+        assertEquals("2", exo.currentMediaItem!!.mediaId)
+        assertEquals(PlayMode.Archive(2, programme), manager.mode.value)
+    }
+
+    @Test
+    fun archiveNeverKeepAlives() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.play(ch)
+        idleMain()
+        assertEquals(1, fake.activeKeepAlives)
+
+        manager.playArchive(ch, programme)
+        awaitPrepares(2)
+        idleMain(1_000)
+
+        assertEquals(1, fake.keepAlives)
+        assertEquals(0, fake.activeKeepAlives)
+    }
+
+    @Test
+    fun stopReturnsToLiveMode() {
+        engineManager()
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+        manager.stop()
+        assertEquals(PlayMode.Live, manager.mode.value)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+    }
+
+    @Test
+    fun decoderChangeReopensArchiveAtCurrentPosition() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.playArchive(ch, programme)
+        awaitPrepares(1)
+        reportReady()
+        seam.fakePosition = 90_000
+
+        saveChannelPrefs(ChannelPlaybackPrefs(video = DecoderChoice.SOFTWARE))
+        RobolectricUtil.runMainLooperUntil { prepareCount >= 2 }
+
+        val shifted = programme.copy(from = programme.from.plusSeconds(90))
+        assertEquals(listOf(1L to programme, 1L to shifted), fake.archiveCalls)
+        assertEquals(shifted, (manager.mode.value as PlayMode.Archive).request)
+        assertEquals(DecoderChoice.SOFTWARE, engine.codecPolicy.video)
+        assertTrue(fake.resolved.isEmpty())
+    }
+
+    @Test
+    fun restartInArchiveNeverPublishesLive() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.playArchive(ch, programme)
+        awaitPrepares(1)
+        seam.fakePosition = 30_000
+        val seen = mutableListOf<Pair<PlayMode, PlaybackState>>()
+        seam.onStop = { seen += manager.mode.value to manager.state.value }
+
+        manager.restart(ch)
+
+        assertTrue(seen.isNotEmpty())
+        assertTrue(seen.all { it.first is PlayMode.Archive && it.second != PlaybackState.Idle })
+        assertTrue(manager.mode.value is PlayMode.Archive)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        awaitPrepares(2)
+        assertEquals(programme.from.plusSeconds(30), fake.archiveCalls.last().second.from)
+        assertEquals(programme.until, fake.archiveCalls.last().second.until)
+    }
+
+    private fun softwareAudioFailure() {
+        val audio = Format.Builder().setSampleMimeType(MimeTypes.AUDIO_AC3).build()
+        failWith(
+            ExoPlaybackException.createForRenderer(
+                IllegalStateException("decode"), "FfmpegAudioRenderer", 1, audio, C.FORMAT_HANDLED, false,
+                PlaybackException.ERROR_CODE_DECODING_FAILED,
+            ),
+        )
+    }
+
+    @Test
+    fun audioFallbackInSeekableArchiveReleasesFirstAndKeepsPosition() {
+        settingsFlow.value = PlaybackSettings(audioDecoder = DecoderChoice.SOFTWARE)
+        val fake = engineManager()
+        seam.substituteSource = FakeMediaSource(FakeTimeline(FakeTimeline.TimelineWindowDefinition(true, false, 3_600_000_000L)))
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        RobolectricUtil.runMainLooperUntil { (manager.mode.value as PlayMode.Archive).seekable }
+        seam.fakePosition = 600_000
+        seam.events.clear()
+        fake.onResolveArchive = { seam.events += "resolveArchive" }
+
+        softwareAudioFailure()
+        awaitPrepares(2)
+
+        assertEquals(DecoderChoice.HARDWARE, engine.codecPolicy.audio)
+        // One connection: the failed stream is released before the same position is opened again.
+        val shifted = programme.copy(from = programme.from.plusSeconds(600))
+        assertEquals(listOf(1L to programme, 1L to shifted), fake.archiveCalls)
+        assertEquals(listOf("stop", "evict", "resolveArchive", "evict", "prepare"), seam.events)
+    }
+
+    @Test
+    fun restartOfMinuteArchiveFloorsStartToTheMinute() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts").copy(catchupType = "append", catchupSource = "?start={Y}{m}{d}{H}{M}")
+        manager.playArchive(ch, programme)
+        awaitPrepares(1)
+        reportReady()
+        seam.fakePosition = 757_000 // 12:37 in
+
+        manager.restart(ch)
+        awaitPrepares(2)
+
+        // The URL can only say 20:12, so the request (and every position derived from it) says so too.
+        val floored = programme.copy(from = programme.from.plusSeconds(720))
+        assertEquals(floored, fake.archiveCalls.last().second)
+        assertEquals(floored, (manager.mode.value as PlayMode.Archive).request)
+    }
+
+    @Test
+    fun audioFallbackInProgressiveArchiveReopensAtPosition() {
+        settingsFlow.value = PlaybackSettings(audioDecoder = DecoderChoice.SOFTWARE)
+        val fake = engineManager()
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+        seam.fakePosition = 45_000
+        seam.events.clear()
+        fake.onResolveArchive = { seam.events += "resolveArchive" }
+
+        softwareAudioFailure()
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        awaitPrepares(2)
+
+        val shifted = programme.copy(from = programme.from.plusSeconds(45))
+        assertEquals(listOf(1L to programme, 1L to shifted), fake.archiveCalls)
+        assertEquals(listOf("stop", "evict", "resolveArchive", "evict", "prepare"), seam.events)
+        // The fallback stays on the hardware decoder for the reopened stream.
+        assertEquals(DecoderChoice.HARDWARE, engine.codecPolicy.audio)
+    }
+
+    @Test
+    fun liveThenImmediateZapStillEvictsBeforeOpening() {
+        val fake = engineManager()
+        val ch1 = channel(1, "/live/1.ts")
+        manager.playArchive(ch1, programme)
+        awaitPrepares(1)
+        seam.events.clear()
+        fake.onResolve = { seam.events += "resolve" }
+
+        // The live open's eviction can't finish before it is replaced.
+        val gate = CompletableDeferred<Unit>()
+        evictGate = gate
+        manager.play(ch1) // goes live, and is replaced while it is still evicting
+        assertEquals(listOf("stop", "evict"), seam.events)
+        manager.play(channel(2, "/live/2.ts"))
+        gate.complete(Unit)
+        awaitPrepares(2)
+        idleMain()
+
+        assertEquals(listOf(2L), fake.resolved)
+        // Both opens evicted; the second did so before resolving.
+        assertEquals(listOf("stop", "evict", "stop", "evict", "resolve", "prepare"), seam.events)
+        assertEquals("2", exo.currentMediaItem!!.mediaId)
+    }
+
+    @Test
+    fun stopThenPlayAfterArchiveEvictsFirst() {
+        val fake = engineManager()
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+        manager.stop()
+        seam.events.clear()
+        fake.onResolve = { seam.events += "resolve" }
+
+        manager.play(channel(2, "/live/2.ts"))
+        awaitPrepares(2)
+
+        assertEquals(listOf("stop", "evict", "resolve", "prepare"), seam.events)
+    }
+
+    @Test
+    fun zapWhileArchiveEvictingNeverLoadsIt() {
+        val fake = engineManager()
+        val gate = CompletableDeferred<Unit>()
+        evictGate = gate
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        // The archive open is held inside its eviction when the zap comes.
+        assertEquals(listOf("stop", "evict"), seam.events)
+        manager.play(channel(2, "/live/2.ts"))
+        gate.complete(Unit)
+        awaitPrepares(1)
+        idleMain(1_000)
+
+        assertTrue(fake.archiveCalls.isEmpty())
+        assertEquals(listOf(2L), fake.resolved)
+        assertEquals(1, prepareCount)
+        assertEquals("2", exo.currentMediaItem!!.mediaId)
+        assertEquals(PlaybackState.Buffering(2), manager.state.value)
+        assertEquals(PlayMode.Live, manager.mode.value)
+    }
+
+    @Test
+    fun stopWhileArchiveEvictingNeverLoadsIt() {
+        val fake = engineManager()
+        val gate = CompletableDeferred<Unit>()
+        evictGate = gate
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        // The archive open is held inside its eviction when the stop comes.
+        assertEquals(listOf("stop", "evict"), seam.events)
+        manager.stop()
+        gate.complete(Unit)
+        idleMain(1_000)
+
+        assertTrue(fake.archiveCalls.isEmpty())
+        assertEquals(0, prepareCount)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+    }
+
+    @Test
+    fun zapWhileArchiveResolvingNeverLoadsIt() {
+        val fake = engineManager()
+        val gate = CompletableDeferred<Unit>()
+        fake.archiveGate = gate
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        RobolectricUtil.runMainLooperUntil { fake.archiveCalls.size == 1 }
+        fake.archiveGate = null
+
+        manager.play(channel(2, "/live/2.ts"))
+        gate.complete(Unit)
+        awaitPrepares(1)
+        idleMain(1_000)
+
+        assertEquals(1, fake.archiveCalls.size)
+        assertEquals(1, prepareCount)
+        assertEquals("2", exo.currentMediaItem!!.mediaId)
+        assertEquals(PlaybackState.Buffering(2), manager.state.value)
+    }
+
+    @Test
+    fun stopOrReleaseWhileArchiveResolvingNeverLoadsIt() {
+        val fake = engineManager()
+        var gate = CompletableDeferred<Unit>()
+        fake.archiveGate = gate
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        RobolectricUtil.runMainLooperUntil { fake.archiveCalls.size == 1 }
+        manager.stop()
+        gate.complete(Unit)
+        idleMain(1_000)
+        assertEquals(0, prepareCount)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+
+        gate = CompletableDeferred()
+        fake.archiveGate = gate
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        RobolectricUtil.runMainLooperUntil { fake.archiveCalls.size == 2 }
+        manager.release()
+        gate.complete(Unit)
+        idleMain(1_000)
+        assertEquals(0, prepareCount)
+        assertEquals(PlaybackState.Idle, manager.state.value)
     }
 }

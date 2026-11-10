@@ -7,6 +7,10 @@ import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.SettingsSnapshot
 import io.github.loopholetv.data.stalker.FakePortal
 import io.github.loopholetv.data.stalker.StalkerClient
+import io.github.loopholetv.data.xtream.XtreamClient
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.RecordedRequest
 import io.github.loopholetv.data.stalker.StalkerLinkException
 import io.github.loopholetv.data.stalker.StalkerSessions
 import io.github.loopholetv.data.stalker.testHttp
@@ -17,7 +21,10 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.CoroutineExceptionHandler
 import io.github.loopholetv.data.settings.SETTINGS_FIRST_VALUE_TIMEOUT_MS
+import io.github.loopholetv.player.catchup.ArchiveRequest
 import java.io.IOException
+import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -55,6 +62,7 @@ class StreamResolverTest {
     /** (ms, create_link calls so far) for every delayMs call. */
     private val delays = CopyOnWriteArrayList<Pair<Long, Int>>()
     private var delayHook: suspend (Long) -> Unit = {}
+    private var deviceZone: ZoneId = ZoneId.of("UTC")
 
     @Before fun setUp() {
         server = MockWebServer().also { it.dispatcher = portal; it.start() }
@@ -76,7 +84,15 @@ class StreamResolverTest {
         sessions = sessions,
         client = client,
         delayMs = { ms -> delays += ms to portal.count("create_link"); delayHook(ms) },
+        zone = { deviceZone },
+        xtream = XtreamClient(testHttp()),
+        storeArchiveInfo = { id, zone, ext -> stored += Triple(id, zone, ext); playlists[id] = playlists.getValue(id).copy(xtreamTimeZone = zone, xtreamArchiveExt = ext) },
     )
+
+    private val stored = CopyOnWriteArrayList<Triple<Long, String?, String?>>()
+
+    private fun xtreamLoginJson(zone: String) =
+        """{"user_info":{"auth":1,"status":"Active","max_connections":"1","allowed_output_formats":["m3u8"]},"server_info":{"timezone":"$zone"}}"""
 
     private fun m3u(id: Long, ua: String? = null) = PlaylistEntity(
         id = id, name = "List", type = PlaylistType.M3U, url = "http://example.test/list.m3u", xtreamServer = null,
@@ -99,6 +115,157 @@ class StreamResolverTest {
         referrer = referrer, catchupType = null, catchupDays = null, catchupSource = null, epgChannelId = null,
         needsLink = needsLink,
     )
+
+    private val archiveFrom = Instant.parse("2026-11-10T20:00:00Z")
+    private val archiveRequest = ArchiveRequest(archiveFrom, archiveFrom.plusSeconds(3600))
+    private val archiveNow = Instant.parse("2026-11-10T22:30:00Z")
+
+    private fun xtreamPlaylist(id: Long, zone: String? = "Europe/London", ext: String? = "m3u8") = PlaylistEntity(
+        id = id, name = "X", type = PlaylistType.XTREAM, url = null, xtreamServer = "http://example.test:8080",
+        xtreamUser = "archiveuser", xtreamPass = "archivepass", epgUrlsFromSource = "", manualEpgUrl = null,
+        lastRefreshedAt = null, lastError = null, xtreamTimeZone = zone, xtreamArchiveExt = ext,
+    )
+
+    private fun archiveChannel(
+        playlistId: Long, key: String = "42", url: String = "http://example.test:8080/live/archiveuser/archivepass/42.ts", type: String? = "xc",
+        days: Int? = 3, source: String? = null, correction: Int = 0, ua: String? = null, referrer: String? = null,
+    ) = channel(playlistId = playlistId, url = url, ua = ua, referrer = referrer)
+        .copy(key = key, catchupType = type, catchupDays = days, catchupSource = source, catchupCorrectionMinutes = correction)
+
+    @Test fun xtreamArchiveUrlFromPlaylist() = runBlocking {
+        playlists[3] = xtreamPlaylist(3)
+        val s = resolver().resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertEquals("http://example.test:8080/timeshift/archiveuser/archivepass/60/2026-11-10:20-00/42.m3u8", s.url)
+    }
+
+    @Test fun airingProgrammeIsAskedForUpToItsStop() = runBlocking {
+        playlists[3] = xtreamPlaylist(3, zone = "UTC")
+        // Watch from start, ten minutes into a programme still airing: one request to its stop.
+        val tenMinutesIn = archiveFrom.plusSeconds(600)
+        val s = resolver().resolveArchive(archiveChannel(3), archiveRequest, tenMinutesIn)!!
+        assertEquals("http://example.test:8080/timeshift/archiveuser/archivepass/60/2026-11-10:20-00/42.m3u8", s.url)
+
+        val xc = archiveChannel(1, url = "http://example.test:8080/live/u/p/42.ts", type = "xc")
+        assertTrue(resolver().resolveArchive(xc, archiveRequest, tenMinutesIn)!!.url.contains("/60/"))
+    }
+
+    @Test fun airingTemplateArchiveRunsToStopUnlessItReadsNow() = runBlocking {
+        val tenMinutesIn = archiveFrom.plusSeconds(600)
+        val stop = archiveRequest.until.epochSecond
+        val ends = archiveChannel(1, url = "http://example.test/live/1.ts", type = "append", source = "?d={duration}&e={utcend}")
+        assertEquals("http://example.test/live/1.ts?d=3600&e=$stop", resolver().resolveArchive(ends, archiveRequest, tenMinutesIn)!!.url)
+        // A template that also reads the current time keeps it true.
+        val relative = archiveChannel(1, url = "http://example.test/live/1.ts", type = "append", source = "?o={offset}")
+        assertEquals("http://example.test/live/1.ts?o=600", resolver().resolveArchive(relative, archiveRequest, tenMinutesIn)!!.url)
+    }
+
+    @Test fun xtreamArchiveDefaultsToTsAndDeviceZone() = runBlocking {
+        playlists[3] = xtreamPlaylist(3, zone = null, ext = null)
+        deviceZone = ZoneId.of("Asia/Tokyo")
+        val s = resolver().resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertEquals("http://example.test:8080/timeshift/archiveuser/archivepass/60/2026-11-11:05-00/42.ts", s.url)
+    }
+
+    private fun loginPlaylist(id: Long) = xtreamPlaylist(id, zone = null, ext = null).copy(xtreamServer = base)
+
+    private fun serveLogin(body: () -> MockResponse): CopyOnWriteArrayList<String> {
+        val paths = CopyOnWriteArrayList<String>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse { paths += request.path.orEmpty(); return body() }
+        }
+        return paths
+    }
+
+    @Test fun nullZoneLearnsServerZoneOnceAndStoresIt() = runBlocking {
+        val paths = serveLogin { MockResponse().setBody(xtreamLoginJson("Asia/Tokyo")) }
+        playlists[3] = loginPlaylist(3)
+        deviceZone = ZoneId.of("UTC")
+        val r = resolver()
+        val first = r.resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertEquals(1, paths.size)
+        assertTrue(first.url, "/2026-11-11:05-00/42.m3u8" in first.url)
+        assertEquals(listOf(Triple(3L, "Asia/Tokyo", "m3u8")), stored.toList())
+        val second = r.resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertEquals(1, paths.size)
+        assertEquals(first.url, second.url)
+    }
+
+    @Test fun failedLoginFallsBackToDeviceZoneWithoutRetry() = runBlocking {
+        val paths = serveLogin { MockResponse().setResponseCode(500) }
+        playlists[3] = loginPlaylist(3)
+        deviceZone = ZoneId.of("Asia/Tokyo")
+        val r = resolver()
+        val s = r.resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertTrue(s.url, "/2026-11-11:05-00/42.ts" in s.url)
+        r.resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertEquals(1, paths.size)
+        assertTrue(stored.isEmpty())
+    }
+
+    @Test fun archiveUsesShownTimes() = runBlocking {
+        playlists[3] = xtreamPlaylist(3, zone = "+02:00")
+        val shifted = archiveChannel(3).copy(epgShiftMinutes = 60)
+        val s = resolver().resolveArchive(shifted, archiveRequest, archiveNow)!!
+        assertTrue(s.url, "/2026-11-10:22-00/" in s.url)
+    }
+
+    @Test fun m3uArchiveAppliesCorrection() = runBlocking {
+        val ch = archiveChannel(1, url = "http://example.test/live/1.ts", type = "append", source = "?t={Y}{m}{d}{H}", correction = 60)
+        val s = resolver().resolveArchive(ch, archiveRequest, archiveNow)!!
+        assertEquals("http://example.test/live/1.ts?t=2026111019", s.url)
+        val def = archiveChannel(1, url = "http://example.test/live/1.ts", type = "default", source = "http://example.test/a/{Y}{m}{d}{H}", correction = 60)
+        assertEquals("http://example.test/a/2026111019", resolver().resolveArchive(def, archiveRequest, archiveNow)!!.url)
+    }
+
+    @Test fun parsedPlaylistCorrectionShiftsArchiveTimeBack() = runBlocking {
+        val playlist = "#EXTM3U\n#EXTINF:-1 catchup=\"append\" catchup-days=\"3\" catchup-source=\"?t={H}\" catchup-correction=\"+1\",One\nhttp://example.test/live/1.ts\n"
+        var entry: io.github.loopholetv.data.m3u.M3uEntry? = null
+        io.github.loopholetv.data.m3u.M3uParser.parse(playlist.byteInputStream()) { entry = it }
+        val e = entry!!
+        assertEquals(60, e.catchupCorrectionMinutes)
+        val ch = channel(url = e.url).copy(
+            catchupType = e.catchup, catchupDays = e.catchupDays, catchupSource = e.catchupSource,
+            catchupCorrectionMinutes = e.catchupCorrectionMinutes,
+        )
+        assertEquals("http://example.test/live/1.ts?t=19", resolver().resolveArchive(ch, archiveRequest, archiveNow)!!.url)
+    }
+
+    @Test fun stalkerAndNoCatchupResolveNull() = runBlocking {
+        val r = resolver()
+        assertEquals(null, r.resolveArchive(archiveChannel(2), archiveRequest, archiveNow))
+        assertEquals(null, r.resolveArchive(archiveChannel(1, url = "http://example.test/live/1.ts", type = null, days = null), archiveRequest, archiveNow))
+        assertTrue(delays.isEmpty())
+    }
+
+    @Test fun archiveGoesThroughUdpProxyAndUserAgent() = runBlocking {
+        playlists[1] = m3u(1, ua = "PlaylistUA")
+        settings = AppSettings(udpProxy = "192.168.1.1:4022")
+        val udp = archiveChannel(1, url = "udp://@239.0.0.1:1234", type = "append", source = "?t={H}", referrer = "http://ref.example.test/")
+        val s = resolver().resolveArchive(udp, archiveRequest, archiveNow)!!
+        assertTrue(s.url, s.url.startsWith("http://192.168.1.1:4022/udp/239.0.0.1:1234"))
+        assertEquals("PlaylistUA", s.userAgent)
+        assertEquals(mapOf("Referer" to "http://ref.example.test/"), s.headers)
+        val own = resolver().resolveArchive(archiveChannel(1, url = "http://example.test/live/1.ts", type = "append", source = "?t={H}", ua = "ChannelUA"), archiveRequest, archiveNow)!!
+        assertEquals("ChannelUA", own.userAgent)
+    }
+
+    @Test fun invalidZoneFallsBackToDevice() = runBlocking {
+        playlists[3] = xtreamPlaylist(3, zone = "Mars/Base")
+        deviceZone = ZoneId.of("Asia/Tokyo")
+        val s = resolver().resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertTrue(s.url, "/2026-11-11:05-00/" in s.url)
+    }
+
+    @Test fun archiveStreamToStringRedacted() = runBlocking {
+        playlists[3] = xtreamPlaylist(3)
+        val text = resolver().resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!.toString()
+        assertFalse(text, "archiveuser" in text || "archivepass" in text || "timeshift" in text)
+        playlists[1] = m3u(1)
+        val tokenised = archiveChannel(1, type = "shift", url = "http://example.test/live/1.ts?token=sekret")
+        val t2 = resolver().resolveArchive(tokenised, archiveRequest, archiveNow)!!
+        assertTrue(t2.url, "utc=" in t2.url)
+        assertFalse(t2.toString().contains("sekret"))
+    }
 
     @Test fun uaPrecedence() = runBlocking {
         val r = resolver()

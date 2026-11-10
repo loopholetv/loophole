@@ -106,4 +106,57 @@ class GuideTimeMathTest {
         assertEquals(0f, blockStartFraction(programme(at(10, 0), at(12, 0)), w), 1e-6f)
         assertEquals(0.5f, blockStartFraction(programme(at(12, 30), at(13, 0)), w), 1e-6f)
     }
+
+    // --- Past navigation on channels with an archive ---
+
+    @Test fun shiftWindowClampsToRowEarliest() {
+        val now = at(11, 47)
+        val w = initialWindow(now, zone)
+        val earliest = now.minus(Duration.ofDays(2)) // 11:47 two days ago
+        val limit = floorToHalfHour(earliest, zone) // 11:30 two days ago
+        // Back one step from now goes into the past.
+        assertEquals(TimeWindow(at(11, 0), at(13, 0)), shiftWindow(w, -1, now, zone, at(20, 0), earliest))
+        // Never further back than the half hour holding the archive limit.
+        val oldest = shiftWindow(w, -10_000, now, zone, at(20, 0), earliest)
+        assertEquals(TimeWindow(limit, limit + WINDOW_LENGTH), oldest)
+        assertEquals(oldest, shiftWindow(oldest, -1, now, zone, at(20, 0), earliest))
+        // And forward again, all the way back to the now window.
+        assertEquals(w, shiftWindow(oldest, 96, now, zone, at(20, 0), earliest))
+        // Without an archive: the now window is the limit (unchanged).
+        assertEquals(w, shiftWindow(w, -1, now, zone, at(20, 0), earliest = null))
+    }
+
+    @Test fun shiftWindowFromThePastOnARowWithoutArchiveNeverJumps() {
+        val now = at(11, 47)
+        val past = TimeWindow(at(8, 0), at(10, 0))
+        // Left there is refused (the strip then goes to the groups), not a jump to now.
+        assertEquals(past, shiftWindow(past, -1, now, zone, at(20, 0), earliest = null))
+        // Right moves forward by one step.
+        assertEquals(TimeWindow(at(8, 30), at(10, 30)), shiftWindow(past, 1, now, zone, at(20, 0), earliest = null))
+    }
+
+    @Test fun rowEarliestComesFromTheChannelsArchive() {
+        val now = at(11, 47)
+        assertEquals(null, rowEarliest(channel(catchupType = null, days = null), now))
+        assertEquals(now.minus(Duration.ofDays(3)), rowEarliest(channel(catchupType = "shift", days = 3), now))
+    }
+
+    @Test fun playableRangeMatchesTheArchive() {
+        val now = at(11, 47)
+        val spec = io.github.loopholetv.data.catchup.catchupSpec("shift", 1, null, "http://example.test/live/1")!!
+        val range = playableRange(spec, now)!!
+        val starts = listOf(
+            now.minus(Duration.ofDays(2)), now.minus(Duration.ofDays(1)), now.minus(Duration.ofDays(1)).minusSeconds(1),
+            at(11, 0), now.minus(spec.liveLag), now.minus(spec.liveLag).minusSeconds(1), now,
+        )
+        for (s in starts) assertEquals("start $s", spec.canPlay(s, now), s in range)
+        assertEquals(null, playableRange(null, now))
+    }
+
+    private fun channel(catchupType: String?, days: Int?) = io.github.loopholetv.data.db.ChannelEntity(
+        id = 1, playlistId = 1, key = "k", number = 1, name = "Ch", streamUrl = "http://example.test/live/1",
+        logo = null, groupTitle = "G", groupOrder = 0, sortOrder = 0, tvgId = null, tvgName = null,
+        userAgent = null, referrer = null, catchupType = catchupType, catchupDays = days, catchupSource = null,
+        epgChannelId = "e",
+    )
 }

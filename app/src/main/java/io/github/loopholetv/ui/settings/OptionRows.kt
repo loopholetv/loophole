@@ -141,6 +141,9 @@ class ChoiceHost {
     fun open(key: String, spec: ChoiceSpec) { returnKey = key; this.spec = spec }
     fun close() { spec = null }
 
+    /** Focus goes to [key] instead when the open list closes. */
+    fun returnTo(key: String) { returnKey = key }
+
     @Composable
     fun Effects() {
         BackHandler(enabled = spec != null) { close() }

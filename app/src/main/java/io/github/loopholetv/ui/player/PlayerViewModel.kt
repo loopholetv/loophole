@@ -1,16 +1,13 @@
 package io.github.loopholetv.ui.player
 
 import io.github.loopholetv.ui.splash.StartGate
-import android.text.format.DateFormat
+import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.viewmodel.initializer
-import androidx.lifecycle.viewmodel.viewModelFactory
-import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.data.catchup.catchup
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.ChannelScope
@@ -20,6 +17,7 @@ import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.data.settings.PlaybackSettings
+import io.github.loopholetv.data.settings.RemoteSettings
 import io.github.loopholetv.data.settings.SubtitleStyle
 import io.github.loopholetv.player.PipGate
 import io.github.loopholetv.player.Playback
@@ -28,6 +26,8 @@ import io.github.loopholetv.player.PreviewHold
 import io.github.loopholetv.player.SleepState
 import io.github.loopholetv.player.SleepTimer
 import io.github.loopholetv.player.StreamTags
+import io.github.loopholetv.player.catchup.PlayMode
+import io.github.loopholetv.player.catchup.ProgrammeLookup
 import io.github.loopholetv.ui.guide.GuideFormat
 import io.github.loopholetv.ui.manage.ChannelEdit
 import kotlinx.coroutines.CancellationException
@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -96,6 +97,15 @@ class PlayerViewModel(
     private val savedState: SavedStateHandle = SavedStateHandle(),
     /** Cleared as soon as the screen heads back to the guide (no picture-in-picture on the way out). */
     private val pipGate: PipGate? = null,
+    /** Remote-control behaviour: what the seek keys do and the button bindings. */
+    remote: Flow<RemoteSettings> = flowOf(RemoteSettings()),
+    /** The guide programme at a shown instant; by default the one [nowAndNext] has airing then. */
+    programmeLookup: ProgrammeLookup? = null,
+    /** Replay the archive from this shown instant instead of playing live. */
+    private val archiveFrom: Instant? = null,
+    elapsedMs: () -> Long = SystemClock::elapsedRealtime,
+    /** Times on the catch-up bar. */
+    format: GuideFormat = GuideFormat(true, ZoneId.systemDefault()),
 ) : ViewModel() {
 
     private val toggle = toggleFavourite
@@ -113,13 +123,13 @@ class PlayerViewModel(
     private val _favourites = MutableStateFlow<Set<ChannelRef>>(emptySet())
     val favourites: StateFlow<Set<ChannelRef>> = _favourites.asStateFlow()
 
+    private val dialogs = ChannelDialogs(::hideOverlay)
+
     /** The channel whose options dialog is open (long OK / Menu); null when none. */
-    private val _optionsFor = MutableStateFlow<ChannelEntity?>(null)
-    val optionsFor: StateFlow<ChannelEntity?> = _optionsFor.asStateFlow()
+    val optionsFor: StateFlow<ChannelEntity?> = dialogs.optionsFor
 
     /** The channel edit picked from the options (its dialog, or a write in progress); null when none. */
-    private val _editing = MutableStateFlow<ChannelEditing?>(null)
-    val editing: StateFlow<ChannelEditing?> = _editing.asStateFlow()
+    val editing: StateFlow<ChannelEditing?> = dialogs.editing
 
     /** True once the screen must go back to the guide (the last channel of the scope was hidden). */
     private val _exitToGuide = MutableStateFlow(false)
@@ -128,7 +138,6 @@ class PlayerViewModel(
     /** Serialises channel changes so rapid presses each step from the previous target. */
     private val switching = Mutex()
     private var overlayJob: Job? = null
-    private var entryJob: Job? = null
     private var messageJob: Job? = null
     private var settleJob: Job? = null
     private var programmeJob: Job? = null
@@ -168,7 +177,7 @@ class PlayerViewModel(
     private val menu = QuickMenuController(
         scope = viewModelScope,
         playback = playback,
-        items = quickItems(pipSupported),
+        itemsNow = { quickItems(pipSupported, startOver = catchup.startOverOffered(_ui.value?.channel)) },
         sleepTimer = sleepTimer,
         updatePlayback = updatePlayback,
         host = object : QuickMenuHost {
@@ -179,6 +188,7 @@ class PlayerViewModel(
                 favourite = _ui.value?.favourite == true,
             )
             override fun showChannels() = showOverlay()
+            override fun watchFromStart() = this@PlayerViewModel.watchFromStart()
             override fun toggleFavourite() = this@PlayerViewModel.toggleFavourite()
             override fun openOptions() { _ui.value?.channel?.let(::openOptions) }
             override fun saveAspect(mode: AspectMode) {
@@ -208,6 +218,35 @@ class PlayerViewModel(
 
     private val opener = ChannelOpener(playback, channelPlayback)
 
+    private val catchup = PlayerCatchup(
+        playback, programmeLookup ?: airingLookup(nowAndNext), clock, elapsedMs, format, viewModelScope,
+        object : CatchupHost {
+            override fun showOverlayOnBar() {
+                showOverlay()
+                update { it.copy(barFocused = true) }
+            }
+            override fun onBarGone() { if (_ui.value?.overlayVisible == true) hideOverlay() }
+            override fun showMessage(text: String) = this@PlayerViewModel.showMessage(text)
+            override fun onUserInput() = this@PlayerViewModel.onUserInput()
+            // Dropped if an archive starts while the channel's settings are read.
+            override fun openLive(channel: ChannelEntity) { viewModelScope.launch { open(channel, liveOnly = true) } }
+        },
+    )
+
+    private val numbers = NumberEntry(viewModelScope, { _ui.value?.numberEntry }, { e -> update { it.copy(numberEntry = e) } }, ::jump)
+
+    /** The catch-up seek bar's content; null while live. */
+    val catchupBar: StateFlow<CatchupBarUi?> = catchup.bar
+
+    /** Whether the catch-up bar shows (it hides with the overlay timeout, never while paused). */
+    val barVisible: StateFlow<Boolean> = catchup.barVisible
+
+    /** The archive failed to play: its error card offers Try again and Watch live. */
+    val archiveFailed: StateFlow<Boolean> = catchup.failed
+
+    private var remoteSettings = RemoteSettings()
+
+
     /** The channel last handed to another player (played here if that player can't open). */
     private var handedOff: ChannelEntity? = null
 
@@ -231,7 +270,10 @@ class PlayerViewModel(
                 _aspect.value = p.aspect ?: AspectMode.FIT
             }
         }
-        viewModelScope.launch { merge(playback.tracks, _aspect, sleep).collect { menu.refresh() } }
+        viewModelScope.launch {
+            merge(playback.tracks, _aspect, sleep, catchupBar.map { it == null }.distinctUntilChanged()).collect { menu.refresh() }
+        }
+        viewModelScope.launch { remote.catch { }.collect { remoteSettings = it } }
         // Not lifecycle-bound: the expiry is not replayed, and the exit must not be missed.
         sleepTimer?.let { timer ->
             viewModelScope.launch {
@@ -274,7 +316,9 @@ class PlayerViewModel(
             startGate.await()
             // The channel previewing in the guide is already loading or playing: this only resumes it
             // (or hands it to its external player).
-            if (!exited) open(_ui.value?.channel ?: channel)
+            val first = _ui.value?.channel ?: channel
+            // From the guide's past: the archive (recordings always play here), else live.
+            if (!exited && archiveFrom?.let { catchup.openFirst(first, it) } != true) open(first)
             started = true
             restartHideTimer()
             playback.state.collect { s -> update { it.withPlayback(s) } }
@@ -302,29 +346,7 @@ class PlayerViewModel(
     }
 
     fun digit(d: Int) {
-        require(d in 0..9) { "digit $d" }
-        if (exited) return
-        val entry = (_ui.value ?: return).numberEntry.orEmpty() + d
-        update { it.copy(numberEntry = entry) }
-        entryJob?.cancel()
-        entryJob = null
-        if (entry.length >= MAX_NUMBER_DIGITS) {
-            jump(entry)
-        } else {
-            entryJob = viewModelScope.launch {
-                delay(NUMBER_ENTRY_IDLE_MS)
-                entryJob = null
-                jump(entry)
-            }
-        }
-    }
-
-    /** OK while typing a number: jump now instead of waiting. */
-    private fun commitNumberEntry() {
-        val entry = _ui.value?.numberEntry ?: return
-        entryJob?.cancel()
-        entryJob = null
-        jump(entry)
+        if (!exited && _ui.value != null) numbers.digit(d)
     }
 
     private fun jump(entry: String) {
@@ -362,8 +384,10 @@ class PlayerViewModel(
 
     private suspend fun switchTo(channel: ChannelEntity, playNow: Boolean, fromHistory: Boolean = false) {
         if (exited) return
+        // A new channel starts live: the archive, its bar and its resume point are forgotten.
+        catchup.clear()
         update {
-            it.copy(channel = channel, now = null, next = null, favourite = channel.ref in _favourites.value)
+            it.copy(channel = channel, now = null, next = null, favourite = channel.ref in _favourites.value, barFocused = false)
                 .withPlayback(playback.state.value)
         }
         showBanner()
@@ -396,10 +420,13 @@ class PlayerViewModel(
 
     /**
      * Opens [channel]: plays it here, or, when it is set to an external player, stops our stream and
-     * hands a fresh link to that app. False when nothing was played here.
+     * hands a fresh link to that app. False when nothing was played here. [liveOnly]: going live
+     * from a recording, dropped if an archive started meanwhile.
      */
-    private suspend fun open(channel: ChannelEntity): Boolean {
-        val result = opener.open(channel) { !exited && _ui.value?.channel?.id == channel.id }
+    private suspend fun open(channel: ChannelEntity, liveOnly: Boolean = false): Boolean {
+        val result = opener.open(channel) {
+            !exited && _ui.value?.channel?.id == channel.id && !(liveOnly && catchup.active)
+        }
         if (result == Opened.Dropped) return false
         notPlayedHere = result == Opened.ExternalFailed
         if (result == Opened.Here) return true
@@ -440,15 +467,25 @@ class PlayerViewModel(
         _ui.value?.channel?.let(playback::play)
     }
 
-    /** Leaving for the guide (Back from bare video, the TV guide tile): settle, then ignore input. */
-    fun leave() {
+    /**
+     * Leaving for the guide (Back from bare video, the TV guide tile): settle, then ignore input.
+     * A recording or a paused live stream is switched to the channel live here ([toLive]), so the
+     * guide's preview shows live; that never goes to an external player.
+     */
+    fun leave(toLive: Boolean = true) {
         pipGate?.playerShowing = false
         menu.flushDelay()
+        val live = _ui.value?.channel?.takeIf { toLive && settleJob == null && isRecording(it) }
+        catchup.clear()
         if (exited) return
-        flushPendingZap()
-        entryJob?.cancel()
+        if (live != null) playback.play(live) else flushPendingZap()
+        numbers.cancel()
         exited = true
     }
+
+    /** Replaying [channel]'s archive, or its live stream paused. */
+    private fun isRecording(channel: ChannelEntity): Boolean =
+        catchup.active || (playback.mode.value as? PlayMode.Archive)?.channelId == channel.id
 
     /** The slim info banner (no row, no focus); keeps the full overlay if that is up. */
     private fun showBanner() {
@@ -459,7 +496,7 @@ class PlayerViewModel(
     /** The full overlay: banner plus channel row (focus goes to the row). */
     fun showOverlay() {
         val ui = _ui.value ?: return
-        update { it.copy(overlayVisible = true, bannerVisible = false) }
+        update { it.copy(overlayVisible = true, bannerVisible = false, barFocused = false) }
         restartHideTimer()
         // Always opens on the channels (History is left by closing the overlay).
         val row = this.row.value
@@ -513,7 +550,7 @@ class PlayerViewModel(
         stayAwake()
         if (exited || inPip || _ui.value == null) return
         // Not over the options or an edit (the tail of a held OK must not stack a second dialog).
-        if (_optionsFor.value != null || _editing.value != null || menu.isOpen) return
+        if (dialogs.isOpen || menu.isOpen) return
         hideOverlay()
         menu.open()
     }
@@ -534,19 +571,17 @@ class PlayerViewModel(
     fun closePanel() = menu.closePanel()
 
     /** The quick menu, one of its lists, or a channel's options or edit is open. */
-    fun dialogOpen(): Boolean = menu.isOpen || _optionsFor.value != null || _editing.value != null
+    fun dialogOpen(): Boolean = menu.isOpen || dialogs.isOpen
 
     /** In picture-in-picture only the video shows: every overlay, menu and number entry closes. */
     fun onPipChanged(inPip: Boolean) {
         this.inPip = inPip
         if (!inPip) return
         hideOverlay()
-        entryJob?.cancel()
-        entryJob = null
-        update { it.copy(numberEntry = null) }
+        catchup.hideBar()
+        numbers.cancel()
         menu.dismiss()
-        _optionsFor.value = null
-        _editing.value = null
+        dialogs.closeAll()
     }
 
     /**
@@ -570,26 +605,17 @@ class PlayerViewModel(
         openOptions(channel)
     }
 
-    private fun openOptions(channel: ChannelEntity) {
-        // Already open (e.g. the tail of the held press that opened it): keep that channel. Nor
-        // while an edit's dialog is up (a held OK must not open a second panel under it).
-        if (_optionsFor.value != null || _editing.value != null) return
-        // The dialog is its own window: nothing of the overlay may stay up (or time out) under it.
-        hideOverlay()
-        _optionsFor.value = channel
-    }
+    private fun openOptions(channel: ChannelEntity) = dialogs.openOptions(channel)
 
     fun dismissOptions() {
         stayAwake()
-        _optionsFor.value = null
+        dialogs.dismissOptions()
     }
 
     /** An edit row of the options (from [channelEditOptions]): closes the options, opens the edit. */
     fun pickEdit(channel: ChannelEntity, edit: ChannelEdit) {
         stayAwake()
-        if (exited) return
-        _optionsFor.value = null
-        _editing.value = ChannelEditing(channel, edit)
+        if (!exited) dialogs.pickEdit(channel, edit)
     }
 
     /**
@@ -599,8 +625,7 @@ class PlayerViewModel(
      */
     fun onEditDone() {
         stayAwake()
-        val done = _editing.value ?: return
-        _editing.value = null
+        val done = dialogs.takeDone() ?: return
         viewModelScope.launch { switching.withLock { applyEdit(done.channel.id) } }
     }
 
@@ -608,22 +633,8 @@ class PlayerViewModel(
         if (exited) return
         val fresh = channels.byId(id) ?: return
         val current = _ui.value?.channel ?: return
-        if (!fresh.visible) {
-            footer.update { r ->
-                val kept = r.channels.filter { it.id != id }
-                if (kept.size == r.channels.size) r else r.copy(channels = kept, currentIndex = kept.indexOfFirst { it.id == r.currentId })
-            }
-        } else {
-            footer.update { r -> r.copy(channels = r.channels.map { if (it.id == id) fresh else it }) }
-            // The tile's title (its guide or shift may have changed), outside the switching lock.
-            viewModelScope.launch {
-                val title = footer.titlesFor(listOf(fresh))[id]
-                footer.update { r ->
-                    if (r.channels.none { it.id == id }) r
-                    else r.copy(titles = if (title != null) r.titles + (id to title) else r.titles - id)
-                }
-            }
-        }
+        // The tile's title reloads outside the switching lock.
+        footer.onEdited(fresh)
         if (id != current.id) return
         if (fresh.visible) {
             // Now/next stay until the reload replaces them: no "No information" flash.
@@ -652,7 +663,7 @@ class PlayerViewModel(
     private fun exitQuietly() {
         settleJob?.cancel()
         settleJob = null
-        leave()
+        leave(toLive = false)
         menu.dismiss()
         _exitToGuide.value = true
     }
@@ -676,12 +687,13 @@ class PlayerViewModel(
     fun hideOverlay() {
         overlayJob?.cancel()
         overlayJob = null
-        update { it.copy(overlayVisible = false, bannerVisible = false) }
+        update { it.copy(overlayVisible = false, bannerVisible = false, barFocused = false) }
     }
 
-    /** Any key while the banner or overlay is up restarts its [OVERLAY_TIMEOUT_MS]. */
+    /** Any key while the banner, overlay or catch-up bar is up restarts its [OVERLAY_TIMEOUT_MS]. */
     fun onUserInput() {
         stayAwake()
+        catchup.onInput()
         val ui = _ui.value ?: return
         if (ui.overlayVisible || ui.bannerVisible) restartHideTimer()
     }
@@ -691,7 +703,7 @@ class PlayerViewModel(
         overlayJob = viewModelScope.launch {
             delay(OVERLAY_TIMEOUT_MS)
             overlayJob = null
-            update { it.copy(overlayVisible = false, bannerVisible = false) }
+            update { it.copy(overlayVisible = false, bannerVisible = false, barFocused = false) }
         }
     }
 
@@ -719,13 +731,12 @@ class PlayerViewModel(
         val ui = _ui.value ?: return false
         return when {
             ui.numberEntry != null -> {
-                entryJob?.cancel()
-                entryJob = null
-                update { it.copy(numberEntry = null) }
+                numbers.cancel()
                 true
             }
-            ui.overlayVisible || ui.bannerVisible -> {
+            ui.overlayVisible || ui.bannerVisible || barVisible.value -> {
                 hideOverlay()
+                catchup.hideBar()
                 true
             }
             else -> {
@@ -736,47 +747,81 @@ class PlayerViewModel(
     }
 
     /**
-     * Key-down routing; true = consumed. Channel Up/Down (and Page Up/Down) always zap. Digits
-     * always enter a number, and OK commits one being typed. Without the full overlay (bare video
-     * or banner) D-pad Up, Down and OK open it, except OK on bare video with the error card, where
-     * it is Try again. With the full overlay the D-pad belongs to the channel row
-     * and only restarts the hide timer. A channel changes only by OK on a row tile, a channel key
-     * or a number.
+     * Key-down routing (see [routePlayerKey]); true = consumed. Digits always enter a number, and
+     * OK commits one being typed; bound buttons (channel keys, Rewind, Play/Pause…) act everywhere.
+     * Without the full overlay (bare video or banner) D-pad Up and Down open it and never change
+     * channel, and OK opens it too (on the catch-up bar while replaying), except OK on bare video
+     * with an error card, where it is Try again. With the full overlay the D-pad belongs to it and
+     * only restarts the hide timer. [repeatCount] sizes held seek keys; their key-up ([onKeyUp])
+     * commits one seek.
      */
-    fun onKey(keyCode: Int): Boolean {
+    fun onKey(keyCode: Int, repeatCount: Int = 0): Boolean {
         val ui = _ui.value ?: return false
         if (exited) return false
         if (consumeSleepWarning()) return true
-        when (keyCode) {
-            KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_UP -> { channelUp(); return true }
-            KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_DOWN -> { channelDown(); return true }
-        }
-        digitOf(keyCode)?.let { digit(it); onUserInput(); return true }
-        val isOk = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER ||
-            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
-        if (isOk && ui.numberEntry != null) {
-            commitNumberEntry()
-            return true
-        }
-        if (ui.overlayVisible) {
+        val route = routePlayerKey(ui.keyState(catchup.active, archiveFailed.value), keyCode, remoteSettings)
+        if (route == PlayerKeyRoute.Pass) {
             onUserInput()
             return false
         }
-        return when {
-            // Up/Down never zap: they open the full overlay (focus on the current tile).
-            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> { showOverlay(); true }
-            // Bare video with the error card: OK is its Try again (the screen consumes OK before
-            // the button sees it). With the banner up: the overlay.
-            isOk -> { if (ui.error != null && !ui.bannerVisible) retry() else showOverlay(); true }
-            else -> { onUserInput(); false }
-        }
+        perform(route, ui.channel, keyCode, repeatCount)
+        return true
     }
 
-    /** The screen came (back) to the foreground: resume if leaving the app stopped playback. */
+    private fun perform(route: PlayerKeyRoute, channel: ChannelEntity, keyCode: Int, repeatCount: Int) {
+        if (!catchup.perform(route, channel, keyCode, repeatCount)) performPlayerRoute(route)
+    }
+
+    internal fun commitNumber() = numbers.commit()
+
+    /** A button bound to the guide: leave for it. */
+    internal fun goToGuide() {
+        leave()
+        _exitToGuide.value = true
+    }
+
+    internal fun openSearch() { _events.trySend(PlayerEvent.OpenSearch) }
+
+    /** Opens the quick menu straight on [item]'s list. */
+    internal fun openQuickPanel(item: QuickItem) {
+        openQuickMenu()
+        if (menu.isOpen) menu.openPanel(item)
+    }
+
+    /** A key went up: releasing the held seek key commits its batched seek. */
+    fun onKeyUp(keyCode: Int) = catchup.onKeyUp(keyCode)
+
+    /**
+     * OK clicked at the root (bare video or banner). On the archive's error card it presses the
+     * button that has focus ([watchLiveFocused]: Watch live, else Try again).
+     */
+    fun onRootClick(watchLiveFocused: Boolean = false) {
+        if (archiveFailed.value && watchLiveFocused && _ui.value?.let { !it.bannerVisible } == true) watchLive()
+        else onKey(KeyEvent.KEYCODE_DPAD_CENTER)
+    }
+
+    /** A catch-up bar button. */
+    fun onTransport(button: TransportButton) { current()?.let { catchup.transport(it, button) } }
+
+    /** Leaves the archive (or a live pause) for the live stream. */
+    fun watchLive() { current()?.let(catchup::goLive) }
+
+    /** Try again on the archive's error card: opens it again where it failed. */
+    fun retryArchive() { current()?.let(catchup::retry) }
+
+    /** Replays the programme airing now from its start. */
+    fun watchFromStart() { current()?.let(catchup::watchFromStart) }
+
+    private fun current(): ChannelEntity? = if (exited) null else _ui.value?.channel
+
+    /**
+     * The screen came (back) to the foreground: resume if leaving the app stopped playback, live
+     * or the archive where it was. A pause (live or archive) stays paused.
+     */
     fun onScreenStarted() {
         if (exited || !started || notPlayedHere) return
         val ui = _ui.value ?: return
-        if (playback.state.value is PlaybackState.Idle) playback.play(ui.channel)
+        if (!catchup.onStarted(ui.channel) && playback.state.value is PlaybackState.Idle) playback.play(ui.channel)
     }
 
     override fun onCleared() {
@@ -784,10 +829,15 @@ class PlayerViewModel(
         menu.flushDelay()
     }
 
-    /** The screen stopped (app in the background): drop a zap still settling; resume plays it. */
+    /**
+     * The screen stopped (app in the background): drop a zap still settling and note where the
+     * archive was (the stream stops after this; a held seek's target counts); resume plays from
+     * there. The catch-up bar hides, so its ticker stops while unseen.
+     */
     fun onScreenStopped() {
         settleJob?.cancel()
         settleJob = null
+        catchup.onStopped()
     }
 
     /**
@@ -809,17 +859,7 @@ class PlayerViewModel(
 
     private fun loadProgrammes(channel: ChannelEntity) {
         programmeJob?.cancel()
-        // guideEpgId: the manual choice, else the automatic match; times come back shifted.
-        if (channel.guideEpgId == null) {
-            // No guide (e.g. the manual one was removed): nothing may stay from the old one.
-            update { if (it.channel.id == channel.id) it.copy(now = null, next = null) else it }
-            return
-        }
-        programmeJob = viewModelScope.launch {
-            val at = clock()
-            val list = nowAndNext(channel, at)
-            val now = list.firstOrNull { it.start <= at }
-            val next = list.firstOrNull { it.start > at }
+        programmeJob = footer.nowNext(channel) { now, next ->
             update { if (it.channel.id == channel.id) it.copy(now = now, next = next) else it }
         }
     }
@@ -831,33 +871,8 @@ class PlayerViewModel(
     companion object {
         private const val KEY_HANDED_OFF = "handedOff"
 
-        fun factory(channelId: Long, scope: ChannelScope): ViewModelProvider.Factory = viewModelFactory {
-            initializer {
-                val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp
-                val c = app.container
-                val format = GuideFormat(DateFormat.is24HourFormat(app), ZoneId.systemDefault())
-                PlayerViewModel(
-                    channelId = channelId,
-                    scope = scope,
-                    playback = c.playback,
-                    channels = DaoPlayerChannels(c.db.channelDao(), c.scopedChannels),
-                    nowAndNext = c.shiftedProgrammes::nowAndNext,
-                    formatClock = { "${format.date(it)}  ${format.time(it)}" },
-                    favouriteRefs = c.favourites.refs,
-                    toggleFavourite = c.favourites::toggle,
-                    recent = c.history.recent(),
-                    startGate = c.startGate,
-                    settings = c.settingsStore.settings.map { it.playback },
-                    updatePlayback = { t -> c.settingsStore.update { it.copy(playback = t(it.playback)) } },
-                    channelPlayback = { c.channelPlayback.observe(it.ref) },
-                    setAspect = { ch, mode -> c.channelEdits.setAspect(ch.ref, mode) },
-                    sleepTimer = c.sleepTimer,
-                    previewHold = c.previewHold,
-                    pipSupported = c.pipSupported,
-                    savedState = createSavedStateHandle(),
-                    pipGate = c.pipGate,
-                )
-            }
-        }
+        /** [archiveFrom]: replay the archive from this shown instant instead of playing live. */
+        fun factory(channelId: Long, scope: ChannelScope, archiveFrom: Instant? = null): ViewModelProvider.Factory =
+            playerViewModelFactory(channelId, scope, archiveFrom)
     }
 }

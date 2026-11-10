@@ -13,7 +13,14 @@ import io.github.loopholetv.data.repo.ImportError
 import io.github.loopholetv.data.repo.ImportResult
 import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
 import io.github.loopholetv.data.repo.errorCopy
+import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
 import io.github.loopholetv.data.settings.AppSettings
+import io.github.loopholetv.data.settings.GuideAction
+import io.github.loopholetv.data.settings.KeyBindings
+import io.github.loopholetv.data.settings.PlayerAction
+import io.github.loopholetv.data.settings.RemoteSettings
+import io.github.loopholetv.data.settings.effectivePastDays
+import io.github.loopholetv.data.settings.isRemappable
 import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.player.PlaybackState
@@ -81,6 +88,8 @@ data class SettingsUi(
     val udpProxyError: String? = null,
     /** Added guide link awaiting the "Remove this guide link?" confirmation. */
     val confirmRemoveSource: EpgSourceUi? = null,
+    /** Days the "Automatic" past-guide setting resolves to (the longest archive on offer, at most a week). */
+    val automaticPastDays: Int = 0,
     /** False only before the first database read (a restored playlist page must not bounce back). */
     val loaded: Boolean = false,
 )
@@ -96,6 +105,7 @@ private data class Ops(
     val updateAll: UpdateAll? = null,
     val udpProxyError: String? = null,
     val confirmRemoveSource: Long? = null,
+    val maxCatchupDays: Int? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -133,6 +143,8 @@ class SettingsViewModel(
     playingPlaylistId: Flow<Long?> = flowOf(null),
     /** Whether this device can show picture-in-picture; options for it are hidden otherwise. */
     val pipSupported: Boolean = false,
+    /** The longest archive any channel offers, in days; null when none does. */
+    private val maxCatchupDays: suspend () -> Int? = { null },
 ) : ViewModel() {
     private val work: CoroutineScope get() = workScope ?: viewModelScope
     private val ops = MutableStateFlow(Ops())
@@ -162,9 +174,23 @@ class SettingsViewModel(
             updateAllText = o.updateAll?.playlistId?.let { "Updating ${names[it].orEmpty()}… ${channelsGrouped(o.updateAll.count, locale)}" },
             udpProxyError = o.udpProxyError,
             confirmRemoveSource = o.confirmRemoveSource?.let { sid -> epgUi.flatMap { it.sources }.firstOrNull { it.id == sid } },
+            automaticPastDays = effectivePastDays(AUTO_PAST_DAYS, o.maxCatchupDays),
             loaded = true,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUi())
+
+    init {
+        viewModelScope.launch {
+            val days = try {
+                maxCatchupDays()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            ops.update { it.copy(maxCatchupDays = days) }
+        }
+    }
 
     fun updatePlaylist(id: Long) {
         if (ops.value.playlist[id] is PlaylistOp.Updating) return
@@ -344,6 +370,48 @@ class SettingsViewModel(
     fun setPlayback(transform: (PlaybackSettings) -> PlaybackSettings) =
         setOption { it.copy(playback = transform(it.playback)) }
 
+    /** Changes only the remote-control settings. */
+    fun setRemote(transform: (RemoteSettings) -> RemoteSettings) =
+        setOption { it.copy(remote = transform(it.remote)) }
+
+    private val resetBindingsPrompt = MutableStateFlow(false)
+
+    /** True while "Reset all buttons to how they started?" is waiting for an answer. */
+    val resetPrompt: StateFlow<Boolean> = resetBindingsPrompt
+
+    /**
+     * Whether [code] may be set up as a button; false (with nothing changed) for arrows, OK, Back,
+     * Home, Menu, number keys and the other buttons that keep their fixed job.
+     */
+    fun captureKey(@Suppress("UNUSED_PARAMETER") context: BindingContext, code: Int): Boolean = isRemappable(code)
+
+    /**
+     * Sets what [code] does while a video plays. `Nothing` on a button that has a built-in job keeps
+     * it as an override that switches the job off; on any other button it removes the entry.
+     */
+    fun setBinding(code: Int, action: PlayerAction) = setRemote { r ->
+        val player = r.bindings.player
+        val next = if (action == PlayerAction.NONE && code !in KeyBindings.DEFAULT.player) player - code else player + (code to action)
+        r.copy(bindings = r.bindings.copy(player = next))
+    }
+
+    /** Same as the player overload, for the TV guide. */
+    fun setBinding(code: Int, action: GuideAction) = setRemote { r ->
+        val guide = r.bindings.guide
+        val next = if (action == GuideAction.NONE && code !in KeyBindings.DEFAULT.guide) guide - code else guide + (code to action)
+        r.copy(bindings = r.bindings.copy(guide = next))
+    }
+
+    fun requestResetBindings() { resetBindingsPrompt.value = true }
+
+    fun cancelResetBindings() { resetBindingsPrompt.value = false }
+
+    fun confirmResetBindings() {
+        if (!resetBindingsPrompt.value) return
+        resetBindingsPrompt.value = false
+        setRemote { it.copy(bindings = KeyBindings.DEFAULT) }
+    }
+
     fun requestClearEpg() = ops.update { it.copy(confirmClearEpg = true, epgCleared = false) }
 
     fun cancelClearEpg() = ops.update { it.copy(confirmClearEpg = false) }
@@ -397,6 +465,7 @@ class SettingsViewModel(
                         .distinctUntilChanged()
                         .map { id -> id?.let { playlistOfChannel(it) { cid -> c.db.channelDao().byId(cid)?.playlistId } } },
                     pipSupported = c.pipSupported,
+                    maxCatchupDays = { c.db.channelDao().maxCatchupDays() },
                 ) as T
             }
         }

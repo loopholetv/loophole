@@ -32,12 +32,23 @@ import io.github.loopholetv.player.TrackChoice
 import io.github.loopholetv.player.TrackId
 import io.github.loopholetv.player.TrackOption
 import io.github.loopholetv.player.TrackType
+import io.github.loopholetv.player.catchup.ArchiveRequest
+import io.github.loopholetv.player.catchup.COMMIT_DELAY_MS
+import io.github.loopholetv.player.catchup.PlayMode
+import io.github.loopholetv.data.settings.KeyBindings
+import io.github.loopholetv.data.settings.PlayerAction
+import io.github.loopholetv.data.settings.RemoteSettings
+import io.github.loopholetv.ui.guide.GuideFormat
+import java.time.ZoneOffset
 import io.github.loopholetv.ui.manage.ChannelEdit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -76,13 +87,29 @@ class PlayerViewModelTest {
         override fun play(channel: ChannelEntity) {
             played += channel.id
             val s = _state.value
+            val fromArchive = _mode.value is PlayMode.Archive
+            _mode.value = PlayMode.Live
             val active = (s is PlaybackState.Buffering && s.channelId == channel.id) ||
                 (s is PlaybackState.Playing && s.channelId == channel.id)
-            if (active) return
+            if (active && !fromArchive) return
             loads += channel.id
             _state.value = PlaybackState.Buffering(channel.id)
         }
-        override fun stop() { stops++; log += "stop"; _state.value = PlaybackState.Idle }
+        override fun stop() { stops++; log += "stop"; _mode.value = PlayMode.Live; _state.value = PlaybackState.Idle }
+
+        val _mode = MutableStateFlow<PlayMode>(PlayMode.Live)
+        override val mode: StateFlow<PlayMode> = _mode
+        val archives = mutableListOf<ArchiveRequest>()
+        var position = 0L
+        var pauses = 0
+        override fun playArchive(channel: ChannelEntity, request: ArchiveRequest) {
+            archives += request
+            position = 0
+            _mode.value = PlayMode.Archive(channel.id, request)
+            _state.value = PlaybackState.Buffering(channel.id)
+        }
+        override fun pause() { pauses++ }
+        override fun positionMs(): Long = position
         val restarts = mutableListOf<Long>()
         override fun restart(channel: ChannelEntity) {
             restarts += channel.id
@@ -170,6 +197,9 @@ class PlayerViewModelTest {
         pipSupported: Boolean = false,
         savedState: SavedStateHandle = SavedStateHandle(),
         pipGate: PipGate? = null,
+        remote: RemoteSettings = RemoteSettings(),
+        archiveFrom: Instant? = null,
+        elapsedMs: () -> Long = { 0L },
     ): PlayerViewModel {
         source = FakeChannels(channels, favourites).also { it.labels = labels }
         return PlayerViewModel(
@@ -190,7 +220,12 @@ class PlayerViewModelTest {
             startGate = startGate,
             settings = settings,
             updatePlayback = { t -> settingsWrites += 1; settings.value = t(settings.value) },
-            channelPlayback = { c -> prefs.map { it[c.id] ?: ChannelPlaybackPrefs.NONE } },
+            channelPlayback = { c ->
+                flow {
+                    prefsGate?.await()
+                    emitAll(prefs.map { it[c.id] ?: ChannelPlaybackPrefs.NONE })
+                }
+            },
             setAspect = { c, mode ->
                 aspectFailure?.let { throw it }
                 aspectWrites += c.id to mode
@@ -201,12 +236,18 @@ class PlayerViewModelTest {
             pipSupported = pipSupported,
             savedState = savedState,
             pipGate = pipGate,
+            remote = flowOf(remote),
+            archiveFrom = archiveFrom,
+            elapsedMs = elapsedMs,
+            format = GuideFormat(true, ZoneOffset.UTC),
         )
     }
 
     private val settings = MutableStateFlow(PlaybackSettings())
     private var settingsWrites = 0
     private val prefs = MutableStateFlow<Map<Long, ChannelPlaybackPrefs>>(emptyMap())
+    /** When set, reading a channel's playback settings waits for it. */
+    private var prefsGate: CompletableDeferred<Unit>? = null
     private val aspectWrites = mutableListOf<Pair<Long, AspectMode?>>()
     /** When set, saving an aspect throws it. */
     private var aspectFailure: Throwable? = null
@@ -1722,5 +1763,626 @@ class PlayerViewModelTest {
         vm(playback, start = 3, savedState = saved)
         runCurrent()
         assertEquals("a later restore plays as usual", listOf(3L), playback.played)
+    }
+
+    // ---- Catch-up ----
+
+    /** A channel whose archive is addressed by the minute (lag 120 s), three days back. */
+    private fun catchupChannel(id: Long) = channel(id).copy(
+        catchupType = "default", catchupDays = 3, catchupSource = "http://example.test/a/{Y}{m}{d}{H}{M}",
+    )
+
+    private val archiveStart = Instant.parse("2026-11-08T00:00:00Z")
+    private val catchupList get() = listOf(catchupChannel(1)) + (2L..5L).map { channel(it) }
+
+    private fun TestScope.catchupVm(
+        playback: FakePlayback,
+        remote: RemoteSettings = RemoteSettings(),
+        archiveFrom: Instant? = null,
+        start: Long = 1,
+        favouriteRefs: MutableStateFlow<Set<ChannelRef>> = MutableStateFlow(emptySet()),
+        sleepTimer: SleepTimer? = null,
+    ): PlayerViewModel = vm(
+        playback, channels = catchupList, start = start, favouriteRefs = favouriteRefs, remote = remote,
+        archiveFrom = archiveFrom, elapsedMs = { testScheduler.currentTime }, sleepTimer = sleepTimer,
+    ).also { catchupVms += it; runCurrent() }
+
+    private val catchupVms = mutableListOf<PlayerViewModel>()
+
+    /** Clears every view model at the end: a visible bar keeps ticking, which the test would wait on. */
+    private fun catchupTest(body: suspend TestScope.() -> Unit) = runTest {
+        try {
+            body()
+        } finally {
+            catchupVms.forEach(::clear)
+        }
+    }
+
+    /** Replaying the programme from [archiveStart] on channel 1, with the controls hidden. */
+    private fun TestScope.archiveVm(
+        playback: FakePlayback = FakePlayback(),
+        remote: RemoteSettings = RemoteSettings(),
+        sleepTimer: SleepTimer? = null,
+    ) = catchupVm(playback, remote, archiveFrom = archiveStart, sleepTimer = sleepTimer).also { it.onBack(); runCurrent() }
+
+    private fun bound(code: Int, action: PlayerAction) = RemoteSettings(
+        bindings = KeyBindings(KeyBindings.DEFAULT.player + (code to action), KeyBindings.DEFAULT.guide),
+    )
+
+    private fun TestScope.key(vm: PlayerViewModel, code: Int, repeat: Int): Boolean =
+        vm.onKey(code, repeat).also { runCurrent() }
+
+    private fun TestScope.keyUp(vm: PlayerViewModel, code: Int) { vm.onKeyUp(code); runCurrent() }
+
+    private fun TestScope.commit() { advanceTimeBy(COMMIT_DELAY_MS + 1); runCurrent() }
+
+    private val left = KeyEvent.KEYCODE_DPAD_LEFT
+    private val ff = KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+    private val rw = KeyEvent.KEYCODE_MEDIA_REWIND
+    private val playPause = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+
+    @Test fun openWithArchiveFromWatchesTheProgramme() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback, archiveFrom = archiveStart)
+        assertEquals(listOf(ArchiveRequest(archiveStart, Instant.parse("2026-11-08T01:00:00Z"))), playback.archives)
+        assertEquals("never live first", emptyList<Long>(), playback.played)
+        assertTrue("the bar shows on start", vm.barVisible.value)
+        assertNotNull(vm.catchupBar.value)
+    }
+
+    @Test fun openWithArchiveFromAdoptsWithoutReplaying() = catchupTest {
+        val playback = FakePlayback()
+        playback._mode.value = PlayMode.Archive(1, ArchiveRequest(archiveStart, archiveStart.plusSeconds(3600)))
+        playback.playing(1)
+        val vm = catchupVm(playback, archiveFrom = archiveStart)
+        assertEquals(emptyList<Long>(), playback.played)
+        assertEquals(emptyList<ArchiveRequest>(), playback.archives)
+        assertNotNull(vm.catchupBar.value)
+    }
+
+    @Test fun upDownNeverZapInArchive() = catchupTest {
+        // Up/Down never change channel, whatever is showing.
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        listOf(dpadUp, dpadDown).forEach { code ->
+            assertTrue(key(vm, code))
+            assertTrue(vm.state().overlayVisible)
+            assertFalse(key(vm, code))
+            settle()
+            vm.hideOverlay()
+        }
+        key(vm, ok)
+        key(vm, dpadUp)
+        key(vm, dpadDown)
+        settle()
+        assertEquals(1L, vm.channelId())
+        assertEquals(emptyList<Long>(), playback.played)
+        assertEquals(1, playback.archives.size)
+    }
+
+    @Test fun rwOnLiveRewindsWhenEnabled() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        assertTrue(key(vm, rw))
+        // The live lag (120 s) behind now, on the minute.
+        assertEquals(Instant.parse("2026-11-08T01:45:00Z"), playback.archives.single().from)
+
+        val off = FakePlayback()
+        val vmOff = catchupVm(off, remote = RemoteSettings(rwRewindsLive = false))
+        assertFalse(key(vmOff, rw))
+        assertEquals(emptyList<ArchiveRequest>(), off.archives)
+    }
+
+    @Test fun rwOnLiveWithoutCatchupShowsMessage() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback, start = 2)
+        assertTrue(key(vm, rw))
+        assertEquals("This channel has no catch-up.", vm.state().message)
+        assertEquals(emptyList<ArchiveRequest>(), playback.archives)
+    }
+
+    @Test fun leftOnLiveDoesNothingByDefault() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        vm.onBack()
+        assertFalse(key(vm, left))
+        keyUp(vm, left)
+        commit()
+        assertEquals(emptyList<ArchiveRequest>(), playback.archives)
+        assertEquals(listOf(1L), playback.played)
+        assertEquals("the picture stays", 0, playback.stops)
+
+        val on = FakePlayback()
+        val vmOn = catchupVm(on, remote = RemoteSettings(leftRewindsLive = true))
+        vmOn.onBack()
+        assertTrue(key(vmOn, left))
+        assertEquals(Instant.parse("2026-11-08T01:45:00Z"), on.archives.single().from)
+    }
+
+    @Test fun leftRightSeekOnBareVideoInArchive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        assertFalse(vm.barVisible.value)
+        assertTrue(key(vm, left, 0))
+        assertTrue("a seek shows the bar", vm.barVisible.value)
+        assertEquals("−0:10", vm.catchupBar.value!!.pendingLabel)
+        keyUp(vm, left)
+        commit()
+        assertEquals(2, playback.archives.size)
+        assertEquals(Instant.parse("2026-11-07T23:59:00Z"), playback.archives.last().from)
+
+        val off = FakePlayback()
+        val vmOff = archiveVm(off, RemoteSettings(leftRightSeek = false))
+        assertFalse(key(vmOff, left, 0))
+        keyUp(vmOff, left)
+        commit()
+        assertEquals(1, off.archives.size)
+    }
+
+    @Test fun leftRightMoveFocusWhenBarShown() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        key(vm, ok)
+        assertTrue(vm.barVisible.value)
+        assertFalse("the D-pad moves between the bar's buttons", key(vm, left, 0))
+        assertFalse(key(vm, KeyEvent.KEYCODE_DPAD_RIGHT, 0))
+        keyUp(vm, left)
+        commit()
+        assertNull(vm.catchupBar.value!!.pendingLabel)
+        assertEquals(1, playback.archives.size)
+    }
+
+    @Test fun mediaKeysIgnoredWhenOptionOff() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback, RemoteSettings(mediaKeysSeek = false))
+        assertFalse(key(vm, ff, 0))
+        assertFalse(key(vm, rw, 0))
+        keyUp(vm, ff)
+        commit()
+        assertNull(vm.catchupBar.value!!.pendingLabel)
+        assertEquals(1, playback.archives.size)
+    }
+
+    @Test fun heldFfBatchesIntoOneSeek() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        repeat(16) { i ->
+            assertTrue(key(vm, ff, i))
+            advanceTimeBy(50)
+            runCurrent()
+        }
+        assertEquals("nothing reopens while the key is held", 1, playback.archives.size)
+        keyUp(vm, ff)
+        commit()
+        assertEquals(2, playback.archives.size)
+        assertEquals(Instant.parse("2026-11-08T00:08:00Z"), playback.archives.last().from)
+    }
+
+    @Test fun seekKeyUpCommitsBatch() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        key(vm, ff, 0)
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals("no commit before the key is released", 1, playback.archives.size)
+        keyUp(vm, ff)
+        commit()
+        assertEquals(2, playback.archives.size)
+    }
+
+    @Test fun customBindingRedButtonFavourite() = catchupTest {
+        val refs = MutableStateFlow<Set<ChannelRef>>(emptySet())
+        val bindings = KeyBindings(
+            KeyBindings.DEFAULT.player + (KeyEvent.KEYCODE_PROG_RED to PlayerAction.FAVOURITE),
+            KeyBindings.DEFAULT.guide,
+        )
+        val vm = catchupVm(FakePlayback(), RemoteSettings(bindings = bindings), favouriteRefs = refs)
+        assertTrue(key(vm, KeyEvent.KEYCODE_PROG_RED))
+        runCurrent()
+        assertTrue(catchupChannel(1).ref in refs.value)
+    }
+
+    @Test fun playPauseOnLiveCatchupPausesLive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        assertTrue(key(vm, playPause))
+        assertEquals("live pauses by stopping the stream", 1, playback.stops)
+        assertTrue(vm.catchupBar.value!!.paused)
+        assertTrue(vm.barVisible.value)
+
+        val plain = FakePlayback()
+        val vmPlain = catchupVm(plain, start = 2)
+        key(vmPlain, playPause)
+        assertEquals("no catch-up: live is not pausable", 0, plain.stops)
+        assertNull(vmPlain.catchupBar.value)
+    }
+
+    @Test fun barHidesAfterTimeoutButNotWhenPaused() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback, archiveFrom = archiveStart)
+        assertTrue(vm.barVisible.value)
+        advanceTimeBy(OVERLAY_TIMEOUT_MS + 1)
+        runCurrent()
+        assertFalse(vm.barVisible.value)
+
+        assertTrue(key(vm, playPause))
+        assertEquals(1, playback.pauses)
+        assertTrue(vm.barVisible.value)
+        advanceTimeBy(OVERLAY_TIMEOUT_MS * 3)
+        runCurrent()
+        assertTrue("paused: the bar stays", vm.barVisible.value)
+    }
+
+    @Test fun barTickerFollowsThePositionOnlyWhileVisible() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback, archiveFrom = archiveStart)
+        playback.position = 60_000
+        advanceTimeBy(1_100)
+        runCurrent()
+        assertEquals("1:00", vm.catchupBar.value!!.elapsed)
+        advanceTimeBy(OVERLAY_TIMEOUT_MS)
+        runCurrent()
+        assertFalse(vm.barVisible.value)
+        playback.position = 120_000
+        advanceTimeBy(3_000)
+        runCurrent()
+        assertEquals("hidden: no ticks", "1:00", vm.catchupBar.value!!.elapsed)
+    }
+
+    @Test fun okInArchiveShowsBarFocusedOnPlayPause() = catchupTest {
+        val vm = archiveVm()
+        assertTrue(key(vm, ok))
+        assertTrue(vm.state().overlayVisible)
+        assertTrue(vm.barVisible.value)
+        assertTrue(vm.state().barFocused)
+        vm.hideOverlay()
+        assertFalse(vm.state().barFocused)
+        key(vm, dpadUp)
+        assertFalse("Up/Down open the overlay on the channel row", vm.state().barFocused)
+    }
+
+    @Test fun failedArchiveShowsCardWithWatchLive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        playback.fail(1, "Ch 1: Stream unavailable")
+        runCurrent()
+        assertTrue(vm.archiveFailed.value)
+        assertTrue("OK is Try again", key(vm, ok))
+        assertEquals(2, playback.archives.size)
+        assertEquals("never live", emptyList<Long>(), playback.played)
+
+        playback.fail(1, "Ch 1: Stream unavailable")
+        runCurrent()
+        // Right moves focus to Watch live (no seek), then OK presses it.
+        assertFalse(key(vm, KeyEvent.KEYCODE_DPAD_RIGHT, 0))
+        keyUp(vm, KeyEvent.KEYCODE_DPAD_RIGHT)
+        commit()
+        assertEquals("no seek on the error card", 2, playback.archives.size)
+        vm.onRootClick(watchLiveFocused = true)
+        runCurrent()
+        assertEquals(listOf(1L), playback.played)
+        assertNull(vm.catchupBar.value)
+        assertFalse(vm.archiveFailed.value)
+    }
+
+    @Test fun okOnTryAgainByFocusReopensTheArchive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        playback.fail(1, "Ch 1: Stream unavailable")
+        runCurrent()
+        vm.onRootClick(watchLiveFocused = false)
+        runCurrent()
+        assertEquals(2, playback.archives.size)
+        assertFalse("the card goes as the reopen starts", vm.archiveFailed.value)
+        assertEquals(emptyList<Long>(), playback.played)
+    }
+
+    @Test fun playPauseWorksWithSeekKeysOff() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback, RemoteSettings(mediaKeysSeek = false))
+        assertTrue(key(vm, playPause))
+        assertEquals(1, playback.pauses)
+        assertTrue(vm.catchupBar.value!!.paused)
+    }
+
+    @Test fun pausedBarHidesInTheBackgroundAndReturns() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        key(vm, playPause)
+        assertTrue(vm.barVisible.value)
+        vm.onScreenStopped()
+        assertFalse("no ticker while unseen", vm.barVisible.value)
+        playback.stop()
+        runCurrent()
+        vm.onScreenStarted()
+        runCurrent()
+        assertTrue("still paused, the bar is back", vm.barVisible.value)
+        assertEquals(1, playback.archives.size)
+        assertEquals(emptyList<Long>(), playback.played)
+        // Play reopens the stopped archive where it was paused.
+        key(vm, playPause)
+        assertEquals(2, playback.archives.size)
+        assertEquals(archiveStart, playback.archives.last().from)
+    }
+
+    @Test fun pipHidesTheBarAndStopsTheTicker() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback, archiveFrom = archiveStart)
+        assertTrue(vm.barVisible.value)
+        vm.onPipChanged(true)
+        assertFalse(vm.barVisible.value)
+        playback.position = 60_000
+        advanceTimeBy(3_000)
+        runCurrent()
+        assertEquals("0:00", vm.catchupBar.value!!.elapsed)
+    }
+
+    @Test fun liveKeyWithBarFocusedHidesTheOverlay() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback, bound(KeyEvent.KEYCODE_PROG_GREEN, PlayerAction.LIVE))
+        key(vm, ok)
+        assertTrue(vm.state().barFocused)
+        assertTrue(key(vm, KeyEvent.KEYCODE_PROG_GREEN))
+        runCurrent()
+        assertEquals(listOf(1L), playback.played)
+        assertFalse("the remote is never left without focus", vm.state().overlayVisible)
+        assertFalse(vm.state().barFocused)
+    }
+
+    @Test fun pickingAChannelFromTheRowKeepsTheOverlay() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        key(vm, ok)
+        vm.playFromRow(channel(2))
+        runCurrent()
+        assertEquals(2L, vm.channelId())
+        assertNull(vm.catchupBar.value)
+        assertTrue(vm.state().overlayVisible)
+        assertFalse(vm.state().barFocused)
+    }
+
+    @Test fun liveFromAnArchiveHonoursTheExternalPlayer() = catchupTest {
+        prefs.value = mapOf(1L to ChannelPlaybackPrefs(externalPlayer = "org.videolan.vlc"))
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        assertEquals("the recording plays here", 1, playback.archives.size)
+        vm.watchLive()
+        runCurrent()
+        assertEquals(listOf(1L), playback.handOffs)
+        assertEquals("live is not played here", emptyList<Long>(), playback.played)
+        assertTrue(vm.events.first() is PlayerEvent.LaunchExternal)
+    }
+
+    @Test fun sleepWarningDuringASeekStillCommitsOnRelease() = catchupTest {
+        val timer = SleepTimer(backgroundScope, onExpire = {}, elapsed = { testScheduler.currentTime })
+        val playback = FakePlayback()
+        val vm = archiveVm(playback, sleepTimer = timer)
+        timer.start(15)
+        assertTrue(key(vm, ff, 0))
+        advanceTimeBy(14 * 60_000L + 30_000)
+        runCurrent()
+        assertTrue(vm.sleep.value is SleepState.Warning)
+        assertTrue("the warning takes the repeat", key(vm, ff, 1))
+        assertTrue(timer.state.value is SleepState.Running)
+        keyUp(vm, ff)
+        commit()
+        assertEquals("the held seek commits", 2, playback.archives.size)
+        assertEquals(Instant.parse("2026-11-08T00:00:00Z"), playback.archives.last().from)
+    }
+
+    @Test fun heldSeekBecomesTheResumePointWhenStopped() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        repeat(4) { key(vm, ff, it) }
+        vm.onScreenStopped()
+        commit()
+        assertEquals("nothing commits against the stopped stream", 1, playback.archives.size)
+        playback.stop()
+        vm.onScreenStarted()
+        runCurrent()
+        assertEquals(Instant.parse("2026-11-08T00:02:00Z"), playback.archives.last().from)
+    }
+
+    @Test fun heldRewindOnLiveOpensTheArchiveOnce() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        assertTrue(key(vm, rw, 0))
+        repeat(15) { i ->
+            assertTrue("the held key's repeats are swallowed", key(vm, rw, i + 1))
+            advanceTimeBy(50)
+            runCurrent()
+        }
+        keyUp(vm, rw)
+        commit()
+        assertEquals("one open for the whole hold", 1, playback.archives.size)
+        assertEquals(Instant.parse("2026-11-08T01:45:00Z"), playback.archives.single().from)
+
+        // The next press, after the release, is an ordinary seek again.
+        assertTrue(key(vm, rw, 0))
+        keyUp(vm, rw)
+        commit()
+        assertEquals(2, playback.archives.size)
+    }
+
+    @Test fun backToTheGuideFromARecordingGoesLive() = catchupTest {
+        // Set to an external player: going live on the way out still plays here, for the preview.
+        prefs.value = mapOf(1L to ChannelPlaybackPrefs(externalPlayer = "org.videolan.vlc"))
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        assertFalse(vm.onBack())
+        runCurrent()
+        assertEquals(listOf(1L), playback.played)
+        assertEquals(PlayMode.Live, playback.mode.value)
+        assertEquals(emptyList<Long>(), playback.handOffs)
+        assertNull(vm.catchupBar.value)
+    }
+
+    @Test fun backToTheGuideFromPausedLiveGoesLive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        vm.onBack() // hide the entry banner
+        key(vm, playPause)
+        assertEquals(PlaybackState.Idle, playback.state.value)
+        val before = playback.played.size
+        while (vm.onBack()) runCurrent()
+        runCurrent()
+        assertEquals(listOf(1L), playback.played.drop(before))
+        assertEquals(PlaybackState.Buffering(1), playback.state.value)
+    }
+
+    @Test fun backToTheGuideFromLiveDoesNotReconnect() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        playback.playing(1)
+        while (vm.onBack()) runCurrent()
+        runCurrent()
+        assertEquals(listOf(1L), playback.played)
+    }
+
+    @Test fun leaveClearsTheBar() = catchupTest {
+        val vm = archiveVm()
+        key(vm, ok)
+        vm.leave()
+        runCurrent()
+        assertNull(vm.catchupBar.value)
+        assertFalse(vm.barVisible.value)
+    }
+
+    @Test fun numberEntryLeavesTheArchive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        key(vm, KeyEvent.KEYCODE_3)
+        advanceTimeBy(NUMBER_ENTRY_IDLE_MS + 1)
+        runCurrent()
+        assertEquals(3L, vm.channelId())
+        assertNull(vm.catchupBar.value)
+        assertEquals(listOf(3L), playback.played)
+    }
+
+    @Test fun boundButtonsOpenGuideMenusAndSearch() = catchupTest {
+        val subtitles = catchupVm(FakePlayback())
+        assertTrue(key(subtitles, KeyEvent.KEYCODE_CAPTIONS))
+        assertEquals(QuickItem.SUBTITLES, (subtitles.quickMenu.value!!.panel as QuickPanel.Choices).item)
+
+        val audio = catchupVm(FakePlayback(), bound(KeyEvent.KEYCODE_PROG_RED, PlayerAction.AUDIO_TRACK))
+        assertTrue(key(audio, KeyEvent.KEYCODE_PROG_RED))
+        assertEquals(QuickItem.AUDIO, (audio.quickMenu.value!!.panel as QuickPanel.Choices).item)
+
+        val sleep = catchupVm(FakePlayback(), bound(KeyEvent.KEYCODE_PROG_RED, PlayerAction.SLEEP_TIMER))
+        assertTrue(key(sleep, KeyEvent.KEYCODE_PROG_RED))
+        assertEquals(QuickItem.SLEEP, (sleep.quickMenu.value!!.panel as QuickPanel.Choices).item)
+
+        val search = catchupVm(FakePlayback(), bound(KeyEvent.KEYCODE_PROG_BLUE, PlayerAction.SEARCH))
+        assertTrue(key(search, KeyEvent.KEYCODE_PROG_BLUE))
+        assertEquals(PlayerEvent.OpenSearch, search.events.first())
+
+        val guide = catchupVm(FakePlayback())
+        assertTrue(key(guide, KeyEvent.KEYCODE_GUIDE))
+        assertTrue(guide.exitToGuide.value)
+    }
+
+    @Test fun resumeAfterBackgroundKeepsPosition() = catchupTest {
+        // Back from the background, playback continues where it was.
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        playback.playing(1)
+        playback.position = 600_000
+        vm.onScreenStopped()
+        playback.stop()
+        vm.onScreenStarted()
+        runCurrent()
+        assertEquals(2, playback.archives.size)
+        assertEquals(archiveStart.plusSeconds(600), playback.archives.last().from)
+        assertEquals("not live", emptyList<Long>(), playback.played)
+    }
+
+    @Test fun pausedLiveStaysPausedAfterBackground() = catchupTest {
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        key(vm, playPause)
+        vm.onScreenStopped()
+        vm.onScreenStarted()
+        runCurrent()
+        assertEquals("still paused", listOf(1L), playback.played)
+        assertEquals(emptyList<ArchiveRequest>(), playback.archives)
+    }
+
+    @Test fun startOverOnlyOnLiveCatchupChannels() = catchupTest {
+        fun PlayerViewModel.items() = quickMenu.value!!.entries.map { it.item }
+        val playback = FakePlayback()
+        val vm = catchupVm(playback)
+        vm.onLongOk()
+        assertTrue(QuickItem.START_OVER in vm.items())
+        vm.pickQuickItem(QuickItem.START_OVER)
+        runCurrent()
+        assertNull(vm.quickMenu.value)
+        assertEquals(Instant.parse("2026-11-08T01:00:00Z"), playback.archives.single().from)
+        vm.onLongOk()
+        assertFalse("not while replaying", QuickItem.START_OVER in vm.items())
+
+        val plain = catchupVm(FakePlayback(), start = 2)
+        plain.onLongOk()
+        assertFalse(QuickItem.START_OVER in plain.items())
+    }
+
+    @Test fun zapLeavesTheArchive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        assertTrue(key(vm, chUp))
+        settle()
+        assertNull(vm.catchupBar.value)
+        assertEquals(2L, vm.channelId())
+        assertEquals(listOf(2L), playback.played)
+    }
+
+    @Test fun barButtonsDriveTheArchive() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        key(vm, ok)
+        vm.onTransport(TransportButton.PLAY_PAUSE)
+        runCurrent()
+        assertEquals(1, playback.pauses)
+        assertTrue(vm.catchupBar.value!!.paused)
+        vm.onTransport(TransportButton.FAST_FORWARD)
+        commit()
+        assertEquals("one press is one seek", 2, playback.archives.size)
+        vm.onTransport(TransportButton.LIVE)
+        runCurrent()
+        assertEquals(listOf(1L), playback.played)
+        assertNull(vm.catchupBar.value)
+        assertFalse("back to bare live video", vm.state().overlayVisible)
+        assertFalse(vm.barVisible.value)
+    }
+
+    @Test fun watchLiveTwiceOpensLiveOnce() = catchupTest {
+        prefs.value = mapOf(1L to ChannelPlaybackPrefs(externalPlayer = "org.videolan.vlc"))
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        vm.watchLive()
+        vm.watchLive()
+        runCurrent()
+        assertEquals("one hand-off", listOf(1L), playback.handOffs)
+
+        val here = FakePlayback()
+        prefs.value = emptyMap()
+        val vmHere = archiveVm(here)
+        vmHere.onTransport(TransportButton.LIVE)
+        vmHere.watchLive()
+        runCurrent()
+        assertEquals("one live open", listOf(1L), here.played)
+    }
+
+    @Test fun anArchiveStartedWhileLiveOpensWins() = catchupTest {
+        val playback = FakePlayback()
+        val vm = archiveVm(playback)
+        prefsGate = CompletableDeferred()
+        vm.watchLive()
+        runCurrent()
+        assertTrue(key(vm, rw)) // back into the archive while the live open reads the channel's settings
+        prefsGate!!.complete(Unit)
+        runCurrent()
+        assertEquals("live never replaces the archive", emptyList<Long>(), playback.played)
+        assertEquals(2, playback.archives.size)
+        assertNotNull(vm.catchupBar.value)
     }
 }

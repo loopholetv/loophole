@@ -210,4 +210,53 @@ class GuideNavigationTest {
         assertEquals(0 until 12, guideKeyRange(3, 12))
         assertEquals(IntRange.EMPTY, guideKeyRange(0, 0))
     }
+
+    // --- Past navigation on channels with an archive ---
+
+    @Test fun leftIntoPastOnCatchupRow() {
+        val now = at(19, 45)
+        val earliest = now.minus(java.time.Duration.ofDays(1))
+        val row = listOf(p(1, at(19, 0), at(19, 40)), p(2, at(19, 40), at(20, 0)))
+        // From the airing block, Left selects the programme that has ended.
+        assertEquals(StripMove.Select(0), stripMove(row, selected = 1, step = -1, now = now, earliest = earliest))
+        // At the row's start it shifts the window back.
+        assertEquals(StripMove.Edge, stripMove(row, selected = 0, step = -1, now = now, earliest = earliest))
+    }
+
+    @Test fun leftAtEarliestExits() {
+        val now = at(19, 45)
+        val earliest = at(19, 0)
+        val row = listOf(p(1, at(18, 30), at(19, 0)), p(2, at(19, 0), at(19, 40)), p(3, at(19, 40), at(20, 0)))
+        // A programme that stopped at or before the archive limit can't be reached: as Left at "now".
+        assertEquals(StripMove.ExitLeft, stripMove(row, selected = 1, step = -1, now = now, earliest = earliest))
+        assertEquals(StripMove.Select(1), stripMove(row, selected = 2, step = -1, now = now, earliest = earliest))
+    }
+
+    @Test fun leftOnNonCatchupRowUnchanged() {
+        val now = at(19, 45)
+        val row = listOf(p(1, at(19, 0), at(19, 40)), p(2, at(19, 40), at(20, 0)))
+        // Without an archive, Left onto a programme that has ended goes to the groups.
+        assertEquals(StripMove.ExitLeft, stripMove(row, selected = 1, step = -1, now = now, earliest = null))
+    }
+
+    @Test fun leftOnNonCatchupRowInPastExits() {
+        // Window in the past (reached on another row), now 19:45: every block here has ended.
+        val now = at(19, 45)
+        val row = listOf(p(1, at(15, 0), at(16, 0)), p(2, at(16, 0), at(17, 0)))
+        assertEquals(StripMove.ExitLeft, stripMove(row, selected = 1, step = -1, now = now, earliest = null))
+        assertEquals(StripMove.Select(1), stripMove(row, selected = 0, step = 1, now = now, earliest = null))
+    }
+
+    @Test fun entryAtNowStillClamps() {
+        // In the now window, an anchor in a programme that ended still lands on the airing one.
+        val row = listOf(p(1, at(19, 20), at(19, 40)), p(2, at(19, 40), at(20, 0)))
+        assertEquals(1, entryIndex(row, anchor = at(19, 30), now = at(19, 45), pastWindow = false))
+    }
+
+    @Test fun pastWindowDownLandsAtAnchor() {
+        // Looking at the past, Up/Down keep the same time: the block holding the anchor.
+        val row = listOf(p(1, at(15, 0), at(16, 0)), p(2, at(16, 0), at(17, 0)), p(3, at(17, 0), at(18, 0)))
+        assertEquals(1, entryIndex(row, anchor = at(16, 30), now = at(19, 45), pastWindow = true))
+        assertEquals(RowEntry(1, at(16, 30)), enterRow(row, at(16, 30), at(19, 45), pastWindow = true))
+    }
 }

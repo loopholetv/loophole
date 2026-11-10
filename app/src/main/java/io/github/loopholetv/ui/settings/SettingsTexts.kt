@@ -2,10 +2,14 @@ package io.github.loopholetv.ui.settings
 
 import io.github.loopholetv.data.net.UserAgents
 import io.github.loopholetv.data.settings.AUDIO_DELAY_RANGE_MS
+import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
 import io.github.loopholetv.data.settings.AUDIO_DELAY_STEP_MS
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.BufferPreset
 import io.github.loopholetv.data.settings.DecoderChoice
+import io.github.loopholetv.data.settings.GuideAction
+import io.github.loopholetv.data.settings.PlayerAction
+import io.github.loopholetv.data.settings.keyName
 import io.github.loopholetv.data.settings.PLAYBACK_LANGUAGES
 import io.github.loopholetv.data.settings.Passthrough
 import java.text.NumberFormat
@@ -13,11 +17,20 @@ import java.util.Locale
 
 fun intervalText(hours: Int): String = if (hours == 0) "Off" else "Every $hours hours"
 
-fun pastDaysText(days: Int): String = when (days) {
+/** [automaticDays] is what "Automatic" currently resolves to; without it the label is just "Automatic". */
+fun pastDaysText(days: Int, automaticDays: Int? = null): String = when (days) {
+    AUTO_PAST_DAYS -> if (automaticDays == null) "Automatic" else "Automatic (${dayCount(automaticDays)})"
     0 -> "None"
     1 -> "1 day"
     else -> "$days days"
 }
+
+private fun dayCount(n: Int) = if (n == 1) "1 day" else "$n days"
+
+/** "Red button · Add/remove favourite". */
+fun bindingRowText(keyCode: Int, action: PlayerAction): String = "${keyName(keyCode)} · ${action.label}"
+
+fun bindingRowText(keyCode: Int, action: GuideAction): String = "${keyName(keyCode)} · ${action.label}"
 
 fun onOff(b: Boolean): String = if (b) "On" else "Off"
 

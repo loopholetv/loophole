@@ -1,5 +1,8 @@
 package io.github.loopholetv.ui.guide
 
+import io.github.loopholetv.data.catchup.CatchupSpec
+import io.github.loopholetv.data.catchup.catchup
+import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ProgrammeEntity
 import java.time.Duration
 import java.time.Instant
@@ -36,19 +39,45 @@ fun ceilToHalfHour(t: Instant, zone: ZoneId): Instant {
 }
 
 /**
- * [w] moved by [steps] × 30 min, clamped so it never starts before the "now" window (no past
- * navigation) and ends no later than [latestEnd] rounded up to the half hour.
+ * [w] moved by [steps] × 30 min, clamped so it never starts before the half hour holding
+ * [earliest] (the focused row's archive limit; null: the "now" window, as the row has no past to
+ * show) and ends no later than [latestEnd] rounded up to the half hour.
+ * A window already outside those limits (in the past, reached on another row) never jumps the
+ * other way: it only moves in the direction asked, or stays put.
  * Every reachable start is on :00/:30, so shifting back always lands on the "now" window again.
  */
-fun shiftWindow(w: TimeWindow, steps: Int, now: Instant, zone: ZoneId, latestEnd: Instant?): TimeWindow {
+fun shiftWindow(
+    w: TimeWindow,
+    steps: Int,
+    now: Instant,
+    zone: ZoneId,
+    latestEnd: Instant?,
+    earliest: Instant? = null,
+): TimeWindow {
     val nowStart = initialWindow(now, zone).start
+    val earliestStart = earliest?.let { minOf(floorToHalfHour(it, zone), nowStart) } ?: nowStart
     val latestStart = latestEnd
         ?.let { floorToHalfHour(ceilToHalfHour(it, zone) - WINDOW_LENGTH, zone) }
         ?.let { maxOf(nowStart, it) }
         ?: nowStart
-    val start = w.start.plus(WINDOW_STEP.multipliedBy(steps.toLong())).coerceIn(nowStart, latestStart)
+    val start = w.start.plus(WINDOW_STEP.multipliedBy(steps.toLong()))
+        .coerceIn(minOf(earliestStart, w.start), maxOf(latestStart, w.start))
     return TimeWindow(start, start + WINDOW_LENGTH)
 }
+
+/**
+ * The start times [spec]'s archive can play at [now], `[from, until)` (as [CatchupSpec.canPlay]);
+ * null without catch-up. Worked out once per row and clock tick, so drawing only compares instants.
+ */
+class PlayableRange(val from: Instant, val until: Instant) {
+    operator fun contains(start: Instant): Boolean = start >= from && start < until
+}
+
+fun playableRange(spec: CatchupSpec?, now: Instant): PlayableRange? =
+    spec?.let { PlayableRange(it.earliest(now), it.playableUntil(now)) }
+
+/** How far back [channel]'s row can go at [now]: its archive limit, or null when it has no catch-up. */
+fun rowEarliest(channel: ChannelEntity, now: Instant): Instant? = playableRange(channel.catchup(), now)?.from
 
 /** Share of [w]'s width that [p] covers once clipped to the window (0..1). */
 fun blockWidthFraction(p: ProgrammeEntity, w: TimeWindow): Float {

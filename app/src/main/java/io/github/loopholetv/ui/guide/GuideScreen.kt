@@ -79,7 +79,12 @@ import io.github.loopholetv.ui.manage.channelEditOptions
 import io.github.loopholetv.ui.manage.rememberChannelPlayback
 import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
 import io.github.loopholetv.ui.manage.groupEditOptions
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.paging.PagingData
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -103,6 +108,8 @@ fun GuideScreen(
     onSettings: () -> Unit,
     onSearch: () -> Unit,
     vm: GuideViewModel = viewModel(factory = GuideViewModel.Factory),
+    /** OK on a finished programme: its archive is playing from [from]; open it full screen. */
+    onPlayArchive: (channelId: Long, scope: ChannelScope, from: Instant) -> Unit = { _, _, _ -> },
 ) {
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as LoopholeApp).container }
@@ -123,6 +130,7 @@ fun GuideScreen(
     val pendingScope by vm.selectedScope.collectAsStateWithLifecycle()
     val selectedScope = pages?.scope ?: pendingScope
     val window by vm.window.collectAsStateWithLifecycle()
+    val pastWindow by vm.pastWindow.collectAsStateWithLifecycle()
     val slice by vm.slice.collectAsStateWithLifecycle()
     val focused by vm.focused.collectAsStateWithLifecycle()
     val previewing by vm.previewing.collectAsStateWithLifecycle()
@@ -288,6 +296,30 @@ fun GuideScreen(
     }
     val moveOk = remember { OkPressTracker() }
 
+    // The guide buttons' requests: a page key scrolls the list a page with focus keeping its place
+    // on screen; Search and Settings open as from the rail.
+    val playArchive by rememberUpdatedState(onPlayArchive)
+    val openSearch by rememberUpdatedState(onSearch)
+    val openSettings by rememberUpdatedState(onSettings)
+    val rows by rememberUpdatedState(channels)
+    LaunchedEffect(vm) {
+        vm.events.collect { event ->
+            when (event) {
+                is GuideEvent.PageRows -> {
+                    val focusedId = vm.focused.value?.channel?.id
+                    val focusedIndex = rows.itemSnapshotList.indexOfFirst { it != null && it.id == focusedId }
+                    val target = pageTarget(listState.firstVisibleItemIndex, focusedIndex, rows.itemCount, event.rows)
+                    if (target.focus < 0) return@collect
+                    listState.scrollToItem(target.firstVisible)
+                    focusTarget = rows.peek(target.focus)?.id
+                    gridFocusPending = true
+                }
+                GuideEvent.OpenSearch -> openSearch()
+                GuideEvent.OpenSettings -> openSettings()
+            }
+        }
+    }
+
     // Hidden from the preview: once the channel has left the list, focus moves from the
     // emptied preview to the first row (or the selected group when the list is empty).
     var focusAfterPreviewHide by remember { mutableStateOf<Long?>(null) }
@@ -375,8 +407,9 @@ fun GuideScreen(
         groupFocus = GroupFocus(currentScope) {}
     }
 
-    // Back: a window shifted into the future snaps back to now first (focus staying where it
-    // is); then programme → groups list (on the current group) → side rail → the app's confirm-exit.
+    // Back: a window shifted away from now (past or future) snaps back to now first (focus staying
+    // where it is); then programme → groups list (on the current group) → side rail → the app's
+    // confirm-exit.
     val windowShifted by vm.windowShifted.collectAsStateWithLifecycle()
     val back = guideBackFor(focusArea, windowShifted)
     BackHandler(enabled = back != GuideBack.Exit) {
@@ -454,13 +487,16 @@ fun GuideScreen(
                     // Once: a quick second OK while the player opens is ignored.
                     is OkAction.OpenPlayer -> vm.claimPlayer(action)?.let { onPlay(it, vm.selectedScope.value) }
                     is OkAction.ShowDetails -> details = action.programme
+                    is OkAction.PlayArchive ->
+                        vm.claimArchive(action)?.let { playArchive(it.channelId, vm.selectedScope.value, it.from) }
                 }
             },
             onLongPress = { channel: ChannelEntity -> options = OptionsTarget(channel, fromPreview = false) },
             onVisibleIds = vm::setVisibleKeys,
             keys = StripKeys(
                 shift = vm::shiftWindow,
-                // Left at "now": the groups column, shown, on the selected group (scrolled into view).
+                // Left at the row's limit ("now" without catch-up): the groups column, shown, on
+                // the selected group (scrolled into view).
                 exitLeft = { focusSelectedGroup(); true },
             ),
         )
@@ -505,6 +541,22 @@ fun GuideScreen(
 
     val moveTitle = movingGroup?.label ?: moving?.let(::channelLabel)
 
+    /**
+     * Page, day and the other remappable buttons, wherever focus is (a row, the preview, the
+     * groups, the rail). They act on the previewing
+     * channel from the preview, else on the row the info area describes. A day jump (or back to
+     * now) keeps the focus at the same time of day on the new window. Not in Move mode.
+     */
+    fun onGuideButton(e: KeyEvent): Boolean {
+        if (e.type != KeyEventType.KeyDown || moveKind != null) return false
+        val row = if (focusArea == GuideArea.Preview) vm.previewing.value else vm.focused.value?.channel
+        val before = vm.window.value
+        val used = vm.onGuideKey(e.key.nativeKeyCode, row, repeat = e.nativeKeyEvent.repeatCount > 0)
+        val after = vm.window.value
+        if (after != before) timeAnchor.value = anchorAfterJump(timeAnchor.value, vm.now(), before, after)
+        return used
+    }
+
     // No background here: the NavHost already paints it (avoids a full-screen overdraw layer).
     // The preview takes what is left once exactly 8 rows fit below the header: at 1080p
     // (540 dp tall) 12 + 141 preview + 8 + 22 group name + 28 header + 8 × 37 rows (3 apart) + 12.
@@ -515,7 +567,9 @@ fun GuideScreen(
         label = "groupsWidth",
     )
     val groupName = groups.firstOrNull { it.scope == selectedScope }?.label.orEmpty()
-    Box(Modifier.fillMaxSize()) {
+    // Seen before the focused element: the list itself would otherwise scroll on Page Up/Down
+    // without moving focus. Bound buttons are never arrows, OK, Back or Menu.
+    Box(Modifier.fillMaxSize().onPreviewKeyEvent(::onGuideButton)) {
         BoxWithConstraints(Modifier.fillMaxSize().padding(start = RAIL_WIDTH + 8.dp, end = 24.dp, top = 12.dp, bottom = 12.dp)) {
             val previewHeight = guidePreviewHeight(maxHeight)
             Column(Modifier.fillMaxSize()) {
@@ -602,6 +656,7 @@ fun GuideScreen(
                             actions = actions,
                             favourites = favourites,
                             movingId = movingId,
+                            pastWindow = pastWindow,
                             emptyHint = emptyHintFor(allPlaylistsOff, selectedScope, listEmpty),
                             modifier = Modifier.fillMaxSize()
                                 .onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Grid) }

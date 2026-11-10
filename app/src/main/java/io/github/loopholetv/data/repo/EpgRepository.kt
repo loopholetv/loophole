@@ -212,7 +212,7 @@ class EpgRepository(
         importer.matchedEpgIds.chunked(BATCH_SIZE).forEach { programmeDao.deleteOlderGenerations(it, generation) }
         // Times are shifted when read, so a channel shown later needs its programmes kept that much longer.
         val shiftMargin = Duration.ofMinutes(maxOf(0, prefsDao.maxPositiveShift() ?: 0).toLong())
-        programmeDao.deleteEndedBefore(startedAt.minus(Duration.ofDays(pastDays.toLong())).minus(GRACE).minus(shiftMargin))
+        programmeDao.deleteEndedBefore(startedAt.minus(Duration.ofDays(pastDays.coerceAtLeast(0).toLong())).minus(GRACE).minus(shiftMargin))
         for (row in rows) {
             if (row.id in overridden) {
                 // Not matched this time: keep its last automatic id (for "Automatic") and re-derive guideEpgId.

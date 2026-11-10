@@ -11,7 +11,7 @@ import androidx.work.WorkManager
 import io.github.loopholetv.data.db.ALL_MIGRATIONS
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.repo.EpgRepository
-import io.github.loopholetv.data.repo.EpgStoreOptions
+import io.github.loopholetv.data.repo.epgStoreOptions
 import io.github.loopholetv.data.repo.FavouritesRepository
 import io.github.loopholetv.data.repo.HistoryRepository
 import io.github.loopholetv.data.repo.PlaylistRepository
@@ -64,7 +64,7 @@ class AppContainer(context: Context) {
     val epgRepository: EpgRepository by lazy {
         EpgRepository(
             db, http, xtream,
-            options = { settingsStore.current().let { EpgStoreOptions(it.epgPastDays, it.epgStoreDescriptions) } },
+            options = { epgStoreOptions(settingsStore.current()) { db.channelDao().maxCatchupDays() } },
             userAgentFor = downloadUserAgent,
             portalEpg = { p, emit ->
                 io.github.loopholetv.data.repo.readPortalGuide(p, db.maintenanceDao(), stalkerClient, stalkerSessions, emit)
@@ -122,6 +122,8 @@ class AppContainer(context: Context) {
             resolver = io.github.loopholetv.player.PlaylistStreamResolver(
                 db.playlistDao()::byId, { settings.await() },
                 io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME), stalkerSessions, stalkerClient,
+                xtream = xtream,
+                storeArchiveInfo = db.playlistDao()::setArchiveInfo,
             ),
             engine = engineParts,
             // A read error ends the live updates and keeps what is applied; it never resets to defaults.

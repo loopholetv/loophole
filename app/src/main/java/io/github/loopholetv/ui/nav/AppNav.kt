@@ -1,6 +1,7 @@
 package io.github.loopholetv.ui.nav
 
 import java.net.URLEncoder
+import java.time.Instant
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -51,26 +52,45 @@ object Routes {
     const val GUIDE = "guide"
     const val SETTINGS = "settings"
     const val SEARCH = "search"
-    const val PLAYER = "player/{channelId}?scope={scope}"
+    const val PLAYER = "player/{channelId}?scope={scope}&archiveFrom={archiveFrom}"
     /** The full-screen add/edit playlist form opened from Settings; `edit` is a playlist id. */
     const val PLAYLIST_FORM = "playlist-form?edit={edit}"
 
     const val ARG_CHANNEL_ID = "channelId"
     const val ARG_SCOPE = "scope"
+    const val ARG_ARCHIVE_FROM = "archiveFrom"
     const val ARG_EDIT = "edit"
+
+    /** The player destination's arguments; `archiveFrom` is epoch seconds, [NO_ARCHIVE] for live. */
+    val playerArguments = listOf(
+        navArgument(ARG_CHANNEL_ID) { type = NavType.LongType },
+        navArgument(ARG_SCOPE) { type = NavType.StringType; nullable = true; defaultValue = null },
+        navArgument(ARG_ARCHIVE_FROM) { type = NavType.LongType; defaultValue = NO_ARCHIVE },
+    )
 
     /** "Add playlist" without [editId]; editing that playlist with it. */
     fun playlistForm(editId: Long? = null): String =
         "playlist-form" + if (editId != null) "?edit=$editId" else ""
 
-    /** Concrete player route; the scope ([toArg]) is URL-encoded and omitted for all channels. */
-    fun player(channelId: Long, scope: ChannelScope): String =
-        "player/$channelId" + if (scope != ChannelScope.All) {
-            "?scope=${URLEncoder.encode(scope.toArg(), "UTF-8").replace("+", "%20")}"
-        } else {
-            ""
+    /**
+     * Concrete player route; the scope ([toArg]) is URL-encoded and omitted for all channels,
+     * and [archiveFrom] (replay from that instant instead of live) is omitted when null.
+     */
+    fun player(channelId: Long, scope: ChannelScope, archiveFrom: Instant? = null): String {
+        val query = buildList {
+            if (scope != ChannelScope.All) {
+                add("scope=${URLEncoder.encode(scope.toArg(), "UTF-8").replace("+", "%20")}")
+            }
+            if (archiveFrom != null) add("archiveFrom=${archiveFrom.epochSecond}")
         }
+        return "player/$channelId" + if (query.isEmpty()) "" else query.joinToString("&", prefix = "?")
+    }
 }
+
+/** The player's `archiveFrom` argument: [NO_ARCHIVE] (Navigation can't make a Long nullable) means live. */
+const val NO_ARCHIVE = -1L
+
+fun archiveFromArg(arg: Long?): Instant? = arg?.takeIf { it >= 0 }?.let(Instant::ofEpochSecond)
 
 /** The form's `edit` argument: [NO_EDIT] (Navigation can't make a Long nullable) means "add". */
 const val NO_EDIT = -1L
@@ -153,6 +173,7 @@ fun AppNav(
             }
             GuideScreen(
                 onPlay = { id, scope -> navController.navigate(Routes.player(id, scope)) },
+                onPlayArchive = { id, scope, from -> navController.navigate(Routes.player(id, scope, from)) },
                 onSettings = { navController.navigate(Routes.SETTINGS) },
                 onSearch = { navController.navigate(Routes.SEARCH) { launchSingleTop = true } },
             )
@@ -164,17 +185,12 @@ fun AppNav(
                 onBack = dropUnlessResumed { navController.popBackStack() },
             )
         }
-        composable(
-            Routes.PLAYER,
-            arguments = listOf(
-                navArgument(Routes.ARG_CHANNEL_ID) { type = NavType.LongType },
-                navArgument(Routes.ARG_SCOPE) { type = NavType.StringType; nullable = true; defaultValue = null },
-            ),
-        ) { entry ->
+        composable(Routes.PLAYER, arguments = Routes.playerArguments) { entry ->
             val args = entry.arguments
             PlayerScreen(
                 channelId = args?.getLong(Routes.ARG_CHANNEL_ID) ?: 0L,
                 scope = channelScopeFromArg(args?.getString(Routes.ARG_SCOPE)),
+                archiveFrom = archiveFromArg(args?.getLong(Routes.ARG_ARCHIVE_FROM, NO_ARCHIVE)),
                 // Only while this entry is resumed: a second Back during the exit fade must not
                 // pop the guide too.
                 onExit = dropUnlessResumed { navController.popBackStack() },

@@ -38,7 +38,17 @@ data class XtreamLiveStream(
     val tvArchiveDays: Int?,
 )
 
-data class XtreamAccount(val status: String, val maxConnections: Int?, val expiresAt: Instant?)
+/**
+ * [serverTimeZone] is the zone of the provider's archive timestamps as resolved by [xtreamZone]
+ * (an IANA id or a `+HH:MM` offset), null when the login doesn't say. [archiveExt] is `ts` or `m3u8`.
+ */
+data class XtreamAccount(
+    val status: String,
+    val maxConnections: Int?,
+    val expiresAt: Instant?,
+    val serverTimeZone: String? = null,
+    val archiveExt: String = "ts",
+)
 
 /** Credentials rejected (`auth` 0 or HTTP 401/403). */
 class XtreamAuthException(message: String) : Exception(message)

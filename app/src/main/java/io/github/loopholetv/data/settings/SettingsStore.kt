@@ -9,7 +9,9 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 
@@ -22,13 +24,36 @@ fun Flow<AppSettings>.orDefaultsOnError(): Flow<AppSettings> = catch { emit(AppS
 /** DataStore-backed [AppSettings]. Preference key names are persisted: never rename. */
 class SettingsStore(private val store: DataStore<Preferences>) {
 
-    val settings: Flow<AppSettings> = store.data.map { it.toSettings() }.distinctUntilChanged()
+    val settings: Flow<AppSettings> = flow {
+        migrate()
+        emitAll(store.data.map { it.toSettings() }.distinctUntilChanged())
+    }
 
     suspend fun current(): AppSettings = settings.first()
 
     /** Atomic read-modify-write: concurrent updates are serialized by DataStore. */
     suspend fun update(transform: (AppSettings) -> AppSettings) {
-        store.edit { prefs -> prefs.write(transform(prefs.toSettings())) }
+        store.edit { prefs ->
+            prefs.applyPastDaysMigration()
+            prefs.write(transform(prefs.toSettings()))
+        }
+    }
+
+    /** One-off upgrade step, run before the first read. */
+    private suspend fun migrate() {
+        if (store.data.first()[EPG_PAST_DAYS_AUTO_APPLIED] == true) return
+        store.edit { it.applyPastDaysMigration() }
+    }
+
+    /**
+     * Earlier versions defaulted past guide days to 0. An unset or 0 value becomes automatic once;
+     * any other stored value is kept. A marker stops this from running again, so 0 can be chosen later.
+     */
+    private fun MutablePreferences.applyPastDaysMigration() {
+        if (this[EPG_PAST_DAYS_AUTO_APPLIED] == true) return
+        val stored = this[EPG_PAST_DAYS]
+        if (stored == null || stored == 0) this[EPG_PAST_DAYS] = AUTO_PAST_DAYS
+        this[EPG_PAST_DAYS_AUTO_APPLIED] = true
     }
 
     private fun Preferences.toSettings(): AppSettings {
@@ -48,6 +73,18 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             userAgent = this[USER_AGENT]?.trim()?.takeIf { it.isNotEmpty() },
             udpProxy = this[UDP_PROXY]?.trim()?.takeIf { it.isNotEmpty() },
             playback = readPlayback(),
+            remote = readRemote(),
+        )
+    }
+
+    private fun Preferences.readRemote(): RemoteSettings {
+        val d = RemoteSettings()
+        return RemoteSettings(
+            mediaKeysSeek = this[CATCHUP_MEDIA_KEYS_SEEK] ?: d.mediaKeysSeek,
+            rwRewindsLive = this[CATCHUP_RW_REWINDS_LIVE] ?: d.rwRewindsLive,
+            leftRightSeek = this[CATCHUP_LEFT_RIGHT_SEEK] ?: d.leftRightSeek,
+            leftRewindsLive = this[CATCHUP_LEFT_REWINDS_LIVE] ?: d.leftRewindsLive,
+            bindings = decodeBindings(this[KEY_BINDINGS]),
         )
     }
 
@@ -92,6 +129,16 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         putOrRemove(USER_AGENT, s.userAgent)
         putOrRemove(UDP_PROXY, s.udpProxy)
         writePlayback(s.playback)
+        writeRemote(s.remote)
+    }
+
+    private fun MutablePreferences.writeRemote(r: RemoteSettings) {
+        this[CATCHUP_MEDIA_KEYS_SEEK] = r.mediaKeysSeek
+        this[CATCHUP_RW_REWINDS_LIVE] = r.rwRewindsLive
+        this[CATCHUP_LEFT_RIGHT_SEEK] = r.leftRightSeek
+        this[CATCHUP_LEFT_REWINDS_LIVE] = r.leftRewindsLive
+        // Only customised buttons are stored, so untouched ones keep following the defaults.
+        if (r.bindings == KeyBindings.DEFAULT) remove(KEY_BINDINGS) else this[KEY_BINDINGS] = encodeBindings(r.bindings)
     }
 
     private fun MutablePreferences.writePlayback(p: PlaybackSettings) {
@@ -161,5 +208,11 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         val SUBTITLE_BACKGROUND = stringPreferencesKey("subtitle_background")
         val SUBTITLE_EDGE = stringPreferencesKey("subtitle_edge")
         val PIP_ON_HOME = booleanPreferencesKey("pip_on_home")
+        val CATCHUP_MEDIA_KEYS_SEEK = booleanPreferencesKey("catchup_media_keys_seek")
+        val CATCHUP_RW_REWINDS_LIVE = booleanPreferencesKey("catchup_rw_rewinds_live")
+        val CATCHUP_LEFT_RIGHT_SEEK = booleanPreferencesKey("catchup_left_right_seek")
+        val CATCHUP_LEFT_REWINDS_LIVE = booleanPreferencesKey("catchup_left_rewinds_live")
+        val KEY_BINDINGS = stringPreferencesKey("key_bindings")
+        val EPG_PAST_DAYS_AUTO_APPLIED = booleanPreferencesKey("epg_past_days_auto_applied")
     }
 }

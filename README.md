@@ -68,7 +68,7 @@ Loophole plays live channels and a programme guide from the playlists you give i
 - **Four kinds of playlist:** M3U link, local M3U file, Xtream Codes account or MAC (Stalker) portal, each with an XMLTV programme guide.
 - **TV guide with a live preview:** the channel you pick plays in a small window above the grid, next to the programme's title, time, progress and description.
 - **Several playlists:** Settings → Playlists → *Add playlist*. Each playlist can be turned off, renamed, given another address or login, and have its own user agent and update schedule. Update one on its own or all of them with *Update all playlists*. Channel numbers continue from one playlist to the next.
-- **Guides per playlist:** Settings → EPG lists each playlist's own guide (which you can turn off) and any extra guide links you add. You choose how many past days to keep, and can clear the guide.
+- **Guides per playlist:** Settings → EPG lists each playlist's own guide (which you can turn off) and any extra guide links you add. You choose how many past days to keep (*Automatic* keeps as many as your channels' catch-up goes back, up to a week), and can clear the guide.
 - **Scheduled updates:** playlists and guides update on a schedule and at app start, and the guide can also update after each playlist update.
 - **Search:** find channels and programmes from the side menu, with the on-screen keyboard or voice where the TV offers it.
 
@@ -89,12 +89,21 @@ Enter the portal address and the MAC address your provider registered (usually s
 ### Watching
 
 - **Full screen with an info bar:** now and next, time left, and a row of channels to flip through without leaving the picture.
+- **Catch-up TV:** on channels your provider records, a rewind icon marks them in the guide and Left walks back into finished programmes, as far as the channel's archive goes. OK on one plays it from the start in full screen; when it ends, the next one starts. Works with Xtream Codes accounts (`tv_archive`) and with M3U playlists that declare catch-up (`catchup="default"`, `"append"`, `"shift"`, `"flussonic"` or `"xc"`, with `catchup-source` and `catchup-days`). MAC (Stalker) portals have no catch-up yet.
+- **Seek bar:** while a programme plays back, Rewind and Fast-forward jump 10 and 30 seconds (hold them to go faster; the picture moves once you let go), Play/Pause pauses, and the bar shows the title, times, elapsed and total time. *Live* (or fast-forwarding to the end) returns to the live channel. *Watch from start* in the quick menu restarts the current programme.
+- **Rewind and pause live TV:** on a catch-up channel, Rewind goes back from live and Pause holds the picture; Play carries on from where you paused. On a channel without catch-up, Loophole says so.
 - **Quick menu:** press ≡ or hold OK while watching for Search, Channels, Video quality, Audio track, Audio delay, Subtitles, Aspect ratio, Sleep timer, Add to favourites, Channel options, Picture-in-picture (where the TV supports it) and Settings.
 - **History:** channels you watched for 10 seconds or more, newest first, from the History tile in the full-screen overlay.
 - **Sleep timer:** 15 minutes to 2 hours, with a warning before it stops.
 - **Picture-in-picture:** on TVs that support it, from the quick menu or (if you turn it on) the Home button. Closing the small window stops the stream. Fire TV devices usually don't offer it, and then it isn't shown.
 - **External players:** a channel can open in MX Player, VLC, Kodi or Just Player when they're installed, or ask each time. Loophole stops its own stream first, so a one-connection account isn't used twice.
 - **Start and exit:** optionally reopen the last channel on start, and optionally confirm before Back leaves the app.
+
+### Remote control
+
+- **Settings → Remote control:** four switches choose whether Rewind/Fast-forward/Pause seek in catch-up, whether Rewind goes back from live, whether Left/Right seek when the controls are hidden, and whether Left goes back from live.
+- **Your own buttons:** map any spare remote button (a colour key, for example) to an action in the player (channel up/down, channel list, TV guide, quick menu, favourite, subtitles, audio track, sleep timer, search, play/pause, rewind, fast-forward, live, watch from start) or in the guide (page up/down, back to now, previous/next day, favourite, search, Settings). *Reset buttons* puts them back.
+- **Defaults:** CH+/CH− (or Page up/down) change channel full screen and page the guide; Rewind/Fast-forward move the guide a day. D-pad Up and Down never change channel full screen.
 
 ### Playback & sound
 

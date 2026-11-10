@@ -27,6 +27,13 @@ import io.github.loopholetv.data.repo.guideKey
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.PreviewHold
+import io.github.loopholetv.player.catchup.ArchiveRequest
+import io.github.loopholetv.data.catchup.catchup
+import io.github.loopholetv.data.settings.GuideAction
+import io.github.loopholetv.data.settings.KeyBindings
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.receiveAsFlow
 import io.github.loopholetv.ui.manage.EditActions
 import io.github.loopholetv.ui.manage.asEditActions
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +61,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 
@@ -131,7 +139,25 @@ sealed interface OkAction {
     data object Previewed : OkAction
     data class OpenPlayer(val channelId: Long) : OkAction
     data class ShowDetails(val programme: ProgrammeEntity) : OkAction
+
+    /** A finished programme from the channel's archive: playing from [from], to open full screen. */
+    data class PlayArchive(val channelId: Long, val from: Instant) : OkAction
 }
+
+/** What a guide button asks the screen to do (see [GuideViewModel.onGuideKey]). */
+sealed interface GuideEvent {
+    /** Scroll the channel list by [rows] (negative: up), focus moving with it. */
+    data class PageRows(val rows: Int) : GuideEvent
+
+    data object OpenSearch : GuideEvent
+    data object OpenSettings : GuideEvent
+}
+
+/** Guide actions that go on while their button is held. */
+private val REPEATABLE = setOf(GuideAction.PAGE_UP, GuideAction.PAGE_DOWN, GuideAction.DAY_BACK, GuideAction.DAY_FORWARD)
+
+/** Half-hour steps in a day: Rewind and Fast-forward move the window this far. */
+private const val DAY_STEPS = 48
 
 /** What the info area describes; [programme] null means no guide data for that slot. */
 data class FocusedProgramme(val channel: ChannelEntity, val programme: ProgrammeEntity?)
@@ -210,7 +236,18 @@ class GuideViewModel(
     private val previewHold: PreviewHold = PreviewHold(),
     /** Fires when the sleep timer has stopped playback. */
     sleepExpired: Flow<Unit> = emptyFlow(),
+    /** Remote button bindings; the guide's table decides what a non-arrow button does here. */
+    keyBindings: Flow<KeyBindings> = flowOf(KeyBindings.DEFAULT),
 ) : ViewModel() {
+
+    private val bindings: StateFlow<KeyBindings> = keyBindings
+        .catch { emit(KeyBindings.DEFAULT) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, KeyBindings.DEFAULT)
+
+    private val _events = Channel<GuideEvent>(Channel.BUFFERED)
+
+    /** One-shot requests from the guide buttons (page scroll, Search, Settings). */
+    val events: Flow<GuideEvent> = _events.receiveAsFlow()
 
     // Not properties named like the public functions below (a call would resolve to the function).
     private val toggleFavouriteOp = toggleFavourite
@@ -503,32 +540,56 @@ class GuideViewModel(
         refreshLatestEnd()
     }
 
+    /** The guide's current time (the injected clock). */
+    fun now(): Instant = clock()
+
     private val _window = MutableStateFlow(initialWindow(clock(), zone))
     val window: StateFlow<TimeWindow> = _window.asStateFlow()
 
     private val _windowShifted = MutableStateFlow(false)
 
-    /** Whether the window was moved into the future; if not, it follows the clock. */
+    /** Whether the window was moved away from now (past or future); if not, it follows the clock. */
     val windowShifted: StateFlow<Boolean> = _windowShifted.asStateFlow()
+
+    private val _pastWindow = MutableStateFlow(false)
+
+    /** Whether the window starts before the "now" window (looking back on a catch-up channel). */
+    val pastWindow: StateFlow<Boolean> = _pastWindow.asStateFlow()
+
+    /**
+     * How far back the archive reached (now − its limit) on the row whose limit the past window
+     * last moved within, so the window can follow that limit as the clock moves it on.
+     */
+    private var archiveSpan: Duration? = null
 
     /**
      * Moves the window by [steps] half hours (Right/Left at a strip's edge); returns false when it
-     * is already at the limit: the guide's end, or "now" (there is no past navigation).
+     * is already at the limit: the guide's end, or the focused row's [earliest] (its archive
+     * limit; null: "now", the row has no past).
      */
-    fun shiftWindow(steps: Int): Boolean {
+    fun shiftWindow(steps: Int, earliest: Instant? = null): Boolean {
         val now = clock()
-        val next = shiftWindow(_window.value, steps, now, zone, latestEnd)
+        val next = shiftWindow(_window.value, steps, now, zone, latestEnd, earliest)
         if (next == _window.value) {
             if (steps > 0) requeryLimitFor(steps)
             return false
         }
         applyWindow(next, now)
+        // Only a row whose archive holds the new window sets the limit the window follows: a row
+        // with a shorter archive (moving within a window reached on another row) never pulls the
+        // window forward on the next tick.
+        if (earliest != null && _pastWindow.value && next.start >= floorToHalfHour(earliest, zone)) {
+            archiveSpan = Duration.between(earliest, now)
+        }
         return true
     }
 
     private fun applyWindow(next: TimeWindow, now: Instant) {
+        val nowStart = initialWindow(now, zone).start
         _window.value = next
-        _windowShifted.value = next != initialWindow(now, zone)
+        _windowShifted.value = next.start != nowStart
+        _pastWindow.value = next.start < nowStart
+        if (!_pastWindow.value) archiveSpan = null
     }
 
     private var blockedSteps = 0
@@ -553,22 +614,30 @@ class GuideViewModel(
 
     /** Snaps the window back to "now" (Back while shifted); false when it already was there. */
     fun resetWindow(): Boolean {
-        val now = initialWindow(clock(), zone)
-        val changed = _window.value != now
-        _window.value = now
-        _windowShifted.value = false
+        val now = clock()
+        val nowWindow = initialWindow(now, zone)
+        val changed = _window.value != nowWindow
+        applyWindow(nowWindow, now)
         return changed
     }
 
     /**
      * Called by the screen's clock tick: an unshifted window follows the current half hour, and a
-     * shifted one the clock has caught up with becomes the "now" window again (never the past).
+     * future one the clock has caught up with becomes the "now" window again. A past window stays
+     * where it is, until the archive limit of the row that moved it passes its start: then it
+     * moves on with that limit.
      */
     fun onTick() {
-        val nowWindow = initialWindow(clock(), zone)
-        if (!_windowShifted.value || _window.value.start <= nowWindow.start) {
-            _window.value = nowWindow
-            _windowShifted.value = false
+        val now = clock()
+        val nowWindow = initialWindow(now, zone)
+        val current = _window.value
+        when {
+            !_windowShifted.value -> applyWindow(nowWindow, now)
+            _pastWindow.value -> {
+                val bound = archiveSpan?.let { floorToHalfHour(now - it, zone) } ?: return
+                if (current.start < bound) applyWindow(TimeWindow(bound, bound + WINDOW_LENGTH), now)
+            }
+            current.start <= nowWindow.start -> applyWindow(nowWindow, now)
         }
     }
 
@@ -629,8 +698,23 @@ class GuideViewModel(
      * - the previewing channel's "No information" block or programme airing now → full screen
      *   (same player, no reconnect) while it is loading or playing; after an error, retry instead;
      * - a past or future programme of the previewing channel → its details.
+     * Before all that, a finished programme the channel's archive still holds plays from its start
+     * at once, previewing or not, to open full screen. It always plays in this app's player, even
+     * on a channel set to an external player (that hand-off is for live streams only).
      */
     fun onOk(channel: ChannelEntity, programme: ProgrammeEntity?): OkAction {
+        val at = clock()
+        if (programme != null && programme.stop <= at &&
+            playableRange(channel.catchup(), at)?.contains(programme.start) == true
+        ) {
+            // While full screen is already opening for an earlier OK, a quick second one doesn't
+            // release and reopen the stream (one connection at a time).
+            if (!archivePending) {
+                _previewing.value = channel
+                playback.playArchive(channel, ArchiveRequest(programme.start, programme.stop))
+            }
+            return OkAction.PlayArchive(channel.id, programme.start)
+        }
         if (_previewing.value?.id != channel.id) {
             _previewing.value = channel
             playback.play(channel)
@@ -670,6 +754,43 @@ class GuideViewModel(
         if (playerPending) return null
         playerPending = true
         return open.channelId
+    }
+
+    /** An archive PlayArchive was passed on and the guide hasn't been on screen again since. */
+    private var archivePending = false
+
+    /** [action] when it is a PlayArchive to open full screen, once (as [claimPlayer]). */
+    fun claimArchive(action: OkAction?): OkAction.PlayArchive? {
+        val open = action as? OkAction.PlayArchive ?: return null
+        if (archivePending) return null
+        archivePending = true
+        return open
+    }
+
+    /**
+     * A remote button pressed in the guide, looked up in the guide's bindings; [focusedRow] is the
+     * channel it acts on (its archive limit, its favourite). Returns whether it was used: an
+     * unbound button, or one set to Nothing, is not. Rewind and Fast-forward move the window a
+     * whole day, no further back than the row's archive limit (a row without catch-up goes no
+     * further back than now). While the button is held ([repeat]), only page and day moves go on;
+     * the one-shot actions (favourite, back to now, Search, Settings) act once per press.
+     */
+    fun onGuideKey(code: Int, focusedRow: ChannelEntity?, repeat: Boolean = false): Boolean {
+        val action = bindings.value.guide(code)
+        if (action == null || action == GuideAction.NONE) return false
+        if (repeat && action !in REPEATABLE) return true
+        when (action) {
+            GuideAction.NONE -> Unit
+            GuideAction.PAGE_UP -> _events.trySend(GuideEvent.PageRows(-GUIDE_ROWS))
+            GuideAction.PAGE_DOWN -> _events.trySend(GuideEvent.PageRows(GUIDE_ROWS))
+            GuideAction.NOW -> resetWindow()
+            GuideAction.DAY_BACK -> shiftWindow(-DAY_STEPS, focusedRow?.let { rowEarliest(it, clock()) })
+            GuideAction.DAY_FORWARD -> shiftWindow(DAY_STEPS, focusedRow?.let { rowEarliest(it, clock()) })
+            GuideAction.FAVOURITE -> focusedRow?.let { toggleFavourite(it) }
+            GuideAction.SEARCH -> _events.trySend(GuideEvent.OpenSearch)
+            GuideAction.SETTINGS -> _events.trySend(GuideEvent.OpenSettings)
+        }
+        return true
     }
 
     /**
@@ -714,6 +835,7 @@ class GuideViewModel(
      */
     fun onScreenStarted() {
         playerPending = false
+        archivePending = false
         refreshLatestEnd()
         // Always taken, so a hold left while something still plays can't blank a later return.
         val held = previewHold.consume()
@@ -835,6 +957,7 @@ class GuideViewModel(
                     playlistsExist = playlists.map { it.isNotEmpty() },
                     previewHold = c.previewHold,
                     sleepExpired = c.sleepTimer.expired,
+                    keyBindings = c.settingsStore.settings.map { it.remote.bindings }.distinctUntilChanged(),
                 ) as T
             }
         }

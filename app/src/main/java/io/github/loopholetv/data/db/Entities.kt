@@ -59,6 +59,10 @@ data class PlaylistEntity(
     val portalDeviceId: String? = null,
     val portalDeviceId2: String? = null,
     val portalSignature: String? = null,
+    /** Xtream: the zone (IANA id or `+HH:MM`) of the provider's archive timestamps, from the last login. */
+    val xtreamTimeZone: String? = null,
+    /** Xtream: archive stream extension (`ts` or `m3u8`), from the last login. */
+    val xtreamArchiveExt: String? = null,
 )
 
 @Entity(
@@ -104,6 +108,8 @@ data class ChannelEntity(
     val catchupType: String?,
     val catchupDays: Int?,
     val catchupSource: String?,
+    /** Minutes added to the archive request time; a source column, overwritten on every refresh. */
+    @ColumnInfo(defaultValue = "0") val catchupCorrectionMinutes: Int = 0,
     /** Resolved later by the EPG matcher. */
     val epgChannelId: String?,
     // --- Derived columns: recomputed from the playlist, channel_prefs and group_prefs (never the only copy of an edit) ---

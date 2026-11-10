@@ -54,14 +54,20 @@ sealed interface SettingsPage {
     data class Editor(val id: Long) : SettingsPage { override val key = "editor:$id" }
     data object Epg : SettingsPage { override val key = "epg" }
     data object Playback : SettingsPage { override val key = "playback" }
+    data object Remote : SettingsPage { override val key = "remote" }
+    /** The buttons set up for [context], one row each. */
+    data class RemoteButtons(val context: BindingContext) : SettingsPage { override val key = "remoteButtons:${context.key}" }
     data object About : SettingsPage { override val key = "about" }
 
     companion object {
-        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, About).associateBy { it.key }
+        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Remote, About).associateBy { it.key }
 
         /** Unknown or malformed keys give [Sections]. */
         fun fromKey(key: String): SettingsPage {
             fixed[key]?.let { return it }
+            if (key.startsWith("remoteButtons:")) {
+                return BindingContext.entries.firstOrNull { it.key == key.substringAfter(':') }?.let(::RemoteButtons) ?: Sections
+            }
             val id = key.substringAfter(':', "").toLongOrNull() ?: return Sections
             return when (key.substringBefore(':')) {
                 "playlist" -> Playlist(id)
@@ -82,10 +88,12 @@ private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     is SettingsPage.Editor -> ui.playlists.firstOrNull { it.id == id }?.name ?: "Playlists"
     SettingsPage.Epg -> "EPG"
     SettingsPage.Playback -> "Playback"
+    SettingsPage.Remote -> "Remote control"
+    is SettingsPage.RemoteButtons -> context.title
     SettingsPage.About -> "About"
 }
 
-internal val DISABLED_SECTIONS = listOf("Appearance", "Remote control", "Parental controls", "Other")
+internal val DISABLED_SECTIONS = listOf("Appearance", "Parental controls", "Other")
 private const val COMING_LATER = "Coming in a later update"
 
 /**
@@ -126,6 +134,7 @@ fun SettingsPanel(
     BackHandler(enabled = !confirming && page != SettingsPage.Sections && page !is SettingsPage.Editor) {
         when (val p = page) {
             is SettingsPage.Playlist -> go(SettingsPage.Playlists, playlistRowKey(p.id))
+            is SettingsPage.RemoteButtons -> go(SettingsPage.Remote, remoteRowKey(p.context.title))
             else -> go(SettingsPage.Sections, null)
         }
     }
@@ -188,6 +197,8 @@ fun SettingsPanel(
                 )
                 SettingsPage.Epg -> EpgPage(ui, vm, focusKey, consumeFocus)
                 SettingsPage.Playback -> PlaybackPage(ui, vm, focusKey, consumeFocus, vm.pipSupported)
+                SettingsPage.Remote -> RemotePage(ui, vm, focusKey, consumeFocus, onOpen = { c -> go(SettingsPage.RemoteButtons(c), null) })
+                is SettingsPage.RemoteButtons -> RemoteButtonsPage(p.context, ui, vm, focusKey, consumeFocus)
                 SettingsPage.About -> AboutPage()
             }
         }
@@ -204,7 +215,7 @@ internal fun playlistRowKey(id: Long) = "row:$id"
 internal fun PillButton(label: String, modifier: Modifier = Modifier, onFocus: () -> Unit = {}, onClick: () -> Unit) =
     OnboardingPillButton(label, selected = false, modifier = modifier, containerColor = Tokens.Surface, onFocus = onFocus, onClick = onClick)
 
-private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.About)
+private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Remote, SettingsPage.About)
 
 @Composable
 private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
@@ -215,7 +226,8 @@ private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
         SectionItem("Playlists", requesters.getValue(SettingsPage.Playlists)) { onOpen(SettingsPage.Playlists) }
         SectionItem("EPG", requesters.getValue(SettingsPage.Epg)) { onOpen(SettingsPage.Epg) }
         SectionItem("Playback", requesters.getValue(SettingsPage.Playback)) { onOpen(SettingsPage.Playback) }
-        // Not focusable: D-pad moves straight from Playback to About.
+        SectionItem("Remote control", requesters.getValue(SettingsPage.Remote)) { onOpen(SettingsPage.Remote) }
+        // Not focusable: D-pad moves straight from Remote control to About.
         DISABLED_SECTIONS.forEach { DisabledSection(it) }
         SectionItem("About", requesters.getValue(SettingsPage.About)) { onOpen(SettingsPage.About) }
     }
@@ -256,7 +268,7 @@ private fun ConfirmClearEpg(onClear: () -> Unit, onCancel: () -> Unit) =
 
 /** A confirmation in the panel: [text], then [action] and "Cancel"; focus starts on "Cancel". */
 @Composable
-private fun Confirm(text: String, action: String, onAction: () -> Unit, onCancel: () -> Unit) {
+internal fun Confirm(text: String, action: String, onAction: () -> Unit, onCancel: () -> Unit) {
     val cancel = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusSoon(cancel) }
     Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {

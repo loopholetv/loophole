@@ -323,6 +323,7 @@ class PlaylistRepository internal constructor(
         // A read from the last-good copy isn't a real update: the next scheduled one tries the file again.
         val at = if (keepRefreshTime) row?.lastRefreshedAt ?: now() else now()
         playlistDao.markRefreshed(id, at, epgUrls)
+        source.archiveInfo()?.let { playlistDao.setArchiveInfo(id, it.zone, it.ext) }
         if (rekey) playlistDao.setRekeyPending(id, false)
         ImportResult.Success(id, count)
     }

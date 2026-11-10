@@ -27,7 +27,7 @@ fun EpgOptionsSection(ui: SettingsUi, vm: SettingsViewModel, host: ChoiceHost, c
             o.epgUpdateOnPlaylistChange,
             { vm.setOption { it.copy(epgUpdateOnPlaylistChange = !it.epgUpdateOnPlaylistChange) } },
         )
-        host.Row("Past days of EPG to keep", AppSettings.PAST_DAYS, o.epgPastDays, ::pastDaysText) { d ->
+        host.Row("Past days of EPG to keep", AppSettings.PAST_DAYS, o.epgPastDays, { pastDaysText(it, ui.automaticPastDays) }) { d ->
             vm.setOption { it.copy(epgPastDays = d) }
         }
         ToggleRow("Store programme descriptions", o.epgStoreDescriptions, { vm.setOption { it.copy(epgStoreDescriptions = !it.epgStoreDescriptions) } })

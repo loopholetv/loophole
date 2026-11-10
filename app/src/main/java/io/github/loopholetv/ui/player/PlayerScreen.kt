@@ -15,6 +15,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -31,10 +32,12 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEventType
@@ -76,6 +79,7 @@ import io.github.loopholetv.ui.manage.channelEditOptions
 import io.github.loopholetv.ui.manage.rememberChannelPlayback
 import io.github.loopholetv.ui.theme.Tokens
 import kotlinx.coroutines.delay
+import java.time.Instant
 
 private const val CLOCK_TICK_MS = 5_000L
 
@@ -93,8 +97,10 @@ fun PlayerScreen(
     onExit: () -> Unit,
     onSearch: () -> Unit = {},
     onSettings: () -> Unit = {},
+    /** Replay the archive from this shown instant instead of playing live. */
+    archiveFrom: Instant? = null,
 ) {
-    val vm: PlayerViewModel = viewModel(factory = PlayerViewModel.factory(channelId, scope))
+    val vm: PlayerViewModel = viewModel(factory = PlayerViewModel.factory(channelId, scope, archiveFrom))
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as LoopholeApp).container }
     val playback = container.playback
@@ -112,6 +118,12 @@ fun PlayerScreen(
     // Not the countdown itself: that is read only by the card, so the screen doesn't recompose each second.
     val sleepWarningShown by vm.sleepWarningShown.collectAsStateWithLifecycle()
     val tracks by playback.tracks.collectAsStateWithLifecycle()
+    // The bar changes every second while it shows: only the bar and the info bar read it (through
+    // a lambda), so the ticks never recompose this screen.
+    val catchupBar = vm.catchupBar.collectAsStateWithLifecycle()
+    val replaying by remember { derivedStateOf { catchupBar.value != null } }
+    val barVisible by vm.barVisible.collectAsStateWithLifecycle()
+    val archiveFailed by vm.archiveFailed.collectAsStateWithLifecycle()
     val inPip = rememberInPictureInPicture()
     LaunchedEffect(inPip) { vm.onPipChanged(inPip) }
     // Read when the user presses Home; the view model clears it as soon as an exit starts.
@@ -188,6 +200,9 @@ fun PlayerScreen(
     val keptAwake = remember { mutableSetOf<Int>() }
     // The OK press the root follows (see rootOkRoute): only presses that begin here click or hold.
     var rootPress by remember { mutableStateOf(RootPress.None) }
+    // The archive's error card: OK is taken at the root, so it acts on the button that has focus.
+    var watchLiveFocused by remember { mutableStateOf(false) }
+    val onClick: () -> Unit = { vm.onRootClick(watchLiveFocused) }
 
     Box(
         Modifier
@@ -196,7 +211,8 @@ fun PlayerScreen(
             .onPreviewKeyEvent { e ->
                 val code = e.nativeKeyEvent.keyCode
                 when {
-                    e.type == KeyEventType.KeyUp && keptAwake.remove(code) -> true
+                    // A seek key held into the sleep warning still commits its seek when released.
+                    e.type == KeyEventType.KeyUp && keptAwake.remove(code) -> { vm.onKeyUp(code); true }
                     e.type == KeyEventType.KeyDown && vm.consumeSleepWarning() -> { keptAwake += code; true }
                     // Handled here, not via the back dispatcher: with focus on a row tile Compose
                     // could swallow the first Back press (seen on the Shield).
@@ -209,9 +225,14 @@ fun PlayerScreen(
                         }
                         true
                     }
-                    rootOkAction(vm, code, e, rootPress) { rootPress = it } -> true
-                    e.type == KeyEventType.KeyDown -> vm.onKey(code).also { if (it) consumed += code }
-                    e.type == KeyEventType.KeyUp -> consumed.remove(code)
+                    rootOkAction(vm, code, e, rootPress, onClick) { rootPress = it } -> true
+                    e.type == KeyEventType.KeyDown ->
+                        vm.onKey(code, e.nativeKeyEvent.repeatCount).also { if (it) consumed += code }
+                    e.type == KeyEventType.KeyUp -> {
+                        // A held seek key commits its seek when released.
+                        vm.onKeyUp(code)
+                        consumed.remove(code)
+                    }
                     else -> false
                 }
             }
@@ -234,7 +255,8 @@ fun PlayerScreen(
         )
         val u = ui ?: return@Box
         if (inPip) return@Box
-        val showError = u.error != null
+        // While replaying, only the archive's own card shows (the live one would offer the wrong retry).
+        val showError = archiveFailed || (u.error != null && !replaying)
 
         // Bare video: focus sits on the error card's button if there is one, else on the screen
         // (also once a dialog closes).
@@ -254,9 +276,13 @@ fun PlayerScreen(
                 modifier = Modifier.align(Alignment.Center).size(40.dp),
             )
         }
-        if (u.overlayVisible || u.bannerVisible) {
+        val showBar = barVisible && replaying
+        if (u.overlayVisible || u.bannerVisible || showBar) {
             Overlay(
                 ui = u,
+                showBar = showBar,
+                catchup = { catchupBar.value },
+                onTransport = vm::onTransport,
                 row = row,
                 format = format,
                 onGuide = {
@@ -307,10 +333,18 @@ fun PlayerScreen(
             )
         }
         if (sleepWarningShown) SleepWarningHost(vm.sleep, Modifier.align(Alignment.TopCenter).padding(top = 40.dp))
-        u.error?.let {
+        if (showError) {
             // Centred on bare video; above the info bar while the overlay is up.
             val place = if (u.overlayVisible || u.bannerVisible) Modifier.align(Alignment.TopCenter).padding(top = 110.dp) else Modifier.align(Alignment.Center)
-            ErrorCard(it, onRetry = vm::retry, focus = retryFocus, modifier = place)
+            if (archiveFailed) {
+                ErrorCard(
+                    ARCHIVE_FAILED, onRetry = vm::retryArchive, focus = retryFocus, modifier = place,
+                    detail = ARCHIVE_FAILED_DETAIL, onWatchLive = vm::watchLive,
+                    onWatchLiveFocused = { watchLiveFocused = it },
+                )
+            } else {
+                u.error?.let { ErrorCard(it, onRetry = vm::retry, focus = retryFocus, modifier = place) }
+            }
         }
         u.numberEntry?.let {
             Text(
@@ -348,6 +382,7 @@ private inline fun rootOkAction(
     code: Int,
     e: androidx.compose.ui.input.key.KeyEvent,
     press: RootPress,
+    click: () -> Unit,
     setPress: (RootPress) -> Unit,
 ): Boolean {
     val ui = vm.ui.value ?: return false
@@ -362,7 +397,7 @@ private inline fun rootOkAction(
     when (result.action) {
         RootOkAction.PassThrough -> return false
         RootOkAction.Consume -> Unit
-        RootOkAction.Click -> vm.onKey(KeyEvent.KEYCODE_DPAD_CENTER)
+        RootOkAction.Click -> click()
         RootOkAction.LongClick -> vm.onLongOk()
         RootOkAction.Commit -> vm.onKey(code)
     }
@@ -370,8 +405,16 @@ private inline fun rootOkAction(
 }
 
 @Composable
-private fun Overlay(
+internal fun Overlay(
     ui: PlayerUi,
+    /** Whether the catch-up bar shows. */
+    showBar: Boolean,
+    /**
+     * What is replaying, for the bar and the info bar (also while the bar is hidden). Read only
+     * inside them, so its once-a-second changes recompose nothing else.
+     */
+    catchup: () -> CatchupBarUi?,
+    onTransport: (TransportButton) -> Unit,
     row: ChannelRowUi,
     format: GuideFormat,
     onGuide: () -> Unit,
@@ -382,15 +425,18 @@ private fun Overlay(
     onLongPress: (ChannelEntity) -> Unit,
     onRowEdge: (atEnd: Boolean) -> Unit,
 ) {
+    val info = ui.overlayVisible || ui.bannerVisible
     Box(Modifier.fillMaxSize()) {
-        OverlayTopBar(
-            group = ui.groupLabel,
-            clock = ui.clock,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)))
-                .padding(start = 48.dp, end = 48.dp, top = 24.dp, bottom = 40.dp),
-        )
+        if (info) {
+            OverlayTopBar(
+                group = ui.groupLabel,
+                clock = ui.clock,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)))
+                    .padding(start = 48.dp, end = 48.dp, top = 24.dp, bottom = 40.dp),
+            )
+        }
         Column(
             verticalArrangement = Arrangement.spacedBy(18.dp),
             modifier = Modifier
@@ -399,10 +445,23 @@ private fun Overlay(
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))))
                 .padding(start = 48.dp, end = 48.dp, top = 60.dp, bottom = 24.dp),
         ) {
-            InfoBar(ui, format)
+            if (showBar) {
+                TickingCatchupBar(
+                    ui = catchup,
+                    // Changes only when OK opens the overlay on the bar, so it refocuses each time.
+                    focus = if (ui.barFocused) TransportButton.PLAY_PAUSE else null,
+                    onButton = onTransport,
+                    // Nothing above the bar: Up stays on it. Down goes on to the channel row.
+                    modifier = Modifier.onPreviewKeyEvent { e ->
+                        e.type == KeyEventType.KeyDown && e.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP
+                    },
+                )
+            }
+            if (info) InfoBar(ui, format, catchup = catchup)
             // The slim banner (after a channel key) stops here; D-pad/OK adds the row and moves focus into it.
             if (ui.overlayVisible) {
                 ChannelRow(
+                    autoFocus = !ui.barFocused,
                     row = row,
                     favourites = favourites,
                     onGuide = onGuide,
@@ -418,7 +477,15 @@ private fun Overlay(
 }
 
 @Composable
-private fun ErrorCard(message: String, onRetry: () -> Unit, focus: FocusRequester, modifier: Modifier) {
+private fun ErrorCard(
+    message: String,
+    onRetry: () -> Unit,
+    focus: FocusRequester,
+    modifier: Modifier,
+    detail: String? = null,
+    onWatchLive: (() -> Unit)? = null,
+    onWatchLiveFocused: (Boolean) -> Unit = {},
+) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -428,7 +495,17 @@ private fun ErrorCard(message: String, onRetry: () -> Unit, focus: FocusRequeste
             .padding(28.dp),
     ) {
         Text(message, style = MaterialTheme.typography.titleMedium, color = Tokens.OnBackground, textAlign = TextAlign.Center)
-        Button(onClick = onRetry, modifier = Modifier.focusRequester(focus)) { Text("Try again") }
+        detail?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = Tokens.Muted, textAlign = TextAlign.Center)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Button(onClick = onRetry, modifier = Modifier.focusRequester(focus)) { Text("Try again") }
+            onWatchLive?.let {
+                Button(onClick = it, modifier = Modifier.onFocusChanged { f -> onWatchLiveFocused(f.isFocused) }) {
+                    Text("Watch live")
+                }
+            }
+        }
     }
 }
 

@@ -52,22 +52,31 @@ fun OverlayTopBar(group: String, clock: String, modifier: Modifier = Modifier) {
 
 /**
  * Logo, programme airing now (title, time, progress, minutes left), the next programme, channel
- * number and name, and the stream tags as outlined chips.
+ * number and name, and the stream tags as outlined chips. While replaying ([catchup] not null)
+ * it shows the replayed programme with its times, a "Catch-up" tag and "Paused" when paused.
  */
 @Composable
-fun InfoBar(ui: PlayerUi, format: GuideFormat, modifier: Modifier = Modifier) {
+fun InfoBar(ui: PlayerUi, format: GuideFormat, modifier: Modifier = Modifier, catchup: () -> CatchupBarUi? = { null }) {
     val now = ui.now
+    // Read here, not by the caller: the replayed programme's state changes every second.
+    val catchup = catchup()
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
         ChannelBadge(ui.channel.displayLogo, ui.channel.guideNumber, width = 132.dp, height = 74.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = now?.title ?: "No information",
+                text = catchup?.title ?: now?.title ?: "No information",
                 style = MaterialTheme.typography.headlineSmall,
                 color = Tokens.OnBackground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (now != null) {
+            if (catchup != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(catchup.times, style = MaterialTheme.typography.bodyMedium, color = Tokens.Muted)
+                    TagChip("Catch-up")
+                    if (catchup.paused) Text("Paused", style = MaterialTheme.typography.bodyMedium, color = Tokens.OnBackground)
+                }
+            } else if (now != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(format.range(now), style = MaterialTheme.typography.bodyMedium, color = Tokens.Muted)
                     if (now.isAiring(ui.at)) {

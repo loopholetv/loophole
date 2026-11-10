@@ -30,8 +30,8 @@ android {
         applicationId = "io.github.loopholetv"
         minSdk = 25
         targetSdk = 37
-        versionCode = 7
-        versionName = "0.4.1"
+        versionCode = 8
+        versionName = "0.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -146,6 +146,9 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.kxml2)
     testImplementation(libs.androidx.test.core)
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
     testImplementation(libs.androidx.room.testing)
     testImplementation(libs.androidx.work.testing)
     testImplementation(libs.androidx.media3.test.utils)

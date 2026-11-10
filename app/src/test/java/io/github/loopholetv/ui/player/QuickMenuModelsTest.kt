@@ -107,4 +107,12 @@ class QuickMenuModelsTest {
     @Test fun everyItemHasAnIcon() {
         QuickItem.entries.forEach { assertEquals(it.label, quickIcon(it).name) }
     }
+
+    @Test fun startOverPlacedAfterChannels() {
+        val items = quickItems(pipSupported = false, startOver = true)
+        assertEquals(QuickItem.START_OVER, items[items.indexOf(QuickItem.CHANNELS) + 1])
+        assertEquals("Watch from start", QuickItem.START_OVER.label)
+        assertEquals(items - QuickItem.START_OVER, quickItems(pipSupported = false))
+        assertFalse(QuickItem.START_OVER in quickItems(pipSupported = true))
+    }
 }

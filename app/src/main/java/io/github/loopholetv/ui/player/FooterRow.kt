@@ -80,6 +80,47 @@ internal class FooterRow(
         }
     }
 
+    /**
+     * [fresh] was edited: hidden, it leaves the row; otherwise its tile shows the new channel and,
+     * reloaded in [scope], the programme its (possibly new) guide has airing.
+     */
+    fun onEdited(fresh: ChannelEntity) {
+        val id = fresh.id
+        if (!fresh.visible) {
+            update { r ->
+                val kept = r.channels.filter { it.id != id }
+                if (kept.size == r.channels.size) r else r.copy(channels = kept, currentIndex = kept.indexOfFirst { it.id == r.currentId })
+            }
+            return
+        }
+        update { r -> r.copy(channels = r.channels.map { if (it.id == id) fresh else it }) }
+        scope.launch {
+            val title = titlesFor(listOf(fresh))[id]
+            update { r ->
+                if (r.channels.none { it.id == id }) r
+                else r.copy(titles = if (title != null) r.titles + (id to title) else r.titles - id)
+            }
+        }
+    }
+
+    /**
+     * The programmes airing now and next on [channel] for the info bar, given to [loaded]. Without
+     * a guide (e.g. the manual one was removed) that is null and null at once, so nothing stays
+     * from the old one; otherwise they load in [scope] (the job is returned).
+     */
+    fun nowNext(channel: ChannelEntity, loaded: (ProgrammeEntity?, ProgrammeEntity?) -> Unit): Job? {
+        // guideEpgId: the manual choice, else the automatic match; times come back shifted.
+        if (channel.guideEpgId == null) {
+            loaded(null, null)
+            return null
+        }
+        return scope.launch {
+            val at = clock()
+            val list = nowAndNext(channel, at)
+            loaded(list.firstOrNull { it.start <= at }, list.firstOrNull { it.start > at })
+        }
+    }
+
     /** The programme airing now on each of [list] (by channel id), where known. */
     suspend fun titlesFor(list: List<ChannelEntity>): Map<Long, String> {
         val at = clock()

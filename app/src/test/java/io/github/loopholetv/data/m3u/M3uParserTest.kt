@@ -23,6 +23,76 @@ class M3uParserTest {
         return h to out
     }
 
+    private fun single(text: String) = parse(text).second.single()
+
+    @Test fun catchupAttributesTolerant() {
+        val e = single("#EXTINF:-1 catchup=\"XC\" catchup-days=\"7d\",A\nhttp://example.test/a\n")
+        assertEquals("XC", e.catchup)
+        assertEquals(7, e.catchupDays)
+        assertNull(single("#EXTINF:-1 catchup=\"xc\" catchup-days=\"x\",A\nhttp://example.test/a\n").catchupDays)
+    }
+
+    @Test fun catchupTypeAlias() {
+        assertEquals("shift", single("#EXTINF:-1 catchup-type=\"shift\",A\nhttp://example.test/a\n").catchup)
+    }
+
+    @Test fun headerCatchupDefaultsApply() {
+        val text = "#EXTM3U catchup=\"default\" catchup-days=\"3\" catchup-source=\"http://example.test/a?s={utc}\"\n" +
+            "#EXTINF:-1,Plain\nhttp://example.test/a\n" +
+            "#EXTINF:-1 catchup-days=\"1\",Own\nhttp://example.test/b\n"
+        val (_, entries) = parse(text)
+        assertEquals("default", entries[0].catchup)
+        assertEquals(3, entries[0].catchupDays)
+        assertEquals("http://example.test/a?s={utc}", entries[0].catchupSource)
+        assertEquals(1, entries[1].catchupDays)
+        assertEquals("default", entries[1].catchup)
+    }
+
+    @Test fun timeshiftImpliesShift() {
+        val a = single("#EXTINF:-1 timeshift=\"2\",A\nhttp://example.test/a\n")
+        assertEquals("shift", a.catchup)
+        assertEquals(2, a.catchupDays)
+        val b = single("#EXTINF:-1 tvg-rec=\"5\",A\nhttp://example.test/a\n")
+        assertEquals("shift", b.catchup)
+        assertEquals(5, b.catchupDays)
+        assertNull(single("#EXTINF:-1 timeshift=\"0\",A\nhttp://example.test/a\n").catchup)
+    }
+
+    @Test fun timeshiftZeroKeepsDefaultWindow() {
+        val e = single("#EXTM3U catchup=\"default\"\n#EXTINF:-1 timeshift=\"0\",A\nhttp://example.test/a\n")
+        assertEquals("default", e.catchup)
+        assertNull(e.catchupDays)
+    }
+
+    @Test fun malformedEntryValuesFallThrough() {
+        val text = "#EXTM3U catchup=\"default\" catchup-days=\"3\" catchup-correction=\"+2\"\n" +
+            "#EXTINF:-1 catchup-days=\"x\" catchup-correction=\"1,5\",A\nhttp://example.test/a\n"
+        val e = parse(text).second.single()
+        assertEquals(3, e.catchupDays)
+        assertEquals(120, e.catchupCorrectionMinutes)
+        val f = single("#EXTINF:-1 timeshift=\"x\" tvg-rec=\"5\",A\nhttp://example.test/a\n")
+        assertEquals(5, f.catchupDays)
+        assertEquals("shift", f.catchup)
+        val g = single("#EXTINF:-1 catchup=\"\" timeshift=\"3\",A\nhttp://example.test/a\n")
+        assertEquals("shift", g.catchup)
+    }
+
+    @Test fun outOfRangeCorrectionIsClamped() {
+        assertEquals(1440, single("#EXTINF:-1 catchup-correction=\"1e10\",A\nhttp://example.test/a\n").catchupCorrectionMinutes)
+        assertEquals(-1440, single("#EXTINF:-1 catchup-correction=\"-99\",A\nhttp://example.test/a\n").catchupCorrectionMinutes)
+    }
+
+    @Test fun catchupCorrectionMinutes() {
+        assertEquals(-90, single("#EXTINF:-1 catchup-correction=\"-1.5\",A\nhttp://example.test/a\n").catchupCorrectionMinutes)
+        val (_, entries) = parse(
+            "#EXTM3U catchup-correction=\"+2\"\n#EXTINF:-1,A\nhttp://example.test/a\n" +
+                "#EXTINF:-1 catchup-correction=\"0\",B\nhttp://example.test/b\n",
+        )
+        assertEquals(120, entries[0].catchupCorrectionMinutes)
+        assertEquals(0, entries[1].catchupCorrectionMinutes)
+        assertEquals(0, single("#EXTINF:-1,A\nhttp://example.test/a\n").catchupCorrectionMinutes)
+    }
+
     @Test fun parsesHeaderEpgUrls() {
         val (h, _) = parseRes("basic.m3u")
         assertEquals(listOf("http://e.test/a.xml", "http://e.test/b.xml.gz"), h.epgUrls)

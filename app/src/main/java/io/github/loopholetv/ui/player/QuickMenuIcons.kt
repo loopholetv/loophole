@@ -13,6 +13,8 @@ private fun pathFor(item: QuickItem): String = when (item) {
     QuickItem.SETTINGS -> RailItem.SETTINGS.path
     QuickItem.CHANNELS ->
         "M3,13h2v-2H3v2zM3,17h2v-2H3v2zM3,9h2V7H3v2zM7,13h14v-2H7v2zM7,17h14v-2H7v2zM7,7v2h14V7H7z"
+    QuickItem.START_OVER ->
+        "M12,5V1L7,6l5,5V7c3.31,0 6,2.69 6,6s-2.69,6 -6,6 -6,-2.69 -6,-6H4c0,4.42 3.58,8 8,8s8,-3.58 8,-8 -3.58,-8 -8,-8z"
     QuickItem.VIDEO ->
         "M17,10.5V7c0,-0.55 -0.45,-1 -1,-1H4c-0.55,0 -1,0.45 -1,1v10c0,0.55 0.45,1 1,1h12c0.55,0 1,-0.45 1,-1v-3.5l4,4v-11l-4,4z"
     QuickItem.AUDIO ->

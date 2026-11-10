@@ -28,17 +28,23 @@ class XtreamClient(private val http: OkHttpClient) {
     suspend fun authenticate(c: XtreamCredentials, userAgent: String? = null): XtreamAccount =
         execute(c, action = null, userAgent) { reader, _ ->
             if (reader.peek() != Token.BEGIN_OBJECT) throw XtreamProtocolException("Unexpected response shape")
-            var account: XtreamAccount? = null
+            var user: InfoObject? = null
+            var server: InfoObject? = null
             reader.beginObject()
             while (reader.hasNext()) {
-                if (reader.nextName() == "user_info" && reader.peek() == Token.BEGIN_OBJECT) {
-                    account = readUserInfo(reader)
+                val name = reader.nextName()
+                if (reader.peek() != Token.BEGIN_OBJECT) {
+                    reader.skipValue()
+                } else if (name == "user_info") {
+                    user = readInfo(reader)
+                } else if (name == "server_info") {
+                    server = readInfo(reader)
                 } else {
                     reader.skipValue()
                 }
             }
             reader.endObject()
-            account ?: throw XtreamProtocolException("Response has no user_info")
+            toAccount(user ?: throw XtreamProtocolException("Response has no user_info"), server)
         }
 
     suspend fun liveCategories(c: XtreamCredentials, userAgent: String? = null): List<XtreamCategory> =
@@ -153,13 +159,36 @@ class XtreamClient(private val http: OkHttpClient) {
 
     // --- lenient JSON helpers ---
 
-    private fun readUserInfo(r: JsonReader): XtreamAccount {
-        val f = readFields(r)
+    /** Scalar fields of a login object plus its list of allowed output formats, if any. */
+    private class InfoObject(val fields: Map<String, String>, val formats: List<String>)
+
+    private fun readInfo(r: JsonReader): InfoObject {
+        var formats: List<String> = emptyList()
+        val fields = readFields(r) { name, reader ->
+            if (name == "allowed_output_formats") {
+                formats = buildList {
+                    reader.beginArray()
+                    while (reader.hasNext()) if (reader.peek() == Token.STRING) add(reader.nextString()) else reader.skipValue()
+                    reader.endArray()
+                }
+            } else {
+                reader.skipValue()
+            }
+        }
+        return InfoObject(fields, formats)
+    }
+
+    private fun toAccount(user: InfoObject, server: InfoObject?): XtreamAccount {
+        val f = user.fields
         if (f["auth"].toIntLenient() == 0) throw XtreamAuthException("Server rejected the credentials")
+        val s = server?.fields.orEmpty()
+        val formats = user.formats.ifEmpty { server?.formats.orEmpty() }
         return XtreamAccount(
             status = f["status"] ?: "",
             maxConnections = f["max_connections"].toIntLenient(),
             expiresAt = f["exp_date"]?.toLongOrNull()?.let { Instant.ofEpochSecond(it) },
+            serverTimeZone = xtreamZone(s["timezone"], s["time_now"], s["timestamp_now"]?.toLongOrNull()),
+            archiveExt = archiveExt(formats),
         )
     }
 
@@ -183,7 +212,7 @@ class XtreamClient(private val http: OkHttpClient) {
     }
 
     /** Reads one object into scalar fields rendered as strings; nested values are skipped. */
-    private fun readFields(r: JsonReader): Map<String, String> {
+    private fun readFields(r: JsonReader, onArray: (String, JsonReader) -> Unit = { _, reader -> reader.skipValue() }): Map<String, String> {
         val out = HashMap<String, String>()
         r.beginObject()
         while (r.hasNext()) {
@@ -192,6 +221,7 @@ class XtreamClient(private val http: OkHttpClient) {
                 Token.STRING, Token.NUMBER -> out[name] = r.nextString()
                 Token.BOOLEAN -> out[name] = if (r.nextBoolean()) "1" else "0"
                 Token.NULL -> r.nextNull<Unit>()
+                Token.BEGIN_ARRAY -> onArray(name, r)
                 else -> r.skipValue()
             }
         }

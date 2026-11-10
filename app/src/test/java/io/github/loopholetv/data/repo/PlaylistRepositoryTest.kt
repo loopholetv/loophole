@@ -256,6 +256,58 @@ class PlaylistRepositoryTest {
         assertEquals(9, list[3].number)
     }
 
+    @Test fun xtreamRefreshStoresArchiveInfo() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = when (request.requestUrl?.queryParameter("action")) {
+                    null -> """{"server_info":{"timezone":"Europe/Berlin"},
+                        "user_info":{"auth":1,"status":"Active","allowed_output_formats":["ts"]}}"""
+                    "get_live_categories" -> res("xtream/categories.json")
+                    "get_live_streams" -> res("xtream/live_streams.json")
+                    else -> return MockResponse().setResponseCode(404)
+                }
+                return MockResponse().setBody(body)
+            }
+        }
+        val id = successOf(repo.addXtream("Xt", creds()) {}).playlistId
+        val p = db.playlistDao().byId(id)!!
+        assertEquals("Europe/Berlin", p.xtreamTimeZone)
+        assertEquals("ts", p.xtreamArchiveExt)
+    }
+
+    @Test fun tvArchiveWithZeroDaysIsNotCatchup() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = when (request.requestUrl?.queryParameter("action")) {
+                    null -> res("xtream/auth_ok.json")
+                    "get_live_categories" -> "[]"
+                    "get_live_streams" ->
+                        """[{"stream_id":1,"name":"A","tv_archive":1,"tv_archive_duration":0},
+                            {"stream_id":2,"name":"B","tv_archive":1,"tv_archive_duration":"2"}]"""
+                    else -> return MockResponse().setResponseCode(404)
+                }
+                return MockResponse().setBody(body)
+            }
+        }
+        val id = successOf(repo.addXtream("Xt", creds()) {}).playlistId
+        val list = channels(id).associateBy { it.key }
+        assertNull(list["1"]!!.catchupType)
+        assertEquals("xc", list["2"]!!.catchupType)
+        assertEquals(2, list["2"]!!.catchupDays)
+    }
+
+    @Test fun maxCatchupDaysIgnoresHiddenAndNull() = runTest {
+        val p = db.addPlaylist()
+        assertNull(db.channelDao().maxCatchupDays())
+        db.insertChannels(
+            channel(p, "a", 1).copy(catchupType = "xc", catchupDays = 3),
+            channel(p, "b", 2).copy(catchupType = "shift", catchupDays = null),
+            channel(p, "c", 3, visible = false).copy(catchupType = "xc", catchupDays = 7),
+            channel(p, "d", 4),
+        )
+        assertEquals(3, db.channelDao().maxCatchupDays())
+    }
+
     @Test fun xtreamBadLoginGivesAuthFailed() = runTest {
         xtreamServer("auth_rejected.json")
         val r = repo.addXtream("Xt", creds()) {}

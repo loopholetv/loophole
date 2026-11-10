@@ -6,8 +6,13 @@ import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.repo.ImportError
 import io.github.loopholetv.data.repo.ImportResult
+import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.GuideAction
+import io.github.loopholetv.data.settings.KeyBindings
+import io.github.loopholetv.data.settings.PlayerAction
+import android.view.KeyEvent
 import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import kotlinx.coroutines.CompletableDeferred
@@ -88,6 +93,8 @@ class SettingsViewModelTest {
         val settings = MutableStateFlow(AppSettings())
         var clears = 0
 
+        var maxCatchupDays: Int? = null
+
         fun vm(pipSupported: Boolean = false) = SettingsViewModel(
             playlists = playlists,
             channelCounts = counts,
@@ -121,6 +128,7 @@ class SettingsViewModelTest {
             setUseSourceEpg = { id, use -> useSourceSet += id to use; playlists.update { l -> l.map { if (it.id == id) it.copy(useSourceEpg = use) else it } } },
             playingPlaylistId = playing,
             pipSupported = pipSupported,
+            maxCatchupDays = { maxCatchupDays },
         )
     }
 
@@ -343,6 +351,7 @@ class SettingsViewModelTest {
         assertEquals("Every 12 hours", intervalText(12))
         assertEquals("None", pastDaysText(0))
         assertEquals("1 day", pastDaysText(1))
+        assertEquals("Automatic", pastDaysText(AUTO_PAST_DAYS))
         assertEquals("5 days", pastDaysText(5))
         assertEquals("On", onOff(true))
         assertEquals("Off", onOff(false))
@@ -769,5 +778,77 @@ class SettingsViewModelTest {
         val intervals = playlistIntervalChoices(AppSettings())
         assertEquals("Every 7 hours", choiceText(intervals, 7) { intervalText(it ?: 0) })
         assertEquals("Off", choiceText(intervals, 0) { intervalText(it ?: 0) })
+    }
+
+    // --- Remote control page ---
+
+    @Test fun remoteSectionEnabled() {
+        assertEquals(listOf("Appearance", "Parental controls", "Other"), DISABLED_SECTIONS)
+        assertEquals(SettingsPage.Remote, SettingsPage.fromKey("remote"))
+        assertEquals(SettingsPage.RemoteButtons(BindingContext.GUIDE), SettingsPage.fromKey("remoteButtons:guide"))
+        assertEquals(SettingsPage.Sections, SettingsPage.fromKey("remoteButtons:other"))
+    }
+
+    @Test fun remoteTogglesPersist() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.setRemote { it.copy(leftRewindsLive = true) }
+        assertTrue(f.settings.value.remote.leftRewindsLive)
+        assertTrue(vm.state.value.options.remote.leftRewindsLive)
+    }
+
+    @Test fun captureRejectsArrowsAndAcceptsRed() = runTest {
+        val vm = Fakes(listOf(playlist(1))).vm()
+        assertFalse(vm.captureKey(BindingContext.PLAYER, KeyEvent.KEYCODE_DPAD_LEFT))
+        assertFalse(vm.captureKey(BindingContext.GUIDE, KeyEvent.KEYCODE_BACK))
+        assertTrue(vm.captureKey(BindingContext.PLAYER, KeyEvent.KEYCODE_PROG_RED))
+    }
+
+    @Test fun nothingOnDefaultKeyIsOverride() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.setBinding(KeyEvent.KEYCODE_MEDIA_REWIND, PlayerAction.NONE)
+        assertEquals(PlayerAction.NONE, f.settings.value.remote.bindings.player(KeyEvent.KEYCODE_MEDIA_REWIND))
+        vm.requestResetBindings()
+        vm.confirmResetBindings()
+        assertEquals(KeyBindings.DEFAULT, f.settings.value.remote.bindings)
+    }
+
+    @Test fun nothingOnAddedKeyRemovesIt() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.setBinding(KeyEvent.KEYCODE_PROG_RED, PlayerAction.FAVOURITE)
+        vm.setBinding(KeyEvent.KEYCODE_PROG_RED, GuideAction.SEARCH)
+        assertEquals(PlayerAction.FAVOURITE, f.settings.value.remote.bindings.player(KeyEvent.KEYCODE_PROG_RED))
+        assertEquals(GuideAction.SEARCH, f.settings.value.remote.bindings.guide(KeyEvent.KEYCODE_PROG_RED))
+        vm.setBinding(KeyEvent.KEYCODE_PROG_RED, PlayerAction.NONE)
+        vm.setBinding(KeyEvent.KEYCODE_PROG_RED, GuideAction.NONE)
+        assertEquals(KeyBindings.DEFAULT, f.settings.value.remote.bindings)
+    }
+
+    @Test fun resetAsksFirst() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.setBinding(KeyEvent.KEYCODE_PROG_RED, PlayerAction.FAVOURITE)
+        vm.requestResetBindings()
+        assertTrue(vm.resetPrompt.value)
+        assertEquals(PlayerAction.FAVOURITE, f.settings.value.remote.bindings.player(KeyEvent.KEYCODE_PROG_RED))
+        vm.cancelResetBindings()
+        assertFalse(vm.resetPrompt.value)
+        assertEquals(PlayerAction.FAVOURITE, f.settings.value.remote.bindings.player(KeyEvent.KEYCODE_PROG_RED))
+        vm.requestResetBindings()
+        vm.confirmResetBindings()
+        assertFalse(vm.resetPrompt.value)
+        assertEquals(KeyBindings.DEFAULT, f.settings.value.remote.bindings)
+    }
+
+    @Test fun automaticPastDaysFollowsArchive() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.maxCatchupDays = 5
+        assertEquals(5, f.vm().state.value.automaticPastDays)
+        f.maxCatchupDays = 30
+        assertEquals(7, f.vm().state.value.automaticPastDays)
+        f.maxCatchupDays = null
+        assertEquals(0, f.vm().state.value.automaticPastDays)
     }
 }

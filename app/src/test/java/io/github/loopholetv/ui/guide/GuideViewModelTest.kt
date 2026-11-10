@@ -17,6 +17,11 @@ import io.github.loopholetv.ui.manage.FakeEditActions
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.PreviewHold
+import io.github.loopholetv.player.Handoff
+import io.github.loopholetv.player.catchup.ArchiveRequest
+import io.github.loopholetv.data.settings.GuideAction
+import io.github.loopholetv.data.settings.KeyBindings
+import android.view.KeyEvent
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -59,6 +64,16 @@ class GuideViewModelTest {
         }
         override fun stop() { _state.value = PlaybackState.Idle }
         fun fail(id: Long) { _state.value = PlaybackState.Error(id, "can't play") }
+        val archives = mutableListOf<Pair<Long, ArchiveRequest>>()
+        var handOffs = 0
+        override fun playArchive(channel: ChannelEntity, request: ArchiveRequest) {
+            archives += channel.id to request
+            _state.value = PlaybackState.Buffering(channel.id)
+        }
+        override suspend fun handOff(channel: ChannelEntity): Handoff? {
+            handOffs++
+            return null
+        }
         fun playingElsewhere(id: Long) { _state.value = PlaybackState.Playing(id, io.github.loopholetv.player.StreamTags(null, null, null)) }
     }
 
@@ -84,6 +99,7 @@ class GuideViewModelTest {
     private var moveGate: suspend () -> Unit = {}
     private var remembered: suspend () -> ChannelScope = { ChannelScope.All }
     private val saved = mutableListOf<ChannelScope>()
+    private val bindings = MutableStateFlow(KeyBindings.DEFAULT)
 
     private val groupRows = MutableStateFlow(
         listOf(
@@ -139,6 +155,7 @@ class GuideViewModelTest {
         playlistsOn = playlistsOn,
         previewHold = previewHold,
         sleepExpired = sleepExpired,
+        keyBindings = bindings,
     )
 
     @Test fun groupsListStartsWithFavouritesThenAllChannels() = runTest {
@@ -1119,5 +1136,373 @@ class GuideViewModelTest {
         vm.hideGroup(vm.group("Sport"))
         runCurrent()
         assertNull(vm.focused.value)
+    }
+
+    // --- Past navigation on channels with an archive ---
+
+    @Test fun backFromPastSnapsToNow() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        val vm = vm()
+        runCurrent()
+        val start = vm.window.value
+        val earliest = now.minus(java.time.Duration.ofDays(1))
+        assertTrue(vm.shiftWindow(-4, earliest))
+        assertEquals(start.start.minusSeconds(4 * 1800), vm.window.value.start)
+        assertTrue(vm.windowShifted.value)
+        assertTrue(vm.pastWindow.value)
+        assertEquals(GuideBack.SnapToNow, guideBackFor(GuideArea.Grid, vm.windowShifted.value))
+        assertTrue(vm.resetWindow())
+        assertEquals(start, vm.window.value)
+        assertTrue(!vm.windowShifted.value)
+        assertTrue(!vm.pastWindow.value)
+    }
+
+    @Test fun tickKeepsPastWindow() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        val vm = vm()
+        runCurrent()
+        assertTrue(vm.shiftWindow(-4, now.minus(java.time.Duration.ofDays(1))))
+        val past = vm.window.value
+        now = now.plusSeconds(1800)
+        vm.onTick()
+        assertEquals(past, vm.window.value)
+        assertTrue(vm.windowShifted.value)
+        assertTrue(vm.pastWindow.value)
+    }
+
+    @Test fun pastWindowClampedWhenArchiveLimitPasses() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        val vm = vm()
+        runCurrent()
+        // A 1-day archive: back to the oldest window (the half hour holding now - 1 day).
+        assertTrue(vm.shiftWindow(-1_000, now.minus(java.time.Duration.ofDays(1))))
+        val oldest = vm.window.value
+        assertEquals(floorToHalfHour(now.minus(java.time.Duration.ofDays(1)), ZoneOffset.UTC), oldest.start)
+        // An hour later the archive limit has moved on past the window's start: the window follows it.
+        now = now.plusSeconds(3600)
+        vm.onTick()
+        val bound = floorToHalfHour(now.minus(java.time.Duration.ofDays(1)), ZoneOffset.UTC)
+        assertEquals(TimeWindow(bound, bound + WINDOW_LENGTH), vm.window.value)
+        assertTrue(vm.pastWindow.value)
+    }
+
+    @Test fun rightOnARowWithAShorterArchiveDoesNotMoveThePastWindowOnTheTick() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        val vm = vm()
+        runCurrent()
+        // Back three days on a channel with a week of archive.
+        assertTrue(vm.shiftWindow(-1_000, now.minus(java.time.Duration.ofDays(3))))
+        val oldest = vm.window.value
+        // Down onto a channel with one day of archive, then Right at its edge: one step later.
+        assertTrue(vm.shiftWindow(1, now.minus(java.time.Duration.ofDays(1))))
+        val stepped = TimeWindow(oldest.start.plusSeconds(1800), oldest.end.plusSeconds(1800))
+        assertEquals(stepped, vm.window.value)
+        // The clock moves on a minute: the window stays where it was left.
+        now = now.plusSeconds(60)
+        vm.onTick()
+        assertEquals(stepped, vm.window.value)
+    }
+
+    @Test fun refusedLeftOnARowWithAShorterArchiveDoesNotMoveThePastWindowOnTheTick() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        val vm = vm()
+        runCurrent()
+        assertTrue(vm.shiftWindow(-1_000, now.minus(java.time.Duration.ofDays(3))))
+        val oldest = vm.window.value
+        // Left at the edge of a one-day row: refused (focus goes to the groups).
+        assertTrue(!vm.shiftWindow(-1, now.minus(java.time.Duration.ofDays(1))))
+        assertEquals(oldest, vm.window.value)
+        now = now.plusSeconds(60)
+        vm.onTick()
+        assertEquals(oldest, vm.window.value)
+    }
+
+    @Test fun dayWordsForMarksAndTheHeader() {
+        val format = GuideFormat(is24Hour = true, zone = ZoneOffset.UTC, locale = java.util.Locale.ENGLISH)
+        val today = java.time.LocalDate.of(2026, 11, 11)
+        assertEquals("Today", format.dayWord(today, today))
+        assertEquals("Yesterday", format.dayWord(today.minusDays(1), today))
+        assertEquals("Tomorrow", format.dayWord(today.plusDays(1), today))
+        assertEquals("Mon 9 Nov", format.dayWord(java.time.LocalDate.of(2026, 11, 9), today))
+        // The header's date: friendly words for yesterday and tomorrow, else the date as before.
+        assertEquals("Wed 11 Nov", format.headerDay(today, today))
+        assertEquals("Yesterday", format.headerDay(today.minusDays(1), today))
+        assertEquals("Tomorrow", format.headerDay(today.plusDays(1), today))
+        assertEquals("Mon 9 Nov", format.headerDay(java.time.LocalDate.of(2026, 11, 9), today))
+    }
+
+    @Test fun markLabelsNameTheDayAfterMidnightOnly() {
+        val format = GuideFormat(is24Hour = true, zone = ZoneOffset.UTC, locale = java.util.Locale.ENGLISH)
+        val today = java.time.LocalDate.of(2026, 11, 11)
+        val crossing = Instant.parse("2026-11-10T23:00:00Z")
+        assertEquals(
+            listOf("23:00", "23:30", "Today  0:00", "0:30"),
+            markLabels(TimeWindow(crossing, crossing + WINDOW_LENGTH), format, today).toList(),
+        )
+        val sameDay = Instant.parse("2026-11-09T20:00:00Z")
+        assertEquals(
+            listOf("20:00", "20:30", "21:00", "21:30"),
+            markLabels(TimeWindow(sameDay, sameDay + WINDOW_LENGTH), format, today).toList(),
+        )
+    }
+
+    @Test fun nowFollowsTheInjectedClock() = runTest {
+        val vm = vm()
+        assertEquals(now, vm.now())
+        now = now.plusSeconds(90)
+        assertEquals(now, vm.now())
+    }
+
+    /** A channel with a one-day Xtream-style archive. */
+    private val archived = channel(4, "News").copy(
+        streamUrl = "http://example.test/live/u/p/4.ts", catchupType = "xc", catchupDays = 1,
+    )
+
+    @Test fun okOnPlayablePastPlaysArchiveAtOnce() = runTest {
+        val vm = vm()
+        val ended = programme("e4", -7200, -5400, "Earlier")
+        // Not previewing: the finished programme plays from its start straight away.
+        assertEquals(OkAction.PlayArchive(4L, ended.start), vm.onOk(archived, ended))
+        assertEquals(listOf(4L to ArchiveRequest(ended.start, ended.stop)), playback.archives)
+        assertTrue(playback.played.isEmpty())
+        assertEquals(archived, vm.previewing.value)
+        // Previewing already: the same.
+        val before = programme("e4", -5400, -3600, "Before")
+        assertEquals(OkAction.PlayArchive(4L, before.start), vm.onOk(archived, before))
+        assertEquals(4L to ArchiveRequest(before.start, before.stop), playback.archives.last())
+    }
+
+    @Test fun okOnTooOldPastShowsDetails() = runTest {
+        val vm = vm()
+        vm.onOk(archived, null)
+        // Started before the one-day archive limit.
+        val old = programme("e4", -26 * 3600, -25 * 3600, "Old")
+        assertEquals(OkAction.ShowDetails(old), vm.onOk(archived, old))
+        assertTrue(playback.archives.isEmpty())
+    }
+
+    @Test fun okOnPastWithoutCatchupShowsDetails() = runTest {
+        val vm = vm()
+        val ended = programme("e1", -7200, -5400, "Earlier")
+        // Not previewing: the first OK still only previews.
+        assertEquals(OkAction.Previewed, vm.onOk(all[0], ended))
+        assertEquals(OkAction.ShowDetails(ended), vm.onOk(all[0], ended))
+        assertTrue(playback.archives.isEmpty())
+    }
+
+    @Test fun okOnAiringStillPreviewsThenOpens() = runTest {
+        val vm = vm()
+        val airing = programme("e4", -600, 1200, "Now")
+        assertEquals(OkAction.Previewed, vm.onOk(archived, airing))
+        assertEquals(OkAction.OpenPlayer(4L), vm.onOk(archived, airing))
+        assertEquals(listOf(4L), playback.played)
+        assertTrue(playback.archives.isEmpty())
+        // A future programme of the previewing channel: its details.
+        val later = programme("e4", 3600, 5400, "Later")
+        assertEquals(OkAction.ShowDetails(later), vm.onOk(archived, later))
+    }
+
+    @Test fun externalPlayerChannelStillPlaysArchiveHere() = runTest {
+        val vm = vm()
+        val ended = programme("e4", -7200, -5400, "Earlier")
+        // Catch-up always plays in this app's own player: nothing is handed to another app.
+        assertEquals(OkAction.PlayArchive(4L, ended.start), vm.onOk(archived, ended))
+        advanceUntilIdle()
+        assertEquals(0, playback.handOffs)
+        assertEquals(1, playback.archives.size)
+        // Claimed once: an OK while full screen is opening neither reopens the stream nor the player.
+        assertEquals(OkAction.PlayArchive(4L, ended.start), vm.claimArchive(vm.onOk(archived, ended)))
+        assertEquals(2, playback.archives.size)
+        assertNull(vm.claimArchive(vm.onOk(archived, ended)))
+        assertEquals(2, playback.archives.size)
+        // A live OpenPlayer is claimed separately.
+        vm.onOk(all[0], null)
+        assertEquals(1L, vm.claimPlayer(vm.onOk(all[0], null)))
+        vm.onScreenStarted()
+        assertEquals(OkAction.PlayArchive(4L, ended.start), vm.claimArchive(vm.onOk(archived, ended)))
+        assertEquals(3, playback.archives.size)
+    }
+
+    @Test fun heldOneShotButtonsActOncePageAndDayRepeat() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        bindings.value = KeyBindings(
+            KeyBindings.DEFAULT.player,
+            KeyBindings.DEFAULT.guide + mapOf(
+                KeyEvent.KEYCODE_PROG_GREEN to GuideAction.FAVOURITE,
+                KeyEvent.KEYCODE_PROG_YELLOW to GuideAction.SEARCH,
+                KeyEvent.KEYCODE_PROG_BLUE to GuideAction.SETTINGS,
+                KeyEvent.KEYCODE_PROG_RED to GuideAction.NOW,
+            ),
+        )
+        val vm = vm()
+        runCurrent()
+        val events = mutableListOf<GuideEvent>()
+        backgroundScope.launch { vm.events.collect { events += it } }
+        // Held: the repeats are taken (nothing else gets them) but do nothing.
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_GREEN, all[0]))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_GREEN, all[0], repeat = true))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_GREEN, all[0], repeat = true))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_YELLOW, all[0]))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_YELLOW, all[0], repeat = true))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_BLUE, all[0]))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_BLUE, all[0], repeat = true))
+        advanceUntilIdle()
+        assertTrue(all[0].ref in favouriteRefs.value)
+        assertEquals(listOf(GuideEvent.OpenSearch, GuideEvent.OpenSettings), events)
+        events.clear()
+        // Page and day moves go on while held.
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PAGE_DOWN, all[0]))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PAGE_DOWN, all[0], repeat = true))
+        runCurrent()
+        assertEquals(listOf(GuideEvent.PageRows(8), GuideEvent.PageRows(8)), events)
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_MEDIA_REWIND, archived, repeat = true))
+        assertTrue(vm.pastWindow.value)
+        // Back to now: once per press.
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_RED, archived, repeat = true))
+        assertTrue(vm.pastWindow.value)
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_RED, archived))
+        assertFalse(vm.windowShifted.value)
+    }
+
+    @Test fun dayJumpStopsAtRowBound() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        val vm = vm()
+        runCurrent()
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_MEDIA_REWIND, archived))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_MEDIA_REWIND, archived))
+        val bound = floorToHalfHour(now.minus(java.time.Duration.ofDays(1)), ZoneOffset.UTC)
+        assertEquals(TimeWindow(bound, bound + WINDOW_LENGTH), vm.window.value)
+        assertTrue(vm.pastWindow.value)
+        // Fast-forward a day: back to the "now" window (the guide ends 6 h from now).
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, archived))
+        assertEquals(initialWindow(now, ZoneOffset.UTC), vm.window.value)
+    }
+
+    @Test fun dayBackOnPlainRowDoesNothing() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        val vm = vm()
+        runCurrent()
+        val nowWindow = vm.window.value
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_MEDIA_REWIND, all[0]))
+        assertEquals(nowWindow, vm.window.value)
+        assertFalse(vm.windowShifted.value)
+    }
+
+    @Test fun pageKeysScrollEightRows() = runTest {
+        val vm = vm()
+        runCurrent()
+        val events = mutableListOf<GuideEvent>()
+        backgroundScope.launch { vm.events.collect { events += it } }
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PAGE_DOWN, all[0]))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_CHANNEL_UP, all[0]))
+        runCurrent()
+        assertEquals(listOf(GuideEvent.PageRows(8), GuideEvent.PageRows(-8)), events)
+    }
+
+    @Test fun unboundKeyNotConsumed() = runTest {
+        val vm = vm()
+        runCurrent()
+        assertFalse(vm.onGuideKey(KeyEvent.KEYCODE_PROG_RED, all[0]))
+        // A default switched off is not consumed either.
+        bindings.value = KeyBindings(
+            KeyBindings.DEFAULT.player,
+            KeyBindings.DEFAULT.guide + (KeyEvent.KEYCODE_PAGE_DOWN to GuideAction.NONE),
+        )
+        runCurrent()
+        assertFalse(vm.onGuideKey(KeyEvent.KEYCODE_PAGE_DOWN, all[0]))
+    }
+
+    @Test fun customBindingApplies() = runTest {
+        latestStopValue = now.plusSeconds(6 * 3600)
+        bindings.value = KeyBindings(
+            KeyBindings.DEFAULT.player,
+            KeyBindings.DEFAULT.guide + mapOf(
+                183 to GuideAction.NOW,
+                KeyEvent.KEYCODE_PROG_GREEN to GuideAction.FAVOURITE,
+                KeyEvent.KEYCODE_PROG_YELLOW to GuideAction.SEARCH,
+                KeyEvent.KEYCODE_PROG_BLUE to GuideAction.SETTINGS,
+            ),
+        )
+        val vm = vm()
+        runCurrent()
+        val events = mutableListOf<GuideEvent>()
+        backgroundScope.launch { vm.events.collect { events += it } }
+        assertTrue(vm.shiftWindow(2))
+        assertTrue(vm.windowShifted.value)
+        assertTrue(vm.onGuideKey(183, all[0]))
+        assertEquals(initialWindow(now, ZoneOffset.UTC), vm.window.value)
+        assertFalse(vm.windowShifted.value)
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_GREEN, all[0]))
+        advanceUntilIdle()
+        assertTrue(all[0].ref in favouriteRefs.value)
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_YELLOW, all[0]))
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_BLUE, null))
+        runCurrent()
+        assertEquals(listOf(GuideEvent.OpenSearch, GuideEvent.OpenSettings), events)
+        // Favourite with no focused row: consumed, nothing to toggle.
+        assertTrue(vm.onGuideKey(KeyEvent.KEYCODE_PROG_GREEN, null))
+    }
+
+    @Test fun headerShowsTheClockOnlyOnToday() {
+        val format = GuideFormat(is24Hour = true, zone = ZoneOffset.UTC, locale = java.util.Locale.ENGLISH)
+        val clock = Instant.parse("2026-11-11T17:57:00Z")
+        val today = initialWindow(clock, ZoneOffset.UTC)
+        assertEquals("Wed 11 Nov  17:57", headerText(today, clock, format))
+        val yesterday = TimeWindow(today.start.minusSeconds(86_400), today.end.minusSeconds(86_400))
+        assertEquals("Yesterday", headerText(yesterday, clock, format))
+        val tomorrow = TimeWindow(today.start.plusSeconds(86_400), today.end.plusSeconds(86_400))
+        assertEquals("Tomorrow", headerText(tomorrow, clock, format))
+        val older = Instant.parse("2026-11-09T10:00:00Z")
+        assertEquals("Mon 9 Nov", headerText(TimeWindow(older, older + WINDOW_LENGTH), clock, format))
+    }
+
+    @Test fun pageScrollKeepsTheFocusedRowsPlace() {
+        // 100 rows, rows 10..17 on screen, focus on 12: a page down shows 18..25 with focus on 20.
+        assertEquals(PageTarget(18, 20), pageTarget(firstVisible = 10, focused = 12, itemCount = 100, delta = 8))
+        assertEquals(PageTarget(2, 4), pageTarget(firstVisible = 10, focused = 12, itemCount = 100, delta = -8))
+        // At the top: the first page, focus as far up as it goes.
+        assertEquals(PageTarget(0, 0), pageTarget(firstVisible = 3, focused = 5, itemCount = 100, delta = -8))
+        // At the end: the last full page, focus on the last row at most.
+        assertEquals(PageTarget(92, 99), pageTarget(firstVisible = 90, focused = 97, itemCount = 100, delta = 8))
+        // Fewer rows than a page.
+        assertEquals(PageTarget(0, 4), pageTarget(firstVisible = 0, focused = 1, itemCount = 5, delta = 8))
+        // Focus not known (not loaded): the first row of the new page.
+        assertEquals(PageTarget(18, 18), pageTarget(firstVisible = 10, focused = -1, itemCount = 100, delta = 8))
+    }
+
+    @Test fun dayJumpKeepsTheFocusColumn() {
+        val start = Instant.parse("2026-11-08T01:30:00Z")
+        val window = TimeWindow(start, start + WINDOW_LENGTH)
+        val dayBefore = TimeWindow(start.minusSeconds(86_400), start.minusSeconds(86_400) + WINDOW_LENGTH)
+        val anchor = start.plusSeconds(1800)
+        val clock = start.plusSeconds(17 * 60)
+        assertEquals(anchor.minusSeconds(86_400), anchorAfterJump(anchor, clock, window, dayBefore))
+        // Stopped short of a day (the archive limit): moved by as much as the window was; a time
+        // that falls outside the new window goes back to the default.
+        val clamped = TimeWindow(dayBefore.start.plusSeconds(7200), dayBefore.end.plusSeconds(7200))
+        assertEquals(anchor.minusSeconds(22 * 3600), anchorAfterJump(anchor, clock, window, clamped))
+        assertNull(anchorAfterJump(start.minusSeconds(1), clock, window, clamped))
+        // No focus time yet (straight after entering the guide, or after Back to now): it is "now",
+        // so the first jump keeps the current time of day too.
+        assertEquals(clock.minusSeconds(86_400), anchorAfterJump(null, clock, window, dayBefore))
+    }
+
+    @Test fun firstDayBackAfterEnteringTheGuideSelectsTheSameTimeOfDay() {
+        // 01:47 now; entering the guide sets no focus time. Rewind: the window a day back.
+        val clock = Instant.parse("2026-11-08T01:47:00Z")
+        val nowWindow = initialWindow(clock, ZoneOffset.UTC)
+        val dayBefore = TimeWindow(nowWindow.start.minusSeconds(86_400), nowWindow.end.minusSeconds(86_400))
+        val anchor = anchorAfterJump(null, clock, nowWindow, dayBefore)
+        fun at(from: String, to: String, title: String) = ProgrammeEntity(
+            epgChannelId = "e4", start = Instant.parse(from), stop = Instant.parse(to), title = title,
+            subTitle = null, description = null, category = null, generation = 1,
+        )
+        val shown = listOf(
+            at("2026-11-07T01:00:00Z", "2026-11-07T01:40:00Z", "Before"),
+            at("2026-11-07T01:40:00Z", "2026-11-07T02:30:00Z", "Same time"),
+            at("2026-11-07T02:30:00Z", "2026-11-07T03:30:00Z", "Last"),
+        )
+        // The block airing at 01:47 the day before, not the window's last block.
+        assertEquals(1, entryIndex(shown, anchor, clock, pastWindow = true))
     }
 }

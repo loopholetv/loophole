@@ -22,22 +22,51 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import io.github.loopholetv.ui.theme.Tokens
 import java.time.Instant
+import java.time.LocalDate
 
 val HEADER_HEIGHT = 28.dp
 
 /**
- * The timeline header: date and time (accent) over the channel column, half-hour marks over the
- * timeline. Display only: it is not focusable (the window moves from the strips' edges).
+ * The marks over the timeline: one per half hour of [w]. When they cross midnight, the first mark
+ * of the new day is led by that day ("Today  0:00"); the window's own day is in the header's date.
+ */
+internal fun markLabels(w: TimeWindow, format: GuideFormat, today: LocalDate): Array<String> {
+    val starts = Array(4) { w.start.plus(WINDOW_STEP.multipliedBy(it.toLong())) }
+    val days = Array(4) { starts[it].atZone(format.zone).toLocalDate() }
+    val firstOfNewDay = (1 until 4).firstOrNull { days[it] != days[it - 1] }
+    return Array(4) {
+        val time = format.time(starts[it])
+        if (it == firstOfNewDay) "${format.dayWord(days[it], today)}  $time" else time
+    }
+}
+
+/**
+ * The text over the channel column: on today's window its date and the current time; on any other
+ * day only the day ("Yesterday", "Tomorrow", else e.g. "Mon 9 Nov"), as a clock next to another
+ * day would read like a time on that day.
+ */
+internal fun headerText(window: TimeWindow, now: Instant, format: GuideFormat): String {
+    val today = now.atZone(format.zone).toLocalDate()
+    val day = window.start.atZone(format.zone).toLocalDate()
+    val word = format.headerDay(day, today)
+    return if (day == today) "$word  ${format.time(now)}" else word
+}
+
+/**
+ * The timeline header: the window's day and the time (accent) over the channel column, half-hour
+ * marks over the timeline. Display only: it is not focusable (the window moves from the strips'
+ * edges).
  */
 @Composable
 fun GuideHeader(window: TimeWindow, now: Instant, format: GuideFormat) {
+    val today = now.atZone(format.zone).toLocalDate()
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().height(HEADER_HEIGHT),
     ) {
         Box(Modifier.width(CHANNEL_WIDTH + 3.dp)) {
             Text(
-                text = "${format.date(window.start)}  ${format.time(now)}",
+                text = headerText(window, now, format),
                 style = MaterialTheme.typography.labelLarge,
                 color = Tokens.Accent,
                 maxLines = 1,
@@ -45,9 +74,7 @@ fun GuideHeader(window: TimeWindow, now: Instant, format: GuideFormat) {
             )
         }
         // Half-hour marks are drawn, not composed: they change on every window shift.
-        val labels = remember(window, format) {
-            Array(4) { format.time(window.start.plus(WINDOW_STEP.multipliedBy(it.toLong()))) }
-        }
+        val labels = remember(window, format, today) { markLabels(window, format, today) }
         val paint = rememberMarkPaint()
         Spacer(
             Modifier.weight(1f).fillMaxHeight().drawBehind {

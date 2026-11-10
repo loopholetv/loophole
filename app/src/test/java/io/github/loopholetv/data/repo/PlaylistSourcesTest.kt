@@ -126,6 +126,17 @@ class PlaylistSourcesTest {
 
     // --- local file ---
 
+    @Test fun m3uCatchupCorrectionStoredOnChannel() = runTest {
+        val file = File(tmp.root, "corr.m3u").apply {
+            writeText(
+                "#EXTM3U\n#EXTINF:-1 catchup=\"default\" catchup-days=\"3\" catchup-correction=\"+2\"," +
+                    "One\nhttp://s.example.test/1.ts\n",
+            )
+        }
+        val r = successOf(repo.addLocalFile("Mine", file.absolutePath) {})
+        assertEquals(120, channels(r.playlistId).single().catchupCorrectionMinutes)
+    }
+
     @Test fun addLocalFileImportsAndKeepsCopy() = runTest {
         val file = localFile("list.m3u", "One" to "http://s.example.test/1.ts", "Two" to "http://s.example.test/2.ts")
         val r = successOf(repo.addLocalFile("Mine", " ${file.absolutePath} ") {})

@@ -58,6 +58,43 @@ class XtreamClientTest {
         assertNull(a.expiresAt)
     }
 
+    @Test fun authenticateReadsServerInfo() = runTest {
+        enqueue(
+            """{"server_info":{"timezone":"Europe/London","time_now":"2026-11-10 20:00:00","timestamp_now":1794340800},
+               "user_info":{"auth":1,"status":"Active","max_connections":"1","allowed_output_formats":["m3u8"]}}""",
+        )
+        val a = client.authenticate(creds())
+        assertEquals("Europe/London", a.serverTimeZone)
+        assertEquals("m3u8", a.archiveExt)
+        assertEquals("Active", a.status)
+    }
+
+    @Test fun authenticateReadsServerInfoAfterUserInfo() = runTest {
+        enqueue(
+            """{"user_info":{"auth":1,"status":"Active"},
+               "server_info":{"timestamp_now":"1794340800","time_now":"2026-11-10 21:00:00",
+               "allowed_output_formats":["m3u8"]}}""",
+        )
+        val a = client.authenticate(creds())
+        assertEquals("+01:00", a.serverTimeZone)
+        assertEquals("m3u8", a.archiveExt)
+    }
+
+    @Test fun authenticateWithoutServerInfoUsesDefaults() = runTest {
+        enqueue("""{"user_info":{"auth":1,"status":"Active"}}""")
+        val a = client.authenticate(creds())
+        assertNull(a.serverTimeZone)
+        assertEquals("ts", a.archiveExt)
+    }
+
+    @Test fun tvArchiveStringDays() = runTest {
+        enqueue("""[{"stream_id":1,"name":"A","tv_archive":"1","tv_archive_duration":"3"}]""")
+        val out = mutableListOf<XtreamLiveStream>()
+        client.liveStreams(creds()) { out += it }
+        assertTrue(out.single().tvArchive)
+        assertEquals(3, out.single().tvArchiveDays)
+    }
+
     @Test fun authenticateRejected() = runTest {
         enqueue(res("auth_rejected.json"))
         try { client.authenticate(creds()); fail() } catch (_: XtreamAuthException) {}

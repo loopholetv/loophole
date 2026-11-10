@@ -10,6 +10,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
@@ -33,6 +34,9 @@ import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.settings.normaliseAudioDelay
 import io.github.loopholetv.data.stalker.StalkerAuthException
 import io.github.loopholetv.data.stalker.StalkerLinkException
+import io.github.loopholetv.data.catchup.catchup
+import io.github.loopholetv.player.catchup.ArchiveRequest
+import io.github.loopholetv.player.catchup.PlayMode
 import io.github.loopholetv.player.engine.EngineParts
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +45,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -53,6 +58,9 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import java.net.SocketException
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 sealed interface PlaybackState {
     data object Idle : PlaybackState
@@ -99,7 +107,25 @@ interface Playback {
      * app. Nothing is played here. Null when the link can't be resolved. Main thread only.
      */
     suspend fun handOff(channel: ChannelEntity): Handoff? = null
+
+    /** Live, or the archive programme being replayed. */
+    val mode: StateFlow<PlayMode> get() = LIVE_MODE
+
+    /** Replays [request] on [channel]; always releases the current stream first, then opens. Main thread only. */
+    fun playArchive(channel: ChannelEntity, request: ArchiveRequest) {}
+
+    fun pause() {}
+
+    fun resume() {}
+
+    /** The playing archive stream's position in ms from its start. */
+    fun positionMs(): Long = 0
+
+    /** Seeks inside the loaded archive stream without reopening it. Main thread only. */
+    fun seekWithin(positionMs: Long) {}
 }
+
+private val LIVE_MODE: StateFlow<PlayMode> = MutableStateFlow<PlayMode>(PlayMode.Live).asStateFlow()
 
 private val NO_TRACKS: StateFlow<PlayerTracks> = MutableStateFlow(PlayerTracks.NONE).asStateFlow()
 
@@ -141,6 +167,13 @@ private data class TrackPrefs(val audioLanguage: String?, val subtitleLanguage: 
  * preferences with the previous channel's track choices cleared. While a stream plays, audio delay and
  * track preferences follow [settings] live; a change to an engine choice restarts the stream once.
  * [exoPlayer] must be built around [engine] (`buildEnginePlayer`).
+ *
+ * [playArchive] replays a past programme on the same player. Every switch between live and archive
+ * (or between two archive requests) releases the old stream and evicts the idle connections before
+ * the next URL is resolved; archive streams get no keep-alive pings. A provider may still count a
+ * just-released connection for a moment, so the first open after a release (within
+ * [SWITCH_WINDOW_MS]) that is refused with a busy-style HTTP status or a dropped connection is
+ * retried after each of [SWITCH_RETRY_DELAYS_MS], staying Buffering, before it becomes an error.
  */
 @OptIn(UnstableApi::class)
 class PlaybackManager internal constructor(
@@ -157,6 +190,12 @@ class PlaybackManager internal constructor(
     /** The channel's saved overrides as they change (an edit from any screen); empty for none. */
     private val observeChannelPrefs: (ChannelEntity) -> Flow<ChannelPlaybackPrefs> = { emptyFlow() },
     private val evictConnections: () -> Unit = { http.connectionPool.evictAll() },
+    /** Closes idle pooled connections; by default [evictConnections] on an IO thread, since it may touch the network. */
+    private val evictIdleConnections: suspend () -> Unit = { withContext(Dispatchers.IO) { evictConnections() } },
+    /** Wall-clock time, passed to the resolver to build archive requests; [clock] times retries. */
+    private val wallClock: () -> Instant = Instant::now,
+    /** Waits between retries of an open refused right after a switch. */
+    private val retryDelay: suspend (Long) -> Unit = { delay(it) },
 ) : Playback {
 
     override val player: Player get() = exoPlayer
@@ -212,6 +251,19 @@ class PlaybackManager internal constructor(
     /** Set when software audio failed mid-stream and this play continues on the hardware decoder. */
     private var audioFallbackActive = false
 
+    private val _mode = MutableStateFlow<PlayMode>(PlayMode.Live)
+    override val mode: StateFlow<PlayMode> = _mode.asStateFlow()
+
+    /** When ([clock] ms) a buffering or playing stream was last released; null before the first. */
+    private var lastReleaseAtMs: Long? = null
+
+    /** Whether the current open came within [SWITCH_WINDOW_MS] of a release, and the retries spent on it. */
+    private var openAfterSwitch = false
+    private var switchRetries = 0
+
+    /** Set when an archive was released; cleared only once an eviction has completed, so the next open evicts. */
+    private var pendingEvict = false
+
     private val listener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) = refreshState()
         override fun onIsPlayingChanged(isPlaying: Boolean) = refreshState()
@@ -225,6 +277,10 @@ class PlaybackManager internal constructor(
             refreshTracks()
         }
         override fun onPlayerError(error: PlaybackException) = refreshState()
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            val archive = _mode.value as? PlayMode.Archive ?: return
+            if (current?.id == archive.channelId && resolved != null) refreshArchiveMode(archive)
+        }
     }
 
     init {
@@ -239,17 +295,48 @@ class PlaybackManager internal constructor(
         }
     }
 
+    /**
+     * Plays [channel] live. Coming from an archive this is always a reconnect, and the open is
+     * asynchronous (connections are evicted first): callers observe [state] and [mode].
+     */
     override fun play(channel: ChannelEntity) {
         val state = _state.value
+        val fromArchive = _mode.value is PlayMode.Archive
         val active = (state is PlaybackState.Buffering && state.channelId == channel.id) ||
             (state is PlaybackState.Playing && state.channelId == channel.id)
-        if (active) {
+        if (active && !fromArchive) {
             // Same channel: resume if something paused it (focus loss, noisy, a UI), never reconnect.
             exoPlayer.playWhenReady = true
             return
         }
 
-        // Release the old stream first (one connection per account), then resolve the new one.
+        if (fromArchive) pendingEvict = true
+        val generation = beginOpen(channel)
+        _mode.value = PlayMode.Live
+        // Leaving an archive also closes its idle connections before the live link is resolved, even
+        // when the open that would have evicted was replaced by another zap before it ran.
+        startResolve(channel, generation, evictFirst = pendingEvict)
+        watchChannelPrefs(channel)
+    }
+
+    /**
+     * Replays [request] on [channel]: always a reconnect, even for the same channel and request.
+     * The old stream is released and its idle connections evicted before the archive is resolved.
+     * The open is asynchronous: callers observe [state] and [mode] rather than the player's item.
+     */
+    override fun playArchive(channel: ChannelEntity, request: ArchiveRequest) {
+        val generation = beginOpen(channel)
+        _mode.value = PlayMode.Archive(channel.id, request)
+        startArchiveResolve(channel, request, generation)
+        watchChannelPrefs(channel)
+    }
+
+    /**
+     * Releases the old stream first (one connection per account) and resets the per-play state for
+     * [channel]; returns the new play's generation. Nothing is resolved here.
+     */
+    private fun beginOpen(channel: ChannelEntity): Long {
+        noteRelease()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         cancelJobs()
@@ -264,8 +351,15 @@ class PlaybackManager internal constructor(
         _tracks.value = PlayerTracks.NONE
         _state.value = PlaybackState.Buffering(channel.id)
         exoPlayer.playWhenReady = true
-        startResolve(channel, generation)
-        watchChannelPrefs(channel)
+        openAfterSwitch = lastReleaseAtMs?.let { clock() - it < SWITCH_WINDOW_MS } == true
+        switchRetries = 0
+        return generation
+    }
+
+    /** Records that a stream holding (or opening) a provider connection is being released now. */
+    private fun noteRelease() {
+        val state = _state.value
+        if (state is PlaybackState.Buffering || state is PlaybackState.Playing) lastReleaseAtMs = clock()
     }
 
     /**
@@ -295,12 +389,20 @@ class PlaybackManager internal constructor(
      * Resolves and loads [channel]. Undispatched, so it may load within the calling [play] when the
      * resolver and the settings reads don't suspend; otherwise (a Room lookup, a portal) it continues on
      * [scope]. [forceHls] keeps a re-minted link on HLS when the previous one needed the fallback.
-     * [newChannel] is false for a re-mint of the same play, which keeps the current track choices.
+     * [newChannel] is false for a re-mint or retry of the same play, which keeps the current track choices.
+     * [evictFirst] closes idle connections (off the main thread) before resolving.
      */
-    private fun startResolve(channel: ChannelEntity, generation: Long, forceHls: Boolean = false, newChannel: Boolean = true) {
+    private fun startResolve(
+        channel: ChannelEntity,
+        generation: Long,
+        forceHls: Boolean = false,
+        newChannel: Boolean = true,
+        evictFirst: Boolean = false,
+    ) {
         val keepChoices = restartChoices
         restartChoices = null
         resolveJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (evictFirst && !evictIdle(generation)) return@launch
             val (stream, canRemint) = try {
                 resolver.resolve(channel) to resolver.canRemint(channel)
             } catch (e: CancellationException) {
@@ -325,6 +427,51 @@ class PlaybackManager internal constructor(
             load(channel, stream, asHls = forceHls || isHlsUrl(Uri.parse(stream.url)))
             startKeepAlive(channel)
         }
+    }
+
+    /**
+     * Resolves and loads [request] on [channel] with the same engine and per-channel decoder choices
+     * as live. Idle connections are evicted before the resolve and again before the open, since the
+     * player frees the released stream's socket on its loader thread. No keep-alive runs for archives.
+     */
+    private fun startArchiveResolve(channel: ChannelEntity, request: ArchiveRequest, generation: Long, newChannel: Boolean = true) {
+        val keepChoices = restartChoices
+        restartChoices = null
+        resolveJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (!evictIdle(generation)) return@launch
+            val stream = try {
+                resolver.resolveArchive(channel, request, wallClock())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // The exception may carry the archive URL; only fixed text is shown.
+                null
+            }
+            if (generation != playGeneration) return@launch
+            if (stream == null) {
+                _state.value = PlaybackState.Error(channel.id, ARCHIVE_ERROR)
+                return@launch
+            }
+            if (!evictIdle(generation)) return@launch
+            val read = readOr(PlaybackSettings()) { awaitSettings() }
+            val p = readOr(ChannelPlaybackPrefs.NONE) { channelPrefs(channel) }
+            if (generation != playGeneration) return@launch
+            val s = if (settingsLive) latestSettings ?: read else read
+            applyEngine(s, p, generation)
+            if (newChannel) applyChannelTracks(s, keepChoices)
+            remintable = false
+            resolved = stream
+            val hls = isHlsUrl(Uri.parse(stream.url))
+            _mode.value = PlayMode.Archive(channel.id, request, hls = hls)
+            load(channel, stream, asHls = hls)
+        }
+    }
+
+    /** Closes idle pooled connections ([evictIdleConnections]); false when a newer play or stop came meanwhile. */
+    private suspend fun evictIdle(generation: Long): Boolean {
+        evictIdleConnections()
+        pendingEvict = false
+        return generation == playGeneration
     }
 
     private suspend inline fun <T> readOr(default: T, read: () -> T): T = try {
@@ -411,10 +558,62 @@ class PlaybackManager internal constructor(
     override fun restart(channel: ChannelEntity) {
         val sameChannel = current?.id == channel.id
         val choices = exoPlayer.trackSelectionParameters
+        val archive = (_mode.value as? PlayMode.Archive)?.takeIf { it.channelId == channel.id && sameChannel }
+        if (archive != null) {
+            // A replayed programme reopens where the viewer is, never going through Live or Idle;
+            // playArchive releases the old stream first.
+            val from = resumeRequest(channel, archive)
+            restartChoices = choices
+            playArchive(channel, from)
+            return
+        }
         stop()
         // Same channel: the track choices made on it survive the reconnect.
         if (sameChannel) restartChoices = choices
         play(channel)
+    }
+
+    /**
+     * The archive request shifted to the current position, so a reopen continues where it was. A
+     * minute-granular archive can only start on a whole minute, so the start is floored to it: the
+     * reopened stream then really starts at the request's start and positions stay true.
+     */
+    private fun resumeRequest(channel: ChannelEntity, archive: PlayMode.Archive): ArchiveRequest {
+        val position = if (resolved != null) exoPlayer.currentPosition.coerceAtLeast(0) else 0L
+        if (position == 0L) return archive.request
+        val shifted = archive.request.from.plusMillis(position)
+        val from = if (channel.catchup()?.minuteGranular == true) shifted.truncatedTo(ChronoUnit.MINUTES) else shifted
+        return archive.request.copy(from = from)
+    }
+
+    /**
+     * Releases the archive stream and opens [request] again within the same play (a retry or a
+     * decoder fallback keeps its per-play state). A newer play or stop drops it.
+     */
+    private fun reopenArchive(channel: ChannelEntity, request: ArchiveRequest) {
+        val generation = ++playGeneration
+        resolved = null
+        cancelJobs()
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+        _state.value = PlaybackState.Buffering(channel.id)
+        startArchiveResolve(channel, request, generation, newChannel = false)
+    }
+
+    override fun pause() {
+        exoPlayer.playWhenReady = false
+    }
+
+    override fun resume() {
+        exoPlayer.playWhenReady = true
+    }
+
+    override fun positionMs(): Long = exoPlayer.currentPosition
+
+    override fun seekWithin(positionMs: Long) {
+        val archive = _mode.value as? PlayMode.Archive ?: return
+        if (!archive.seekable || resolved == null) return
+        exoPlayer.seekTo(positionMs.coerceAtLeast(0))
     }
 
     override fun selectTrack(type: TrackType, choice: TrackChoice) {
@@ -433,8 +632,7 @@ class PlaybackManager internal constructor(
     override suspend fun handOff(channel: ChannelEntity): Handoff? {
         stop()
         val generation = playGeneration
-        // Closing pooled sockets may touch the network, so it stays off the main thread.
-        withContext(Dispatchers.IO) { evictConnections() }
+        evictIdleConnections()
         val stream = try {
             resolver.resolve(channel)
         } catch (e: CancellationException) {
@@ -446,7 +644,8 @@ class PlaybackManager internal constructor(
         if (generation != playGeneration) return null
         // The player releases the stream's own connection on its loader thread after stop(), so it
         // may only have become idle by now; evict once more before the other app connects.
-        withContext(Dispatchers.IO) { evictConnections() }
+        evictIdleConnections()
+        pendingEvict = false
         if (generation != playGeneration) return null
         return Handoff(stream, hls = isHlsUrl(Uri.parse(stream.url)))
     }
@@ -486,13 +685,17 @@ class PlaybackManager internal constructor(
 
     private fun load(channel: ChannelEntity, stream: ResolvedStream, asHls: Boolean) {
         currentIsHls = asHls
-        val source = mediaSourceFactory(stream).createMediaSource(mediaItem(channel, stream, asHls))
-        exoPlayer.setMediaSource(AudioDelayMediaSource(source, engine.audioDelay))
+        val source = AudioDelayMediaSource(
+            mediaSourceFactory(stream).createMediaSource(mediaItem(channel, stream, asHls)), engine.audioDelay,
+        )
+        exoPlayer.setMediaSource(source)
         exoPlayer.prepare()
         _state.value = PlaybackState.Buffering(channel.id)
     }
 
     override fun stop() {
+        noteRelease()
+        if (_mode.value is PlayMode.Archive) pendingEvict = true
         prefsJob?.cancel()
         prefsJob = null
         cancelJobs()
@@ -502,6 +705,7 @@ class PlaybackManager internal constructor(
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         _tracks.value = PlayerTracks.NONE
+        _mode.value = PlayMode.Live
         _state.value = PlaybackState.Idle
     }
 
@@ -515,6 +719,7 @@ class PlaybackManager internal constructor(
         exoPlayer.release()
         current = null
         resolved = null
+        _mode.value = PlayMode.Live
         _state.value = PlaybackState.Idle
         scope.cancel()
     }
@@ -523,13 +728,20 @@ class PlaybackManager internal constructor(
         val channel = current ?: return
         // Still resolving (or re-minting): the player holds nothing of this play yet.
         val stream = resolved ?: return
+        val archive = (_mode.value as? PlayMode.Archive)?.also(::refreshArchiveMode)
         val error = exoPlayer.playerError
         if (error != null && recover(channel, stream, error)) return
+        val ready = exoPlayer.isPlaying || exoPlayer.playbackState == Player.STATE_READY
+        // The open succeeded: a later failure is no longer a refused switch.
+        if (error == null && ready) openAfterSwitch = false
         _state.value = when {
-            error != null -> PlaybackState.Error(channel.id, errorMessage(channel.displayName, error))
+            error != null -> PlaybackState.Error(
+                channel.id, if (archive != null) ARCHIVE_ERROR else errorMessage(channel.displayName, error),
+            )
             exoPlayer.playbackState == Player.STATE_BUFFERING -> PlaybackState.Buffering(channel.id)
-            exoPlayer.isPlaying || exoPlayer.playbackState == Player.STATE_READY ->
-                PlaybackState.Playing(channel.id, streamTags(exoPlayer.videoFormat, exoPlayer.audioFormat))
+            ready -> PlaybackState.Playing(channel.id, streamTags(exoPlayer.videoFormat, exoPlayer.audioFormat))
+            // An archive that played to its end is not a failure: the mode says it ended.
+            exoPlayer.playbackState == Player.STATE_ENDED && archive != null -> PlaybackState.Buffering(channel.id)
             // A live stream that ends has dropped; surface it so play(sameChannel) can retry.
             exoPlayer.playbackState == Player.STATE_ENDED ->
                 PlaybackState.Error(channel.id, "${channel.displayName}: can't play this stream")
@@ -537,9 +749,20 @@ class PlaybackManager internal constructor(
         }
     }
 
+    /** Publishes whether the loaded archive can seek, its length once known, and whether it ended. */
+    private fun refreshArchiveMode(archive: PlayMode.Archive) {
+        val updated = archive.copy(
+            seekable = exoPlayer.isCurrentMediaItemSeekable,
+            durationMs = exoPlayer.duration.takeIf { it != C.TIME_UNSET },
+            ended = exoPlayer.playbackState == Player.STATE_ENDED,
+        )
+        if (updated != archive) _mode.value = updated
+    }
+
     /** Handles errors that have an automatic fix; returns true when playback was restarted. */
     private fun recover(channel: ChannelEntity, stream: ResolvedStream, error: PlaybackException): Boolean = when {
-        error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && withinLiveWindowBudget() -> {
+        _mode.value is PlayMode.Live &&
+            error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && withinLiveWindowBudget() -> {
             exoPlayer.seekToDefaultPosition()
             exoPlayer.prepare()
             _state.value = PlaybackState.Buffering(channel.id)
@@ -550,7 +773,11 @@ class PlaybackManager internal constructor(
         !audioFallbackActive && engine.codecPolicy.audio == DecoderChoice.SOFTWARE && error.isAudioRendererError() -> {
             audioFallbackActive = true
             engine.codecPolicy.audio = DecoderChoice.HARDWARE
-            load(channel, stream, asHls = currentIsHls)
+            val archive = _mode.value as? PlayMode.Archive
+            // An archive is released and reopened from the position it reached, so its old
+            // connection is closed before the new one opens.
+            if (archive == null) load(channel, stream, asHls = currentIsHls)
+            else reopenArchive(channel, resumeRequest(channel, archive))
             true
         }
         // Extension-less HLS that progressive extractors can't recognise: try HLS once, same URL.
@@ -565,7 +792,50 @@ class PlaybackManager internal constructor(
             remint(channel)
             true
         }
+        // The provider may still count the stream just released: wait and open again.
+        shouldRetrySwitch(error) -> {
+            retrySwitch(channel)
+            true
+        }
         else -> false
+    }
+
+    /**
+     * Whether a failed open right after a switch is worth another try: a busy-style HTTP status or a
+     * refused/reset connection, while retries remain. A refusal that may mean an expired portal link
+     * is left to the re-mint, which runs first.
+     */
+    private fun shouldRetrySwitch(error: PlaybackException): Boolean {
+        if (!openAfterSwitch || switchRetries >= SWITCH_RETRY_DELAYS_MS.size) return false
+        val code = error.httpCode() ?: return error.hasCause<SocketException>()
+        return code in SWITCH_RETRY_HTTP_CODES && !(remintable && code in REMINT_HTTP_CODES)
+    }
+
+    /**
+     * Releases the refused stream, stays Buffering, and after the next backoff delay resolves and loads
+     * the same live channel or archive request again. A newer play or stop cancels the wait.
+     */
+    private fun retrySwitch(channel: ChannelEntity) {
+        val wait = SWITCH_RETRY_DELAYS_MS[switchRetries++]
+        val archive = _mode.value as? PlayMode.Archive
+        val wasHls = currentIsHls
+        // A new generation first, so events from the released stream are ignored.
+        val generation = ++playGeneration
+        resolved = null
+        cancelJobs()
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+        hlsFallbackTried = wasHls
+        _state.value = PlaybackState.Buffering(channel.id)
+        resolveJob = scope.launch {
+            retryDelay(wait)
+            if (generation != playGeneration) return@launch
+            if (archive != null) {
+                startArchiveResolve(channel, archive.request, generation, newChannel = false)
+            } else {
+                startResolve(channel, generation, forceHls = wasHls, newChannel = false, evictFirst = true)
+            }
+        }
     }
 
     private fun remint(channel: ChannelEntity) {
@@ -618,6 +888,12 @@ class PlaybackManager internal constructor(
         const val MAX_LIVE_WINDOW_RECOVERIES = 3
         const val LIVE_WINDOW_SPAN_MS = 30_000L
         val REMINT_HTTP_CODES = setOf(403, 404, 410)
+
+        /** How long after a release an open still counts as the first open after a switch. */
+        const val SWITCH_WINDOW_MS = 10_000L
+        val SWITCH_RETRY_DELAYS_MS = listOf(500L, 1_000L, 2_000L, 4_000L)
+        val SWITCH_RETRY_HTTP_CODES = setOf(403, 429, 503, 509)
+        const val ARCHIVE_ERROR = "Couldn't play this programme back."
 
         fun versionName(context: Context): String = try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "dev"

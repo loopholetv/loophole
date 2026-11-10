@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -67,7 +68,10 @@ fun ChannelRow(
     /** Focus reached the first (false) or last (true) channel tile: load more on that side. */
     onReachEdge: (atEnd: Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** False while another control (the catch-up bar) takes the focus when the row appears. */
+    autoFocus: Boolean = true,
 ) {
+    val focusOnShow by rememberUpdatedState(autoFocus)
     val listState = rememberLazyListState()
     val current = remember { FocusRequester() }
     val tilePx = with(LocalDensity.current) { TileWidth.toPx() }
@@ -83,6 +87,7 @@ fun ChannelRow(
         val info = listState.layoutInfo
         val offset = info.visibleItemsInfo.firstOrNull { it.index == index }?.offset ?: 0
         listState.scrollBy(offset - (info.viewportSize.width - tilePx) / 2f)
+        if (!focusOnShow) return@LaunchedEffect
         // The tile attaches once laid out; retry briefly instead of crashing on an unattached requester.
         repeat(10) {
             if (current.tryFocus()) return@LaunchedEffect

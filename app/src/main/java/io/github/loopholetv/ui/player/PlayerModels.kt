@@ -6,9 +6,15 @@ import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.ProgrammeEntity
 import io.github.loopholetv.data.db.label
+import io.github.loopholetv.data.catchup.catchup
 import io.github.loopholetv.data.repo.ScopedChannels
+import io.github.loopholetv.player.catchup.ProgrammeLookup
+import io.github.loopholetv.player.catchup.ProgrammeSpan
+import io.github.loopholetv.data.settings.PlayerAction
+import io.github.loopholetv.data.settings.RemoteSettings
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.StreamTags
+import io.github.loopholetv.ui.common.isOkKey
 import io.github.loopholetv.ui.manage.ChannelEdit
 import java.time.Instant
 
@@ -25,6 +31,16 @@ const val ASPECT_SAVE_FAILED = "Couldn't save the aspect ratio."
 
 /** The channel's external player is no longer installed. */
 const val EXTERNAL_LAUNCH_FAILED = "That player isn't installed any more. Playing here instead."
+
+/** A catch-up key on a channel without catch-up. */
+const val NO_CATCHUP = "This channel has no catch-up."
+
+/** The error card while a programme from the archive fails to play. */
+const val ARCHIVE_FAILED = "Couldn't play this programme back."
+const val ARCHIVE_FAILED_DETAIL = "The provider may not keep it any more."
+
+/** How often the catch-up bar follows the position, only while it shows. */
+const val CATCHUP_TICK_MS = 1_000L
 
 /**
  * Zaps are coalesced: each press moves the target channel at once (its info shows immediately),
@@ -80,7 +96,140 @@ data class PlayerUi(
     val at: Instant = Instant.EPOCH,
     /** [channel] is a favourite (★ in the info bar). */
     val favourite: Boolean = false,
+    /** The overlay opened on the catch-up bar (focus on Play/Pause), not on the channel row. */
+    val barFocused: Boolean = false,
 )
+
+/** What the key routing needs to know about the screen. */
+data class PlayerKeyState(
+    val overlayVisible: Boolean,
+    val bannerVisible: Boolean,
+    val numberEntry: Boolean,
+    /** The live error card shows. */
+    val error: Boolean,
+    /** The channel has catch-up. */
+    val hasCatchup: Boolean,
+    /** Replaying the archive, or live paused on a catch-up channel. */
+    val catchupActive: Boolean,
+    /** The archive failed to play (its own error card shows). */
+    val archiveFailed: Boolean,
+)
+
+/** [PlayerKeyState] for this screen. */
+internal fun PlayerUi.keyState(catchupActive: Boolean, archiveFailed: Boolean) = PlayerKeyState(
+    overlayVisible = overlayVisible,
+    bannerVisible = bannerVisible,
+    numberEntry = numberEntry != null,
+    error = error != null,
+    hasCatchup = channel.catchup() != null,
+    catchupActive = catchupActive,
+    archiveFailed = archiveFailed,
+)
+
+/** Carries out the key routes that are not catch-up ones (see [PlayerCatchup.perform]). */
+internal fun PlayerViewModel.performPlayerRoute(route: PlayerKeyRoute) {
+    when (route) {
+        is PlayerKeyRoute.Digit -> { digit(route.digit); onUserInput() }
+        PlayerKeyRoute.CommitNumber -> commitNumber()
+        PlayerKeyRoute.ShowOverlay -> showOverlay()
+        PlayerKeyRoute.Retry -> retry()
+        is PlayerKeyRoute.Action -> when (route.action) {
+            PlayerAction.CHANNEL_UP -> channelUp()
+            PlayerAction.CHANNEL_DOWN -> channelDown()
+            PlayerAction.CHANNEL_LIST -> showOverlay()
+            PlayerAction.GUIDE -> goToGuide()
+            PlayerAction.QUICK_MENU -> openQuickMenu()
+            PlayerAction.FAVOURITE -> toggleFavourite()
+            PlayerAction.SUBTITLES -> openQuickPanel(QuickItem.SUBTITLES)
+            PlayerAction.AUDIO_TRACK -> openQuickPanel(QuickItem.AUDIO)
+            PlayerAction.SLEEP_TIMER -> openQuickPanel(QuickItem.SLEEP)
+            PlayerAction.SEARCH -> openSearch()
+            else -> Unit
+        }
+        else -> Unit
+    }
+}
+
+/** The programme [nowAndNext] has airing at a shown instant, as a catch-up span. */
+internal fun airingLookup(nowAndNext: suspend (ChannelEntity, Instant) -> List<ProgrammeEntity>) =
+    ProgrammeLookup { c, t -> nowAndNext(c, t).firstOrNull { it.start <= t }?.let { ProgrammeSpan(it.title, it.start, it.stop) } }
+
+/** What a key does on the player. */
+sealed interface PlayerKeyRoute {
+    /** Not handled here: the focused control (or nothing) gets it. */
+    data object Pass : PlayerKeyRoute
+    data class Digit(val digit: Int) : PlayerKeyRoute
+    data object CommitNumber : PlayerKeyRoute
+    data object ShowOverlay : PlayerKeyRoute
+
+    /** OK while catch-up is active: the overlay with the catch-up bar, focus on Play/Pause. */
+    data object ShowBar : PlayerKeyRoute
+
+    /** One press of a seek key; [direction] is negative for back. */
+    data class Seek(val direction: Int) : PlayerKeyRoute
+    data object RewindLive : PlayerKeyRoute
+    data object TogglePause : PlayerKeyRoute
+    data object GoLive : PlayerKeyRoute
+    data object WatchFromStart : PlayerKeyRoute
+    data object NoCatchup : PlayerKeyRoute
+    data object Retry : PlayerKeyRoute
+    data object RetryArchive : PlayerKeyRoute
+
+    /** A bound button whose action does not depend on catch-up (channel keys, menus, favourite…). */
+    data class Action(val action: PlayerAction) : PlayerKeyRoute
+}
+
+/**
+ * Key-down routing for the player. Digits always enter a number and OK commits one being typed.
+ * Bound buttons ([RemoteSettings.bindings]) act everywhere. With the overlay up the D-pad belongs
+ * to it. On bare video D-pad Up and Down open the overlay and never change channel; Left and Right
+ * seek while catch-up is active ([RemoteSettings.leftRightSeek]), and Left on live goes back in
+ * time only when [RemoteSettings.leftRewindsLive] is on, so a stray press never drops the picture.
+ */
+fun routePlayerKey(s: PlayerKeyState, keyCode: Int, remote: RemoteSettings): PlayerKeyRoute {
+    digitOf(keyCode)?.let { return PlayerKeyRoute.Digit(it) }
+    val ok = isOkKey(keyCode)
+    if (ok && s.numberEntry) return PlayerKeyRoute.CommitNumber
+    remote.bindings.player(keyCode)?.takeIf { it != PlayerAction.NONE }?.let { return boundRoute(s, it, remote) }
+    if (s.overlayVisible) return PlayerKeyRoute.Pass
+    return when (keyCode) {
+        KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> PlayerKeyRoute.ShowOverlay
+        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+            val back = keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+            when {
+                // The archive's error card: Left/Right move between Try again and Watch live.
+                s.archiveFailed -> PlayerKeyRoute.Pass
+                s.catchupActive -> if (remote.leftRightSeek) PlayerKeyRoute.Seek(if (back) -1 else 1) else PlayerKeyRoute.Pass
+                back && remote.leftRewindsLive && s.hasCatchup -> PlayerKeyRoute.RewindLive
+                else -> PlayerKeyRoute.Pass
+            }
+        }
+        else -> when {
+            !ok -> PlayerKeyRoute.Pass
+            // Bare video with an error card: OK is its Try again (the screen takes OK before the button).
+            s.archiveFailed && !s.bannerVisible -> PlayerKeyRoute.RetryArchive
+            s.error && !s.bannerVisible && !s.catchupActive -> PlayerKeyRoute.Retry
+            s.catchupActive -> PlayerKeyRoute.ShowBar
+            else -> PlayerKeyRoute.ShowOverlay
+        }
+    }
+}
+
+private fun boundRoute(s: PlayerKeyState, action: PlayerAction, remote: RemoteSettings): PlayerKeyRoute = when (action) {
+    PlayerAction.REWIND -> when {
+        s.catchupActive -> if (remote.mediaKeysSeek) PlayerKeyRoute.Seek(-1) else PlayerKeyRoute.Pass
+        !remote.rwRewindsLive -> PlayerKeyRoute.Pass
+        s.hasCatchup -> PlayerKeyRoute.RewindLive
+        else -> PlayerKeyRoute.NoCatchup
+    }
+    PlayerAction.FAST_FORWARD ->
+        if (s.catchupActive && remote.mediaKeysSeek) PlayerKeyRoute.Seek(1) else PlayerKeyRoute.Pass
+    // Play/Pause is not a seek: it always pauses or plays, whatever the seek keys are set to.
+    PlayerAction.PLAY_PAUSE -> PlayerKeyRoute.TogglePause
+    PlayerAction.LIVE -> if (s.catchupActive) PlayerKeyRoute.GoLive else PlayerKeyRoute.Pass
+    PlayerAction.WATCH_FROM_START -> if (s.hasCatchup) PlayerKeyRoute.WatchFromStart else PlayerKeyRoute.NoCatchup
+    else -> PlayerKeyRoute.Action(action)
+}
 
 /** A [ChannelEdit] picked from the player's channel options for [channel]. */
 data class ChannelEditing(val channel: ChannelEntity, val edit: ChannelEdit)

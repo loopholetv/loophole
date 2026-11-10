@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -46,6 +47,7 @@ import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import io.github.loopholetv.data.catchup.catchup
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.ref
@@ -90,7 +92,11 @@ private fun rememberStripStyle(anchor: MutableState<Instant?>): StripStyle {
             paint = paint,
             textColor = Tokens.OnBackground.toArgb(),
             focusedTextColor = Tokens.OnFocus.toArgb(),
+            dimTextColor = Tokens.Muted.toArgb(),
             anchor = anchor,
+            rewind = with(density) {
+                RewindGlyph(REWIND_GLYPH_WIDTH.toPx(), REWIND_GLYPH_HEIGHT.toPx(), REWIND_GLYPH_GAP.toPx())
+            },
         )
     }
 }
@@ -121,6 +127,8 @@ fun GuideGrid(
     favourites: Set<ChannelRef> = emptySet(),
     /** The row being reordered (Move mode), outlined. */
     movingId: Long? = null,
+    /** The window starts before "now" (see [GuideViewModel.pastWindow]). */
+    pastWindow: Boolean = false,
 ) {
     val visibleIds by remember(channels, listState) {
         derivedStateOf {
@@ -173,6 +181,7 @@ fun GuideGrid(
                             actions = actions,
                             favourite = channel.ref in favourites,
                             moving = channel.id == movingId,
+                            pastWindow = pastWindow,
                             stripModifier = Modifier
                                 .then(if (index == requesterIndex) Modifier.focusRequester(focusRequester) else Modifier)
                                 // Nothing focusable above but the preview (the header is display only).
@@ -203,6 +212,7 @@ private fun GuideRow(
     actions: GridActions,
     favourite: Boolean,
     moving: Boolean,
+    pastWindow: Boolean,
     stripModifier: Modifier,
 ) {
     // The guide id actually used (manual or automatic) at the channel's time shift.
@@ -210,6 +220,9 @@ private fun GuideRow(
     val loaded = if (key == null) emptyList() else slice.byKey[key]
     val known = key == null || key in slice.keys
     val visible = remember(loaded, window) { loaded?.filter(window::overlaps) ?: emptyList() }
+    // Worked out once per channel (and its limit once per clock tick), not on every draw.
+    val catchup = remember(channel) { channel.catchup() }
+    val playable = remember(catchup, now) { playableRange(catchup, now) }
     // Own render layer per row: scrolling only moves layers, and a change in one row (selection,
     // focus) re-records that row alone instead of the whole list.
     Row(
@@ -219,7 +232,12 @@ private fun GuideRow(
         // Display only, not a focus stop: the strip is the row's one focusable node.
         // Own layer: a window shift re-records the strip next to it, not the cell (only a ★
         // change re-records the cell).
-        ChannelCell(channel = channel, favourite = favourite, modifier = Modifier.graphicsLayer())
+        ChannelCell(
+            channel = channel,
+            favourite = favourite,
+            catchup = catchup != null,
+            modifier = Modifier.graphicsLayer(),
+        )
         Spacer(Modifier.width(3.dp))
         // Always composed so every row has its focus stop; blank until its programmes are loaded.
         ProgrammeStrip(
@@ -233,12 +251,14 @@ private fun GuideRow(
             onLongPress = { actions.onLongPress(channel) },
             modifier = Modifier.weight(1f).fillMaxHeight().then(stripModifier),
             loading = !known,
+            playable = playable,
+            pastWindow = pastWindow,
         )
     }
 }
 
 @Composable
-private fun ChannelCell(channel: ChannelEntity, favourite: Boolean, modifier: Modifier) {
+private fun ChannelCell(channel: ChannelEntity, favourite: Boolean, catchup: Boolean, modifier: Modifier) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
@@ -262,9 +282,10 @@ private fun ChannelCell(channel: ChannelEntity, favourite: Boolean, modifier: Mo
             color = Tokens.OnBackground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            // The name gives way to the marker, never the other way round.
+            // The name gives way to the markers, never the other way round.
             modifier = Modifier.weight(1f, fill = false),
         )
+        if (catchup) RewindMark(Modifier.padding(start = 6.dp))
         if (favourite) {
             Text(
                 text = FAVOURITE_MARK,
@@ -279,6 +300,17 @@ private fun ChannelCell(channel: ChannelEntity, favourite: Boolean, modifier: Mo
 
 /** After a favourite channel's name. */
 const val FAVOURITE_MARK = "\u2605"
+
+/** The catch-up mark (as on the strip's archived programmes), after a channel's name. */
+@Composable
+private fun RewindMark(modifier: Modifier = Modifier) {
+    Spacer(
+        modifier.size(REWIND_GLYPH_WIDTH, REWIND_GLYPH_HEIGHT).drawWithCache {
+            val path = rewindGlyphPath(size.width, size.height)
+            onDrawBehind { drawPath(path, Tokens.Accent) }
+        },
+    )
+}
 
 @Composable
 private fun ChannelLogo(url: String?) {

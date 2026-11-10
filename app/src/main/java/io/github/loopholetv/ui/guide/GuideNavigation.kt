@@ -3,6 +3,7 @@ package io.github.loopholetv.ui.guide
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.loopholetv.data.db.ProgrammeEntity
+import java.time.Duration
 import java.time.Instant
 
 /** Guide rows on screen at 1080p. */
@@ -34,14 +35,24 @@ fun guidePreviewHeight(contentHeight: Dp): Dp =
 
 /**
  * The block a strip selects when focus enters it (Up/Down from another row, or any other way in):
- * the one covering the focus time [anchor], clamped to be no earlier than [now], so focus never
- * lands on a programme that ended before the now line. In a gap at that time: the next
- * programme still to end after it. Only when every block shown has ended: the last one. -1 when
- * there are no blocks.
+ * the one covering the focus time [anchor]. In the "now" window ([pastWindow] false) the anchor is
+ * clamped to be no earlier than [now], so focus never lands on a programme that ended before the
+ * now line; looking at the past, the anchor is kept, so Up/Down stay at the same time. In a gap at
+ * that time: the next programme still to end after it. Only when every block shown has ended: the
+ * last one. -1 when there are no blocks.
  */
-internal fun entryIndex(programmes: List<ProgrammeEntity>, anchor: Instant?, now: Instant): Int {
+internal fun entryIndex(
+    programmes: List<ProgrammeEntity>,
+    anchor: Instant?,
+    now: Instant,
+    pastWindow: Boolean = false,
+): Int {
     if (programmes.isEmpty()) return -1
-    val at = if (anchor == null || anchor < now) now else anchor
+    val at = when {
+        anchor == null -> now
+        !pastWindow && anchor < now -> now
+        else -> anchor
+    }
     val covering = programmes.indexOfFirst { it.start <= at && it.stop > at }
     if (covering >= 0) return covering
     val next = programmes.indexOfFirst { it.stop > at }
@@ -56,8 +67,12 @@ internal data class RowEntry(val index: Int, val anchor: Instant?)
  * ([anchorForStep]). Otherwise a gap at now (entry takes the next block) would drift the focus
  * time into the future, and the rows after it would skip the programme airing now.
  */
-internal fun enterRow(programmes: List<ProgrammeEntity>, anchor: Instant?, now: Instant): RowEntry =
-    RowEntry(entryIndex(programmes, anchor, now), anchor)
+internal fun enterRow(
+    programmes: List<ProgrammeEntity>,
+    anchor: Instant?,
+    now: Instant,
+    pastWindow: Boolean = false,
+): RowEntry = RowEntry(entryIndex(programmes, anchor, now, pastWindow), anchor)
 
 /** The focus time after Left/Right selects [p]: its start (within the window). */
 internal fun anchorForStep(p: ProgrammeEntity, window: TimeWindow): Instant = maxOf(p.start, window.start)
@@ -67,22 +82,29 @@ internal sealed interface StripMove {
     /** Select the block at [index]. */
     data class Select(val index: Int) : StripMove
 
-    /** Past the row's edge: shift the window (Left at "now" leaves for the groups instead). */
+    /** Past the row's edge: shift the window (at the row's limit Left leaves for the groups instead). */
     data object Edge : StripMove
 
-    /** Left onto a programme that has already ended: as Left at "now" (the groups column). */
+    /** Left onto a programme the row can't go back to: as Left at "now" (the groups column). */
     data object ExitLeft : StripMove
 }
 
 /**
- * Left/Right from block [selected] by [step]. The window starts on the half hour before now, so it
- * can show blocks that ended before now (EPGs that don't run on half hours): Left onto one of
- * those acts as Left at "now" (no past navigation).
+ * Left/Right from block [selected] by [step]. A row goes back no further than [earliest], its
+ * archive limit (null: no catch-up, so no further than [now]). The window starts on the half hour
+ * before that limit, so it can show blocks that stopped before it (EPGs that don't run on half
+ * hours): Left onto one of those acts as Left at "now".
  */
-internal fun stripMove(programmes: List<ProgrammeEntity>, selected: Int, step: Int, now: Instant): StripMove {
+internal fun stripMove(
+    programmes: List<ProgrammeEntity>,
+    selected: Int,
+    step: Int,
+    now: Instant,
+    earliest: Instant? = null,
+): StripMove {
     val target = selected + step
     if (selected < 0 || target !in programmes.indices) return StripMove.Edge
-    if (step < 0 && programmes[target].stop <= now) return StripMove.ExitLeft
+    if (step < 0 && programmes[target].stop <= (earliest ?: now)) return StripMove.ExitLeft
     return StripMove.Select(target)
 }
 
@@ -94,8 +116,8 @@ enum class GuideBack { SnapToNow, ShowGroups, OpenRail, Exit }
 
 /**
  * Back on the guide, outside Move mode and dialogs (they keep their own Back): a window shifted
- * into the future snaps back to now first, wherever focus is; then programme (or preview) → groups
- * list → side rail → exit.
+ * away from now (into the past or the future) snaps back to now first, wherever focus is; then
+ * programme (or preview) → groups list → side rail → exit.
  */
 fun guideBackFor(area: GuideArea, windowShifted: Boolean): GuideBack = when {
     windowShifted -> GuideBack.SnapToNow
@@ -134,4 +156,30 @@ internal fun guideKeyRange(firstVisible: Int, itemCount: Int, chunk: Int = ID_CH
     val from = ((firstVisible / chunk) * chunk - chunk).coerceAtLeast(0)
     val to = minOf(itemCount, from + 3 * chunk)
     return from until to
+}
+
+/** Where a page key leaves the list: the first row to show and the row to focus. */
+internal data class PageTarget(val firstVisible: Int, val focus: Int)
+
+/**
+ * A page key moving the list by [delta] rows: the first visible row moves by [delta] (kept to a
+ * full page of [rows] inside [itemCount]) and focus keeps its place on screen, so it stays on a
+ * row that is shown. [focused] -1 (the focused row not loaded) focuses the new page's first row.
+ */
+internal fun pageTarget(firstVisible: Int, focused: Int, itemCount: Int, delta: Int, rows: Int = GUIDE_ROWS): PageTarget {
+    if (itemCount <= 0) return PageTarget(0, -1)
+    val first = (firstVisible + delta).coerceIn(0, (itemCount - rows).coerceAtLeast(0))
+    val focus = if (focused < 0) first else (focused + delta).coerceIn(0, itemCount - 1)
+    return PageTarget(first, focus)
+}
+
+/**
+ * The strips' focus time after the window jumped from [before] to [after] (a whole day, or back to
+ * now): the same time of day on the new window, so focus stays in the same column. No focus time
+ * yet ([anchor] null) means "now", so the first jump keeps the current time of day. Null (the
+ * default, "now") when that time isn't in the new window.
+ */
+internal fun anchorAfterJump(anchor: Instant?, now: Instant, before: TimeWindow, after: TimeWindow): Instant? {
+    val moved = (anchor ?: now).plus(Duration.between(before.start, after.start))
+    return moved.takeIf(after::contains)
 }

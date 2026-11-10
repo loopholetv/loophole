@@ -4,6 +4,8 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.ChannelEntity
+import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
+import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.db.ProgrammeEntity
@@ -674,9 +676,34 @@ class EpgRepositoryTest {
         assertEquals(listOf("p-1230"), kept)
     }
 
+    @Test fun negativePastDaysBehavesAsZero() = runTest {
+        val kept = refreshWithEnded(EpgStoreOptions(pastDays = -1), -61, -59, -10)
+        assertEquals(listOf("p-59", "p-10"), kept)
+    }
+
     @Test fun pastDaysSevenKeepsAWeek() = runTest {
         val kept = refreshWithEnded(EpgStoreOptions(pastDays = 7), -6 * 24 * 60L, -8 * 24 * 60L)
         assertEquals(listOf("p-8640"), kept)
+    }
+
+    @Test fun pruneKeepsCatchupDays() = runTest {
+        val h = 60L
+        val id = playlist(listOf(url("/guide.xml")))
+        db.channelDao().insertAll(
+            listOf(
+                ChannelEntity(
+                    playlistId = id, key = "c", number = 1, name = "Alpha",
+                    streamUrl = "http://stream.example.test/c.ts", logo = null, groupTitle = "G", groupOrder = 0,
+                    sortOrder = 0, tvgId = "a", tvgName = null, userAgent = null, referrer = null,
+                    catchupType = "xc", catchupDays = 2, catchupSource = null, epgChannelId = null,
+                ),
+            ),
+        )
+        serve("/guide.xml", xmltv(mapOf("a" to listOf("Alpha")), listOf(prog("a", -36 * h - 30, 30, "kept"), prog("a", -60 * h - 30, 30, "dropped"))))
+        val options = epgStoreOptions(AppSettings(epgPastDays = AUTO_PAST_DAYS)) { db.channelDao().maxCatchupDays() }
+        assertEquals(2, options.pastDays)
+        assertTrue(repoWith(options).refresh(id) {}.ok)
+        assertEquals(listOf("kept"), stored("a").map { it.title })
     }
 
     @Test fun descriptionsOffStoresNull() = runTest {

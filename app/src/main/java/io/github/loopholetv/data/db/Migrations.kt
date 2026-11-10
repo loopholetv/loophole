@@ -115,7 +115,20 @@ val MIGRATION_4_5: Migration = SqlMigration(
     "ALTER TABLE `channel_prefs` ADD COLUMN `aspectMode` TEXT",
 )
 
-val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+/**
+ * v5 → v6: the provider's archive time zone and stream format on `playlists`, and a per-channel
+ * archive time correction. SQL matches Room's schema 6 export.
+ */
+val MIGRATION_5_6: Migration = SqlMigration(
+    5,
+    6,
+    "ALTER TABLE `playlists` ADD COLUMN `xtreamTimeZone` TEXT",
+    "ALTER TABLE `playlists` ADD COLUMN `xtreamArchiveExt` TEXT",
+    "ALTER TABLE `channels` ADD COLUMN `catchupCorrectionMinutes` INTEGER NOT NULL DEFAULT 0",
+)
+
+val ALL_MIGRATIONS: Array<Migration> =
+    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */
 private class SqlMigration(from: Int, to: Int, private vararg val statements: String) : Migration(from, to) {

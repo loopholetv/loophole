@@ -29,6 +29,7 @@ internal data class ImportedChannel(
     val catchupType: String?,
     val catchupDays: Int?,
     val catchupSource: String?,
+    val catchupCorrectionMinutes: Int = 0,
     /** MAC portal: the stream needs a `create_link` at play time. */
     val needsLink: Boolean = false,
 )
@@ -102,6 +103,7 @@ internal class ChannelWriter(
             catchupType = c.catchupType,
             catchupDays = c.catchupDays,
             catchupSource = c.catchupSource,
+            catchupCorrectionMinutes = c.catchupCorrectionMinutes,
             epgChannelId = previous?.epgChannelId,
             needsLink = c.needsLink,
         )

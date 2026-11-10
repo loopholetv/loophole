@@ -9,6 +9,9 @@ import androidx.tv.material3.darkColorScheme
 object Tokens {
     val Background = Color(0xFF0B0C0E)
     val Surface = Color(0xFF16181B)
+
+    /** [Surface] at 60 % over [Background]: programmes that have ended and can't be played. */
+    val SurfaceDim = Color(0xFF121316)
     val SurfaceRaised = Color(0xFF24272C)
     val Outline = Color(0xFF3A3E45)
     val Accent = Color(0xFF0ABAB5)

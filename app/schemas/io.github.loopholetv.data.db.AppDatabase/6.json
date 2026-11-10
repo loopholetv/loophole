@@ -1,0 +1,948 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 6,
+    "identityHash": "732094ff3ded3653f96046a176fe8c6d",
+    "entities": [
+      {
+        "tableName": "playlists",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `type` TEXT NOT NULL, `url` TEXT, `xtreamServer` TEXT, `xtreamUser` TEXT, `xtreamPass` TEXT, `epgUrlsFromSource` TEXT NOT NULL, `manualEpgUrl` TEXT, `lastRefreshedAt` INTEGER, `lastError` TEXT, `enabled` INTEGER NOT NULL DEFAULT 1, `userAgent` TEXT, `updateHours` INTEGER, `updateOnStart` INTEGER, `useSourceEpg` INTEGER NOT NULL DEFAULT 1, `rekeyPending` INTEGER NOT NULL DEFAULT 0, `mac` TEXT, `portalEndpoint` TEXT, `portalToken` TEXT, `portalLogin` TEXT, `portalPassword` TEXT, `portalSerial` TEXT, `portalDeviceId` TEXT, `portalDeviceId2` TEXT, `portalSignature` TEXT, `xtreamTimeZone` TEXT, `xtreamArchiveExt` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "url",
+            "columnName": "url",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "xtreamServer",
+            "columnName": "xtreamServer",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "xtreamUser",
+            "columnName": "xtreamUser",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "xtreamPass",
+            "columnName": "xtreamPass",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "epgUrlsFromSource",
+            "columnName": "epgUrlsFromSource",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "manualEpgUrl",
+            "columnName": "manualEpgUrl",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastRefreshedAt",
+            "columnName": "lastRefreshedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "userAgent",
+            "columnName": "userAgent",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "updateHours",
+            "columnName": "updateHours",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "updateOnStart",
+            "columnName": "updateOnStart",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "useSourceEpg",
+            "columnName": "useSourceEpg",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "rekeyPending",
+            "columnName": "rekeyPending",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "mac",
+            "columnName": "mac",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalEndpoint",
+            "columnName": "portalEndpoint",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalToken",
+            "columnName": "portalToken",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalLogin",
+            "columnName": "portalLogin",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalPassword",
+            "columnName": "portalPassword",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalSerial",
+            "columnName": "portalSerial",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalDeviceId",
+            "columnName": "portalDeviceId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalDeviceId2",
+            "columnName": "portalDeviceId2",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "portalSignature",
+            "columnName": "portalSignature",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "xtreamTimeZone",
+            "columnName": "xtreamTimeZone",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "xtreamArchiveExt",
+            "columnName": "xtreamArchiveExt",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "channels",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `playlistId` INTEGER NOT NULL, `key` TEXT NOT NULL, `number` INTEGER NOT NULL, `name` TEXT NOT NULL, `streamUrl` TEXT NOT NULL, `logo` TEXT, `groupTitle` TEXT NOT NULL, `groupOrder` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, `tvgId` TEXT, `tvgName` TEXT, `userAgent` TEXT, `referrer` TEXT, `catchupType` TEXT, `catchupDays` INTEGER, `catchupSource` TEXT, `catchupCorrectionMinutes` INTEGER NOT NULL DEFAULT 0, `epgChannelId` TEXT, `visible` INTEGER NOT NULL DEFAULT 1, `guideNumber` INTEGER NOT NULL DEFAULT 0, `groupRank` INTEGER NOT NULL DEFAULT 0, `customName` TEXT, `customLogo` TEXT, `guideEpgId` TEXT, `epgShiftMinutes` INTEGER NOT NULL DEFAULT 0, `needsLink` INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "key",
+            "columnName": "key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "number",
+            "columnName": "number",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamUrl",
+            "columnName": "streamUrl",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "logo",
+            "columnName": "logo",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "groupTitle",
+            "columnName": "groupTitle",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupOrder",
+            "columnName": "groupOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sortOrder",
+            "columnName": "sortOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tvgId",
+            "columnName": "tvgId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "tvgName",
+            "columnName": "tvgName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "userAgent",
+            "columnName": "userAgent",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "referrer",
+            "columnName": "referrer",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "catchupType",
+            "columnName": "catchupType",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "catchupDays",
+            "columnName": "catchupDays",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "catchupSource",
+            "columnName": "catchupSource",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "catchupCorrectionMinutes",
+            "columnName": "catchupCorrectionMinutes",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "epgChannelId",
+            "columnName": "epgChannelId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "visible",
+            "columnName": "visible",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "guideNumber",
+            "columnName": "guideNumber",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "groupRank",
+            "columnName": "groupRank",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "customName",
+            "columnName": "customName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "customLogo",
+            "columnName": "customLogo",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "guideEpgId",
+            "columnName": "guideEpgId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "epgShiftMinutes",
+            "columnName": "epgShiftMinutes",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "needsLink",
+            "columnName": "needsLink",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_channels_playlistId_key",
+            "unique": true,
+            "columnNames": [
+              "playlistId",
+              "key"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_channels_playlistId_key` ON `${TABLE_NAME}` (`playlistId`, `key`)"
+          },
+          {
+            "name": "index_channels_playlistId_groupTitle_sortOrder",
+            "unique": false,
+            "columnNames": [
+              "playlistId",
+              "groupTitle",
+              "sortOrder"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_channels_playlistId_groupTitle_sortOrder` ON `${TABLE_NAME}` (`playlistId`, `groupTitle`, `sortOrder`)"
+          },
+          {
+            "name": "index_channels_playlistId_groupTitle_groupRank",
+            "unique": false,
+            "columnNames": [
+              "playlistId",
+              "groupTitle",
+              "groupRank"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_channels_playlistId_groupTitle_groupRank` ON `${TABLE_NAME}` (`playlistId`, `groupTitle`, `groupRank`)"
+          },
+          {
+            "name": "index_channels_playlistId_number",
+            "unique": false,
+            "columnNames": [
+              "playlistId",
+              "number"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_channels_playlistId_number` ON `${TABLE_NAME}` (`playlistId`, `number`)"
+          },
+          {
+            "name": "index_channels_visible_guideNumber",
+            "unique": false,
+            "columnNames": [
+              "visible",
+              "guideNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_channels_visible_guideNumber` ON `${TABLE_NAME}` (`visible`, `guideNumber`)"
+          },
+          {
+            "name": "index_channels_guideEpgId",
+            "unique": false,
+            "columnNames": [
+              "guideEpgId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_channels_guideEpgId` ON `${TABLE_NAME}` (`guideEpgId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "programmes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `epgChannelId` TEXT NOT NULL, `start` INTEGER NOT NULL, `stop` INTEGER NOT NULL, `title` TEXT NOT NULL, `subTitle` TEXT, `description` TEXT, `category` TEXT, `generation` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "epgChannelId",
+            "columnName": "epgChannelId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "start",
+            "columnName": "start",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stop",
+            "columnName": "stop",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "subTitle",
+            "columnName": "subTitle",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "generation",
+            "columnName": "generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_programmes_epgChannelId_start",
+            "unique": false,
+            "columnNames": [
+              "epgChannelId",
+              "start"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_programmes_epgChannelId_start` ON `${TABLE_NAME}` (`epgChannelId`, `start`)"
+          },
+          {
+            "name": "index_programmes_stop_title_epgChannelId_generation",
+            "unique": false,
+            "columnNames": [
+              "stop",
+              "title",
+              "epgChannelId",
+              "generation"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_programmes_stop_title_epgChannelId_generation` ON `${TABLE_NAME}` (`stop`, `title`, `epgChannelId`, `generation`)"
+          }
+        ]
+      },
+      {
+        "tableName": "epg_status",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`playlistId` INTEGER NOT NULL, `updatedAt` INTEGER, `matchedChannels` INTEGER NOT NULL, `ok` INTEGER NOT NULL, `message` TEXT, PRIMARY KEY(`playlistId`), FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "matchedChannels",
+            "columnName": "matchedChannels",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ok",
+            "columnName": "ok",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "playlistId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "epg_pending",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`generation` INTEGER NOT NULL, PRIMARY KEY(`generation`))",
+        "fields": [
+          {
+            "fieldPath": "generation",
+            "columnName": "generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "generation"
+          ]
+        }
+      },
+      {
+        "tableName": "favourites",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`playlistId` INTEGER NOT NULL, `channelKey` TEXT NOT NULL, `position` INTEGER NOT NULL, `addedAt` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `channelKey`), FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "channelKey",
+            "columnName": "channelKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "addedAt",
+            "columnName": "addedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "playlistId",
+            "channelKey"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_favourites_position",
+            "unique": false,
+            "columnNames": [
+              "position"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_favourites_position` ON `${TABLE_NAME}` (`position`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "history",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`playlistId` INTEGER NOT NULL, `channelKey` TEXT NOT NULL, `watchedAt` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `channelKey`), FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "channelKey",
+            "columnName": "channelKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "watchedAt",
+            "columnName": "watchedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "playlistId",
+            "channelKey"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_history_watchedAt",
+            "unique": false,
+            "columnNames": [
+              "watchedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_history_watchedAt` ON `${TABLE_NAME}` (`watchedAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "channel_prefs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`playlistId` INTEGER NOT NULL, `channelKey` TEXT NOT NULL, `hidden` INTEGER NOT NULL, `customName` TEXT, `customLogo` TEXT, `epgOverride` TEXT, `epgShiftMinutes` INTEGER NOT NULL, `position` INTEGER, `videoDecoder` TEXT, `audioDecoder` TEXT, `externalPlayer` TEXT, `aspectMode` TEXT, PRIMARY KEY(`playlistId`, `channelKey`), FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "channelKey",
+            "columnName": "channelKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hidden",
+            "columnName": "hidden",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customName",
+            "columnName": "customName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "customLogo",
+            "columnName": "customLogo",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "epgOverride",
+            "columnName": "epgOverride",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "epgShiftMinutes",
+            "columnName": "epgShiftMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "videoDecoder",
+            "columnName": "videoDecoder",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "audioDecoder",
+            "columnName": "audioDecoder",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "externalPlayer",
+            "columnName": "externalPlayer",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "aspectMode",
+            "columnName": "aspectMode",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "playlistId",
+            "channelKey"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "group_prefs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`playlistId` INTEGER NOT NULL, `groupTitle` TEXT NOT NULL, `hidden` INTEGER NOT NULL, `customName` TEXT, `position` INTEGER, `sortMode` TEXT NOT NULL, PRIMARY KEY(`playlistId`, `groupTitle`), FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupTitle",
+            "columnName": "groupTitle",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hidden",
+            "columnName": "hidden",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customName",
+            "columnName": "customName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "sortMode",
+            "columnName": "sortMode",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "playlistId",
+            "groupTitle"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "epg_sources",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `playlistId` INTEGER NOT NULL, `url` TEXT NOT NULL, `position` INTEGER NOT NULL, FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "url",
+            "columnName": "url",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_epg_sources_playlistId_position",
+            "unique": false,
+            "columnNames": [
+              "playlistId",
+              "position"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_epg_sources_playlistId_position` ON `${TABLE_NAME}` (`playlistId`, `position`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "epg_channels",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`playlistId` INTEGER NOT NULL, `epgId` TEXT NOT NULL, `displayName` TEXT NOT NULL, PRIMARY KEY(`playlistId`, `epgId`), FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "playlistId",
+            "columnName": "playlistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "epgId",
+            "columnName": "epgId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "playlistId",
+            "epgId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "playlists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "playlistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '732094ff3ded3653f96046a176fe8c6d')"
+    ]
+  }
+}

@@ -13,9 +13,20 @@ import io.github.loopholetv.data.stalker.StalkerSession
 import io.github.loopholetv.data.stalker.StalkerSessions
 import io.github.loopholetv.data.stalker.playableUrl
 import io.github.loopholetv.data.stalker.portalRoot
+import io.github.loopholetv.data.catchup.CatchupMode
+import io.github.loopholetv.data.catchup.CatchupSpec
+import io.github.loopholetv.data.xtream.XtreamClient
+import io.github.loopholetv.data.xtream.XtreamCredentials
+import io.github.loopholetv.data.catchup.CatchupUrls
+import io.github.loopholetv.data.catchup.XtreamArchive
+import io.github.loopholetv.data.catchup.catchup
+import io.github.loopholetv.player.catchup.ArchiveRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
 
 /** What the player opens: never stored, never logged (it can carry a temporary token). */
 data class ResolvedStream(val url: String, val userAgent: String, val headers: Map<String, String>) {
@@ -31,6 +42,9 @@ interface StreamResolver {
 
     /** Whether an HTTP 403/404/410 on [channel]'s stream may mean an expired link worth one re-mint. */
     suspend fun canRemint(channel: ChannelEntity): Boolean = false
+
+    /** Resolves [channel]'s archive for [request]; null when this channel can't play that time. */
+    suspend fun resolveArchive(channel: ChannelEntity, request: ArchiveRequest, now: Instant): ResolvedStream? = null
 }
 
 /** The stored URL with the channel's own user agent and referrer. */
@@ -62,7 +76,16 @@ class PlaylistStreamResolver(
     private val sessions: StalkerSessions,
     private val client: StalkerClient,
     private val delayMs: suspend (Long) -> Unit = ::delay,
+    /** The device zone, used for archive times the playlist doesn't pin to a server zone. */
+    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
+    /** Logs in to an Xtream account (an API request, not a stream); null skips learning the server zone. */
+    private val xtream: XtreamClient? = null,
+    /** Stores the learned (zone, archive extension) for a playlist id. */
+    private val storeArchiveInfo: suspend (Long, String?, String?) -> Unit = { _, _, _ -> },
 ) : StreamResolver {
+
+    /** Playlists whose zone was already asked for in this session, so a failed login isn't retried. */
+    private val zoneAsked: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
      * The playlist type [resolve] just looked up, consumed by the [canRemint] that PlaybackManager
@@ -81,6 +104,77 @@ class PlaylistStreamResolver(
             userAgent = UserAgents.forStream(channel.userAgent, p?.userAgent, s.userAgent, defaultUa),
             headers = refererHeader(channel),
         )
+    }
+
+    /**
+     * The archive link for [request] (guide-shown times, already final), or null when the channel
+     * has no catch-up or its playlist is a portal. Goes through the same proxy, agent and referrer as [resolve].
+     */
+    override suspend fun resolveArchive(channel: ChannelEntity, request: ArchiveRequest, now: Instant): ResolvedStream? {
+        val p = playlist(channel.playlistId)
+        if (p?.type == PlaylistType.STALKER) return null
+        val spec = channel.catchup() ?: return null
+        val url = if (p?.type == PlaylistType.XTREAM) {
+            val server = p.xtreamServer
+            val user = p.xtreamUser
+            val pass = p.xtreamPass
+            if (server.isNullOrBlank() || user == null || pass == null) return null
+            val known = if (p.xtreamTimeZone == null) learnArchiveInfo(p, server, user, pass) else null
+            val zoneId = p.xtreamTimeZone ?: known?.first
+            val ext = p.xtreamArchiveExt ?: known?.second ?: "ts"
+            val serverZone = zoneId?.let(::zoneOf) ?: zone()
+            val archive = XtreamArchive(server, user, pass, channel.key, serverZone, ext)
+            CatchupUrls.xtream(archive, request.from, request.until, maxOf(now, request.until))
+        } else {
+            CatchupUrls.m3u(
+                spec, channel.streamUrl, request.from, request.until, endCap(spec, request, now), zone(),
+                Duration.ofMinutes(-channel.catchupCorrectionMinutes.toLong()),
+            )
+        } ?: return null
+        val s = settings()
+        return ResolvedStream(
+            url = rewriteForProxy(url, parseUdpProxy(s.udpProxy)),
+            userAgent = UserAgents.forStream(channel.userAgent, p?.userAgent, s.userAgent, defaultUa),
+            headers = refererHeader(channel),
+        )
+    }
+
+    /**
+     * The "now" the URL builders cap the archive's end at. A programme still airing is asked for up
+     * to its stop, so the provider keeps serving as the recording grows instead of ending at the
+     * moment it was opened: whenever the URL says nothing about the current time itself, the
+     * request's end is passed as "now". A template that does read the current time (an offset from
+     * now, or a now stamp) keeps the real one.
+     */
+    private fun endCap(spec: CatchupSpec, request: ArchiveRequest, now: Instant): Instant {
+        val open = maxOf(now, request.until)
+        return when (spec.mode) {
+            CatchupMode.XC -> open
+            CatchupMode.DEFAULT, CatchupMode.APPEND ->
+                if (spec.source?.let(NOW_PLACEHOLDER::containsMatchIn) == true) now else open
+            CatchupMode.SHIFT, CatchupMode.FLUSSONIC_HLS, CatchupMode.FLUSSONIC_TS -> now
+        }
+    }
+
+    /**
+     * One account login for a playlist saved before the server zone was recorded; stores what it
+     * returns. Asked once per playlist per session: a failure leaves the device zone in use.
+     */
+    private suspend fun learnArchiveInfo(p: PlaylistEntity, server: String, user: String, pass: String): Pair<String?, String>? {
+        val api = xtream ?: return null
+        if (!zoneAsked.add(p.id)) return null
+        return try {
+            val s = settings()
+            val ua = UserAgents.forDownload(p.userAgent, s.userAgent, defaultUa)
+            val account = api.authenticate(XtreamCredentials(server, user, pass), ua)
+            storeArchiveInfo(p.id, account.serverTimeZone, account.archiveExt)
+            account.serverTimeZone to account.archiveExt
+        } catch (e: CancellationException) {
+            zoneAsked.remove(p.id)
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** Only a portal row that mints a temporary link; a static row would re-resolve to the same URL. */
@@ -140,5 +234,14 @@ class PlaylistStreamResolver(
         } ?: throw StalkerLinkException("timeout")
 }
 
+// Template placeholders that read the current time rather than the programme's.
+private val NOW_PLACEHOLDER = Regex("""\{(?:offset|lutc|now|timestamp)(?::[^{}]*)?\}""")
+
 private fun refererHeader(channel: ChannelEntity): Map<String, String> =
     channel.referrer?.takeIf { it.isNotBlank() }?.let { mapOf("Referer" to it) } ?: emptyMap()
+
+private fun zoneOf(id: String): ZoneId? = try {
+    ZoneId.of(id.trim())
+} catch (_: java.time.DateTimeException) {
+    null
+}

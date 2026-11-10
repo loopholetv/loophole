@@ -39,6 +39,7 @@ const val AUDIO_DELAY_WRITE_MS = 500L
 enum class QuickItem(val label: String) {
     SEARCH("Search"),
     CHANNELS("Channels"),
+    START_OVER("Watch from start"),
     VIDEO("Video"),
     AUDIO("Audio"),
     AUDIO_DELAY("Audio delay"),
@@ -51,9 +52,18 @@ enum class QuickItem(val label: String) {
     SETTINGS("Settings"),
 }
 
-/** The tiles shown; picture-in-picture only where the device supports it. */
-fun quickItems(pipSupported: Boolean): List<QuickItem> =
-    QuickItem.entries.filter { it != QuickItem.PIP || pipSupported }
+/**
+ * The tiles shown; picture-in-picture only where the device supports it, Watch from start only
+ * while a channel with catch-up plays live ([startOver]).
+ */
+fun quickItems(pipSupported: Boolean, startOver: Boolean = false): List<QuickItem> =
+    QuickItem.entries.filter {
+        when (it) {
+            QuickItem.PIP -> pipSupported
+            QuickItem.START_OVER -> startOver
+            else -> true
+        }
+    }
 
 /** One tile: its name and the current value shown under it (null for actions). */
 data class QuickEntry(val item: QuickItem, val label: String, val value: String?)
@@ -174,6 +184,7 @@ internal interface QuickMenuHost {
     /** Current values; the menu fills in the audio delay itself. */
     fun values(): QuickValues
     fun showChannels()
+    fun watchFromStart()
     fun toggleFavourite()
     fun openOptions()
     fun saveAspect(mode: AspectMode)
@@ -190,7 +201,8 @@ internal interface QuickMenuHost {
 internal class QuickMenuController(
     private val scope: CoroutineScope,
     private val playback: Playback,
-    private val items: List<QuickItem>,
+    /** The tiles to show, read each time the menu is built (some depend on what plays). */
+    private val itemsNow: () -> List<QuickItem>,
     private val sleepTimer: SleepTimer?,
     private val updatePlayback: suspend ((PlaybackSettings) -> PlaybackSettings) -> Unit,
     private val host: QuickMenuHost,
@@ -222,8 +234,17 @@ internal class QuickMenuController(
     fun open() {
         host.stayAwake()
         if (open != null) return
+        val items = itemsNow()
         open = Open(last?.takeIf { it in items } ?: items.first(), null)
         refresh()
+    }
+
+    /** Opens the menu straight on [item]'s list (a remote button bound to it). */
+    fun openPanel(item: QuickItem) {
+        host.stayAwake()
+        if (open == null) open()
+        if (open?.panel == item) return
+        pick(item)
     }
 
     fun dismiss() {
@@ -241,6 +262,7 @@ internal class QuickMenuController(
             QuickItem.SETTINGS -> close { host.send(PlayerEvent.OpenSettings) }
             QuickItem.PIP -> close { host.send(PlayerEvent.EnterPip) }
             QuickItem.CHANNELS -> close(host::showChannels)
+            QuickItem.START_OVER -> close(host::watchFromStart)
             QuickItem.OPTIONS -> close(host::openOptions)
             QuickItem.FAVOURITE -> {
                 open = o.copy(focus = item, panel = null)
@@ -343,6 +365,9 @@ internal class QuickMenuController(
             QuickItem.AUDIO_DELAY -> QuickPanel.Delay(delayMs)
             else -> QuickPanel.Choices(o.panel, quickChoices(o.panel, v))
         }
-        _ui.value = QuickMenuUi(quickEntries(items, v), o.focus, panel)
+        val items = itemsNow()
+        // A tile that went away (Watch from start once replaying) hands the focus to the first one.
+        val focus = o.focus.takeIf { it in items } ?: items.first()
+        _ui.value = QuickMenuUi(quickEntries(items, v), focus, panel)
     }
 }

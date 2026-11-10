@@ -19,7 +19,9 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -37,8 +39,11 @@ import io.github.loopholetv.ui.theme.Tokens
 import java.time.Instant
 
 class StripKeys(
-    /** Moves the window by half hours at a strip's edge; false at the limits (guide end, "now"). */
-    val shift: (steps: Int) -> Boolean,
+    /**
+     * Moves the window by half hours at a strip's edge, no further back than the row's archive
+     * limit `earliest` (null: "now"); false at the limits (guide end, that limit).
+     */
+    val shift: (steps: Int, earliest: Instant?) -> Boolean,
     /** Left at "now" (first block of the now window, or an empty strip): focus the groups column. */
     val exitLeft: () -> Boolean,
 )
@@ -52,8 +57,12 @@ class StripStyle(
     val paint: Paint,
     val textColor: Int,
     val focusedTextColor: Int,
+    /** Labels of programmes that have ended and can't be played. */
+    val dimTextColor: Int,
     /** Start time of the last selected block; the row entered by Up/Down selects the block under it. */
     val anchor: MutableState<Instant?>,
+    /** Drawn before the title of a programme that can be watched from the archive. */
+    val rewind: RewindGlyph,
 ) {
     private val metrics = paint.fontMetrics
     val ellipsisWidth: Float = paint.measureText(ELLIPSIS)
@@ -64,6 +73,29 @@ class StripStyle(
 
 private const val ELLIPSIS = "…"
 
+/** The rewind mark's box. */
+val REWIND_GLYPH_WIDTH = 14.dp
+val REWIND_GLYPH_HEIGHT = 10.dp
+val REWIND_GLYPH_GAP = 6.dp
+
+/** Two left-pointing triangles filling a [width] × [height] box (the catch-up mark). */
+fun rewindGlyphPath(width: Float, height: Float): Path = Path().apply {
+    val mid = width / 2f
+    moveTo(mid, 0f)
+    lineTo(mid, height)
+    lineTo(0f, height / 2f)
+    close()
+    moveTo(width, 0f)
+    lineTo(width, height)
+    lineTo(mid, height / 2f)
+    close()
+}
+
+/** The catch-up mark, built once per density and drawn without allocating. */
+class RewindGlyph(val width: Float, val height: Float, val gap: Float) {
+    val path: Path = rewindGlyphPath(width, height)
+}
+
 private val Radius = 4.dp
 private val Gap = 2.dp
 private val TextInset = 10.dp
@@ -72,10 +104,12 @@ private const val NO_INFO = "No information"
 /**
  * One row's programmes inside [window], drawn on a single focusable node (one node per row keeps
  * the grid cheap on Fire TV sticks). It is the row's only focus stop. Left/Right move the selection
- * within the row, then move the window at its edges (never before "now"); Left at "now" goes to the
- * groups column; Up/Down is ordinary focus search. OK clicks on release; holding OK (or Menu) calls
- * [onLongPress] instead. [programmes] must already be limited to the
- * window; empty draws a "No information" block, or a blank one while the row is [loading].
+ * within the row, then move the window at its edges (never before the row's archive limit, the
+ * start of [playable], or "now" without catch-up); Left at that limit goes to the groups column;
+ * Up/Down is ordinary focus search. OK clicks on release; holding OK (or Menu) calls [onLongPress]
+ * instead. [programmes] must already be limited to the window; empty draws a "No information"
+ * block, or a blank one while the row is [loading]. Programmes that have ended show the rewind mark
+ * when their start is in [playable], and are dimmed when it isn't.
  */
 @Composable
 fun ProgrammeStrip(
@@ -88,9 +122,15 @@ fun ProgrammeStrip(
     onClick: (ProgrammeEntity?) -> Unit,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
+    /** The start times the row's archive can play ([playableRange]); null without catch-up. */
+    playable: PlayableRange? = null,
+    /** The window starts before "now": Up/Down into this row keep the focus time as it is. */
+    pastWindow: Boolean = false,
     /** Held OK or Menu (the row's channel options); a hold never also clicks. */
     onLongPress: () -> Unit = {},
 ) {
+    // How far back this row goes (as rowEarliest); null: no further than "now".
+    val earliest = playable?.from
     var focused by remember { mutableStateOf(false) }
     val okPress = remember { OkPressTracker() }
     val layouts = remember { LayoutCache() }
@@ -102,7 +142,7 @@ fun ProgrammeStrip(
         !focused || programmes.isEmpty() -> -1
         // After a guide refresh the selected id may be gone: fall back to the block under the anchor.
         else -> programmes.indexOfFirst { it.id == selectedId }
-            .takeIf { it >= 0 } ?: entryIndex(programmes, style.anchor.value, now)
+            .takeIf { it >= 0 } ?: entryIndex(programmes, style.anchor.value, now, pastWindow)
     }
 
     /** Left/Right (or a step after an edge shift): the focus time moves to the block's start. */
@@ -115,7 +155,7 @@ fun ProgrammeStrip(
 
     /** Coming into the row (Up/Down, or the selection gone): the focus time stays (see enterRow). */
     fun enter() {
-        val entry = enterRow(programmes, style.anchor.value, now)
+        val entry = enterRow(programmes, style.anchor.value, now, pastWindow)
         val p = programmes[entry.index]
         selectedId = p.id
         onFocused(p)
@@ -123,25 +163,25 @@ fun ProgrammeStrip(
 
     /**
      * In-row move. Past an edge the window shifts that way (the neighbour is selected once it
-     * arrives). The window never goes before "now": Left there leaves for the groups column, and
-     * Right at the guide's end does nothing.
+     * arrives). The window never goes before the row's limit ([earliest], or "now"): Left there
+     * leaves for the groups column, and Right at the guide's end does nothing.
      */
     fun move(step: Int, selected: Int): Boolean {
         pendingStep = 0
-        when (val m = stripMove(programmes, selected, step, now)) {
+        when (val m = stripMove(programmes, selected, step, now, earliest)) {
             is StripMove.Select -> {
                 select(m.index)
                 return true
             }
-            // Left onto a programme that has ended: as Left at "now".
+            // Left onto a programme the row can't go back to: as Left at "now".
             StripMove.ExitLeft -> return keys.exitLeft()
             StripMove.Edge -> Unit
         }
-        if (keys.shift(step)) {
+        if (keys.shift(step, earliest)) {
             pendingStep = step
             return true
         }
-        // At the guide's end Right is consumed (nothing to the right); at "now" Left exits.
+        // At the guide's end Right is consumed (nothing to the right); at the row's limit Left exits.
         return step > 0 || keys.exitLeft()
     }
 
@@ -156,8 +196,9 @@ fun ProgrammeStrip(
         pendingStep = 0
         when {
             i < 0 -> enter()
-            // Shifted back to the now window: never onto a block that has already ended.
-            step != 0 && target in programmes.indices && (step > 0 || programmes[target].stop > now) -> select(target)
+            // Shifted back: never onto a block before the row's limit (ended, without catch-up).
+            step != 0 && target in programmes.indices &&
+                (step > 0 || programmes[target].stop > (earliest ?: now)) -> select(target)
         }
     }
 
@@ -195,7 +236,7 @@ fun ProgrammeStrip(
                 }
             }
             .focusable()
-            .drawBehind { drawStrip(programmes, window, now, selected, focused, loading, style, layouts) },
+            .drawBehind { drawStrip(programmes, window, now, selected, focused, loading, playable, style, layouts) },
     )
 }
 
@@ -207,6 +248,7 @@ private fun DrawScope.drawStrip(
     selected: Int,
     focused: Boolean,
     loading: Boolean,
+    playable: PlayableRange?,
     style: StripStyle,
     layouts: LayoutCache,
 ) {
@@ -215,7 +257,7 @@ private fun DrawScope.drawStrip(
     val inset = TextInset.toPx()
     if (programmes.isEmpty()) {
         block(0f, size.width, if (focused) Tokens.FocusFill else Tokens.Surface, radius)
-        if (!loading) label(NO_INFO_ID, NO_INFO, 0f, size.width, inset, focused, style, layouts)
+        if (!loading) label(NO_INFO_ID, NO_INFO, 0f, size.width, inset, LabelTone.Plain, focused, false, style, layouts)
         return
     }
     layouts.trimTo(programmes.size)
@@ -225,15 +267,22 @@ private fun DrawScope.drawStrip(
         val w = blockWidthFraction(p, window) * size.width - gap
         if (w <= 0f) continue
         val isSelected = i == selected
+        val ended = p.stop <= now
+        // Instant comparisons only: nothing is allocated per block.
+        val archived = ended && playable != null && p.start in playable
         val fill = when {
             isSelected -> Tokens.FocusFill
             p.isAiring(now) -> Tokens.SurfaceRaised
+            ended && !archived -> Tokens.SurfaceDim
             else -> Tokens.Surface
         }
         block(x, w, fill, radius)
-        label(p.id, p.title, x, w, inset, isSelected, style, layouts)
+        val tone = if (ended && !archived) LabelTone.Dim else LabelTone.Plain
+        label(p.id, p.title, x, w, inset, tone, isSelected, archived, style, layouts)
     }
 }
+
+private enum class LabelTone { Plain, Dim }
 
 private fun DrawScope.block(x: Float, w: Float, color: Color, radius: CornerRadius) {
     drawRoundRect(color, topLeft = Offset(x, 0f), size = Size(w, size.height), cornerRadius = radius)
@@ -245,17 +294,33 @@ private fun DrawScope.label(
     x: Float,
     w: Float,
     inset: Float,
+    tone: LabelTone,
     highlighted: Boolean,
+    rewind: Boolean,
     style: StripStyle,
     layouts: LayoutCache,
 ) {
-    val room = (w - 2 * inset).toInt()
+    var left = x + inset
+    var room = (w - 2 * inset).toInt()
+    val glyph = style.rewind
+    // The rewind mark goes before the title, when the block has room for it.
+    if (rewind && room >= glyph.width + glyph.gap + 8) {
+        translate(left, (size.height - glyph.height) / 2f) {
+            drawPath(glyph.path, if (highlighted) Tokens.OnFocus else Tokens.Accent)
+        }
+        left += glyph.width + glyph.gap
+        room -= (glyph.width + glyph.gap).toInt()
+    }
     if (room < 8) return
     val shown = layouts.get(id, room) ?: fit(text, room.toFloat(), style).also { layouts.put(id, room, it) }
     if (shown.isEmpty()) return
     val paint = style.paint
-    paint.color = if (highlighted) style.focusedTextColor else style.textColor
-    drawContext.canvas.nativeCanvas.drawText(shown, x + inset, style.baseline(size.height), paint)
+    paint.color = when {
+        highlighted -> style.focusedTextColor
+        tone == LabelTone.Dim -> style.dimTextColor
+        else -> style.textColor
+    }
+    drawContext.canvas.nativeCanvas.drawText(shown, left, style.baseline(size.height), paint)
 }
 
 /** [text] cut to [room] pixels with a trailing ellipsis when it does not fit. */

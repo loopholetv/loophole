@@ -113,4 +113,20 @@ class RootOkRouteTest {
         assertEquals(RootOkAction.PassThrough, d.send(KeyEvent.KEYCODE_DPAD_UP, KeyPhase.Down))
         assertEquals(RootOkAction.PassThrough, d.send(KeyEvent.KEYCODE_5, KeyPhase.Up))
     }
+
+    @Test fun mediaKeysPassThrough() {
+        // Seek and play keys reach the view model with their repeat count and key-up.
+        val codes = listOf(
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_REWIND, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+        )
+        for (overlay in listOf(false, true)) {
+            val d = Driver(Screen(overlay = overlay))
+            for (code in codes) {
+                assertEquals(RootOkAction.PassThrough, d.send(code, KeyPhase.Down, 0))
+                assertEquals(RootOkAction.PassThrough, d.send(code, KeyPhase.Down, 7))
+                assertEquals(RootOkAction.PassThrough, d.send(code, KeyPhase.Up))
+            }
+        }
+    }
 }

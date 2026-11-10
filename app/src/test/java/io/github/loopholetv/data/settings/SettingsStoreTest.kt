@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -35,6 +36,83 @@ class SettingsStoreTest {
     fun defaultsWhenEmpty() = runTest {
         val store = SettingsStore(dataStore(backgroundScope))
         assertEquals(AppSettings(), store.current())
+    }
+
+    @Test
+    fun remoteDefaults() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        assertEquals(RemoteSettings(), store.current().remote)
+        assertEquals(AUTO_PAST_DAYS, store.current().epgPastDays)
+    }
+
+    @Test
+    fun settingsSaveWithUntouchedButtonsWritesNoBindings() = runTest {
+        val ds = dataStore(backgroundScope)
+        val store = SettingsStore(ds)
+        store.update { it.copy(confirmExit = !it.confirmExit) }
+        val key = stringPreferencesKey("key_bindings")
+        assertEquals(null, ds.data.first()[key])
+    }
+
+    @Test
+    fun resettingButtonsRemovesStoredBindings() = runTest {
+        val ds = dataStore(backgroundScope)
+        val store = SettingsStore(ds)
+        val key = stringPreferencesKey("key_bindings")
+        val custom = KeyBindings(player = mapOf(183 to PlayerAction.FAVOURITE), guide = emptyMap())
+        store.update { it.copy(remote = it.remote.copy(bindings = custom)) }
+        assertEquals(true, ds.data.first()[key] != null)
+        assertEquals(custom, store.current().remote.bindings)
+        store.update { it.copy(remote = it.remote.copy(bindings = KeyBindings.DEFAULT)) }
+        assertEquals(null, ds.data.first()[key])
+        assertEquals(KeyBindings.DEFAULT, store.current().remote.bindings)
+    }
+
+    @Test
+    fun remoteRoundTrip() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        val remote = RemoteSettings(
+            mediaKeysSeek = false,
+            rwRewindsLive = false,
+            leftRightSeek = false,
+            leftRewindsLive = true,
+            bindings = KeyBindings(
+                player = mapOf(183 to PlayerAction.FAVOURITE, 89 to PlayerAction.NONE),
+                guide = mapOf(184 to GuideAction.NOW),
+            ),
+        )
+        store.update { it.copy(remote = remote) }
+        assertEquals(remote, store.current().remote)
+    }
+
+    @Test
+    fun pastDaysZeroBecomesAutoOnce() = runTest {
+        val ds = dataStore(backgroundScope)
+        ds.edit { it[intPreferencesKey("epg_past_days")] = 0 }
+        val store = SettingsStore(ds)
+        assertEquals(AUTO_PAST_DAYS, store.current().epgPastDays)
+        store.update { it.copy(epgPastDays = 0) }
+        assertEquals(0, store.current().epgPastDays)
+    }
+
+    @Test
+    fun updateBeforeFirstReadKeepsChosenZero() = runTest {
+        val ds = dataStore(backgroundScope)
+        ds.edit { it[intPreferencesKey("epg_past_days")] = 0 }
+        SettingsStore(ds).update { it.copy(epgPastDays = 0) }
+        assertEquals(0, SettingsStore(ds).current().epgPastDays)
+        assertEquals(true, ds.data.first()[androidx.datastore.preferences.core.booleanPreferencesKey("epg_past_days_auto_applied")])
+    }
+
+    @Test
+    fun pastDaysOtherValueKept() = runTest {
+        val ds = dataStore(backgroundScope)
+        ds.edit { it[intPreferencesKey("epg_past_days")] = 3 }
+        val store = SettingsStore(ds)
+        assertEquals(3, store.current().epgPastDays)
+        assertEquals(true, ds.data.first()[androidx.datastore.preferences.core.booleanPreferencesKey("epg_past_days_auto_applied")])
+        store.update { it.copy(epgPastDays = 0) }
+        assertEquals(0, store.current().epgPastDays)
     }
 
     @Test
@@ -66,7 +144,7 @@ class SettingsStoreTest {
             it[intPreferencesKey("playlist_update_hours")] = 5
         }
         val s = SettingsStore(ds).current()
-        assertEquals(0, s.epgPastDays)
+        assertEquals(AUTO_PAST_DAYS, s.epgPastDays)
         assertEquals(12, s.epgUpdateHours)
         assertEquals(24, s.playlistUpdateHours)
     }

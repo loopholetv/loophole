@@ -1,6 +1,7 @@
 package io.github.loopholetv.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class RedactTest {
@@ -105,4 +106,19 @@ class RedactTest {
     @Test fun portalTokenAndProxyMaskedWhenGivenAsSecrets() = assertEquals(
         "Bearer *** via *** enc ***",
         redact("Bearer tok/en+1 via 192.168.1.1:4022 enc tok%2Fen%2B1", listOf("tok/en+1", "192.168.1.1:4022")))
+
+    @Test fun archiveUrlShapesRedacted() {
+        val urls = listOf(
+            "http://h.test:8080/timeshift/archiveuser/archivepass/60/2026-11-10:20-00/42.m3u8",
+            "http://h.test/streaming/timeshift.php?username=archiveuser&password=archivepass&stream=42&start=2026-11-10:20-00",
+            "http://h.test/live/42/index.m3u8?utc=1762804800&lutc=1762812000&token=archivetoken",
+            "http://h.test/live/42/timeshift_abs-1762804800.ts?token=archivetoken",
+        )
+        for (u in urls) {
+            val out = redact("Failed to open $u after 3 tries")
+            for (secret in listOf("archiveuser", "archivepass", "archivetoken")) {
+                assertFalse("$secret leaked: $out", secret in out)
+            }
+        }
+    }
 }

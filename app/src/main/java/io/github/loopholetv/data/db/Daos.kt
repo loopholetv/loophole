@@ -24,6 +24,9 @@ interface PlaylistDao {
     @Query("UPDATE playlists SET lastRefreshedAt = :at, lastError = NULL, epgUrlsFromSource = :epgUrls WHERE id = :id")
     suspend fun markRefreshed(id: Long, at: Instant, epgUrls: String)
 
+    @Query("UPDATE playlists SET xtreamTimeZone = :zone, xtreamArchiveExt = :ext WHERE id = :id")
+    suspend fun setArchiveInfo(id: Long, zone: String?, ext: String?)
+
     @Query("UPDATE playlists SET lastError = :error WHERE id = :id")
     suspend fun setError(id: Long, error: String)
 
@@ -60,6 +63,10 @@ interface PlaylistDao {
 
 @Dao
 abstract class ChannelDao {
+    /** The longest archive window among visible catch-up channels; a channel without a stated length counts as 1 day. */
+    @Query("SELECT MAX(COALESCE(catchupDays, 1)) FROM channels WHERE visible = 1 AND catchupType IS NOT NULL")
+    abstract suspend fun maxCatchupDays(): Int?
+
     // Every guide/player read filters `visible = 1` (hidden channel, hidden group or turned-off
     // playlist); only the `editor…` queries include hidden rows.
     //

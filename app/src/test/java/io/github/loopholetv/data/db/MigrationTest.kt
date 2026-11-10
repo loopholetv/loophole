@@ -327,7 +327,59 @@ class MigrationTest {
         }
     }
 
-    @Test fun migrate1To5ViaAllMigrations() = runTest {
+    /** A v0.4.x install: an Xtream playlist with a catch-up channel, a hidden/zoomed channel pref, favourite, history and EPG source. */
+    @Test fun migrate5To6AddsArchiveColumnsAndKeepsData() = runTest {
+        helper.createDatabase(DB, 5).use { v5 ->
+            v5.execSQL(
+                """INSERT INTO playlists (id, name, type, url, xtreamServer, xtreamUser, xtreamPass, epgUrlsFromSource,
+                   manualEpgUrl, lastRefreshedAt, lastError) VALUES (7, 'My TV', 'XTREAM', NULL,
+                   'http://example.test:8080', 'user1', 'pass1', '', NULL, 1000, NULL)""",
+            )
+            v5.execSQL(
+                """INSERT INTO channels (id, playlistId, `key`, number, name, streamUrl, groupTitle, groupOrder, sortOrder,
+                   catchupType, catchupDays) VALUES (1, 7, '101', 1, 'One', 'http://example.test:8080/live/user1/pass1/101.ts',
+                   'News', 0, 0, 'xc', 3)""",
+            )
+            v5.execSQL(
+                """INSERT INTO channel_prefs (playlistId, channelKey, hidden, epgShiftMinutes, aspectMode)
+                   VALUES (7, '101', 1, 0, 'ZOOM')""",
+            )
+            v5.execSQL("INSERT INTO favourites (playlistId, channelKey, position, addedAt) VALUES (7, '101', 0, 10)")
+            v5.execSQL("INSERT INTO history (playlistId, channelKey, watchedAt) VALUES (7, '101', 20)")
+            v5.execSQL("INSERT INTO epg_sources (id, playlistId, url, position) VALUES (1, 7, 'http://example.test/epg.xml', 0)")
+        }
+
+        // Validates the migrated schema against the exported schema 6.json.
+        helper.runMigrationsAndValidate(DB, 6, true, MIGRATION_5_6).close()
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            val p = db.playlistDao().byId(7)!!
+            assertNull(p.xtreamTimeZone)
+            assertNull(p.xtreamArchiveExt)
+            assertEquals(listOf("My TV", "user1", "pass1"), listOf(p.name, p.xtreamUser, p.xtreamPass))
+            val ch = db.channelDao().byId(1)!!
+            assertEquals(0, ch.catchupCorrectionMinutes)
+            assertEquals("xc", ch.catchupType)
+            assertEquals(3, ch.catchupDays)
+            val prefs = db.channelPrefsDao().get(7, "101")!!
+            assertTrue(prefs.hidden)
+            assertEquals(AspectMode.ZOOM, prefs.aspectMode)
+            assertEquals(listOf(ChannelRef(7, "101")), db.favouriteDao().refs().first())
+            assertEquals(listOf("http://example.test/epg.xml"), db.epgSourceDao().forPlaylist(7).map { it.url })
+            db.openHelper.readableDatabase.query("SELECT channelKey, watchedAt FROM history").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("101", c.getString(0))
+                assertEquals(20L, c.getLong(1))
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun migrate1To6ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 1).use { v1 ->
             v1.execSQL(
                 """INSERT INTO playlists (id, name, type, epgUrlsFromSource, manualEpgUrl)
@@ -339,7 +391,7 @@ class MigrationTest {
             )
         }
 
-        helper.runMigrationsAndValidate(DB, 5, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(DB, 6, true, *ALL_MIGRATIONS).close()
 
         val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
             .addMigrations(*ALL_MIGRATIONS)
@@ -363,7 +415,7 @@ class MigrationTest {
         }
     }
 
-    @Test fun migrate2To5ViaAllMigrations() = runTest {
+    @Test fun migrate2To6ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 2).use { v2 ->
             v2.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
             v2.execSQL(
@@ -376,7 +428,7 @@ class MigrationTest {
             )
         }
 
-        helper.runMigrationsAndValidate(DB, 5, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(DB, 6, true, *ALL_MIGRATIONS).close()
 
         val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
             .addMigrations(*ALL_MIGRATIONS)

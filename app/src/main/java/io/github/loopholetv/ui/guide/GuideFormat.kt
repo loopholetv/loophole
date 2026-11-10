@@ -7,18 +7,33 @@ import androidx.compose.ui.platform.LocalContext
 import io.github.loopholetv.data.db.ProgrammeEntity
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /** Guide date/time formatting in the device zone, honouring its 12/24 h setting. */
-class GuideFormat(is24Hour: Boolean, zone: ZoneId, locale: Locale = Locale.getDefault()) {
+class GuideFormat(is24Hour: Boolean, val zone: ZoneId, locale: Locale = Locale.getDefault()) {
     private val time = DateTimeFormatter.ofPattern(if (is24Hour) "H:mm" else "h:mm a", locale).withZone(zone)
     private val date = DateTimeFormatter.ofPattern("EEE d MMM", locale).withZone(zone)
+    private val dayDate = DateTimeFormatter.ofPattern("EEE d MMM", locale)
 
     fun time(t: Instant): String = time.format(t)
     fun date(t: Instant): String = date.format(t)
     fun range(p: ProgrammeEntity): String = "${time(p.start)} – ${time(p.stop)}"
+
+    /** [day] in words relative to [today]: "Yesterday", "Today", "Tomorrow", else e.g. "Mon 9 Nov". */
+    fun dayWord(day: LocalDate, today: LocalDate): String = when (day) {
+        today -> "Today"
+        else -> headerDay(day, today)
+    }
+
+    /** The header's day: "Yesterday" or "Tomorrow" next to today, else its date (e.g. "Wed 11 Nov"). */
+    fun headerDay(day: LocalDate, today: LocalDate): String = when (day) {
+        today.minusDays(1) -> "Yesterday"
+        today.plusDays(1) -> "Tomorrow"
+        else -> dayDate.format(day)
+    }
 }
 
 @Composable

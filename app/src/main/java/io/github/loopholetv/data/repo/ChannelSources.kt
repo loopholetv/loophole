@@ -28,8 +28,14 @@ internal interface ChannelSource : Closeable {
     /** The error to report when [stream] produced no usable channel. */
     fun noChannelsError(): ImportError
 
+    /** Provider time zone and archive format learned while opening the source; null when it has none. */
+    fun archiveInfo(): ArchiveInfo? = null
+
     override fun close() {}
 }
+
+/** [zone] is an IANA id or a `+HH:MM` offset; [ext] is the archive stream extension. */
+internal data class ArchiveInfo(val zone: String?, val ext: String)
 
 // --- M3U ---
 
@@ -122,6 +128,7 @@ internal fun M3uEntry.toImported(): ImportedChannel? {
         catchupType = catchup.blankToNull(),
         catchupDays = catchupDays,
         catchupSource = catchupSource.blankToNull(),
+        catchupCorrectionMinutes = catchupCorrectionMinutes,
     )
 }
 
@@ -146,7 +153,7 @@ internal suspend fun <T> blockingCall(call: Call, block: () -> T): T = coroutine
 internal class XtreamSourceOpener(private val client: XtreamClient) {
     /** Logs in and loads categories (both outside the import transaction). */
     suspend fun open(creds: XtreamCredentials, userAgent: String? = null): ChannelSource {
-        client.authenticate(creds, userAgent)
+        val account = client.authenticate(creds, userAgent)
         val categories = client.liveCategories(creds, userAgent).associate { it.id to it.name }
         return object : ChannelSource {
             override suspend fun stream(emit: (ImportedChannel) -> Unit): String {
@@ -155,6 +162,8 @@ internal class XtreamSourceOpener(private val client: XtreamClient) {
             }
 
             override fun noChannelsError(): ImportError = ImportError.EmptyPlaylist
+
+            override fun archiveInfo() = ArchiveInfo(account.serverTimeZone, account.archiveExt)
         }
     }
 
@@ -171,7 +180,7 @@ internal class XtreamSourceOpener(private val client: XtreamClient) {
             tvgName = null,
             userAgent = null,
             referrer = null,
-            catchupType = if (tvArchive) "xc" else null,
+            catchupType = if (tvArchive && (tvArchiveDays ?: 0) > 0) "xc" else null,
             catchupDays = tvArchiveDays,
             catchupSource = null,
         )

@@ -49,6 +49,7 @@ import io.github.loopholetv.ui.player.applySubtitleStyle
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import io.github.loopholetv.R
+import io.github.loopholetv.data.catchup.catchup
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
@@ -221,6 +222,10 @@ fun ProgrammeInfo(
                     )
                 }
             }
+            val catchup = remember(focused.channel) { focused.channel.catchup() }
+            if (p.stop <= now && catchup?.canPlay(p.start, now) == true) {
+                Text(CATCHUP_HINT, style = MaterialTheme.typography.bodyMedium, color = Tokens.Accent, maxLines = 1)
+            }
         }
         Text(
             text = channelLabel(focused.channel),
@@ -244,6 +249,9 @@ fun ProgrammeInfo(
 
 /** The info area's line in Move mode. */
 const val MOVE_HINT = "Up/Down to move \u00b7 OK to finish"
+
+/** The info area's line for a programme that has ended and can be watched from the archive. */
+const val CATCHUP_HINT = "Catch-up \u00b7 Press OK to watch"
 
 @Composable
 private fun ProgressBar(fraction: Float, modifier: Modifier) {
