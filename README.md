@@ -1,83 +1,180 @@
-# Loophole
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/loophole-logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/brand/loophole-logo-light.png">
+    <img alt="Loophole" src="docs/brand/loophole-logo-light.png" width="380">
+  </picture>
+</p>
 
-Loophole is an open-source IPTV player for Android TV, Google TV and Fire TV, built with Kotlin and Compose for TV. It plays the live channels and programme guide from playlists you provide: an M3U link, a local M3U file, an Xtream Codes account or a MAC (Stalker) portal, with XMLTV guides.
+<p align="center">
+  <strong>An open-source IPTV player for Android TV, Google TV and Fire TV, made for the remote.</strong>
+</p>
 
-**Loophole is a player only. It contains no channels — add the playlist from your own IPTV subscription.**
+<p align="center">
+  <a href="LICENSE"><img alt="Licence: GPL-3.0" src="https://img.shields.io/badge/licence-GPL--3.0-0ABAB5"></a>
+  <a href="https://github.com/loopholetv/loophole/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/loopholetv/loophole?color=0ABAB5"></a>
+  <img alt="Platform: Android TV | Fire TV" src="https://img.shields.io/badge/platform-Android%20TV%20%7C%20Fire%20TV-3DDC84">
+  <img alt="Minimum Android 7.1" src="https://img.shields.io/badge/min%20Android-7.1-3DDC84">
+</p>
 
-## Status
+> [!IMPORTANT]
+> **Loophole is a player only. It contains no channels.** Add the playlist from your own IPTV subscription.
 
-Early development. Not yet released.
+Loophole plays live channels and a programme guide from the playlists you give it: an M3U link, a local M3U file, an Xtream Codes account or a MAC (Stalker) portal, with XMLTV guides. It is written in Kotlin with Compose for TV and Media3.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/guide.png" alt="TV guide with a live preview, programme details and a row of favourite channels"></td>
+    <td width="50%"><img src="docs/screenshots/playback-info-bar.png" alt="Full-screen playback with the info bar"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>TV guide with live preview and programme details</sub></td>
+    <td align="center"><sub>Full screen with the info bar</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/quick-menu.png" alt="Quick menu tiles along the bottom of the picture"></td>
+    <td><img src="docs/screenshots/settings-playback.png" alt="Settings, Playback page"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Quick menu while watching</sub></td>
+    <td align="center"><sub>Settings → Playback</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/channel-options.png" alt="Channel options dialog"></td>
+    <td><img src="docs/screenshots/guide-groups.png" alt="Guide with the group list open"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Channel options</sub></td>
+    <td align="center"><sub>Groups</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/guide-side-menu.png" alt="Guide with the side menu open"></td>
+    <td><img src="docs/screenshots/splash.png" alt="Splash screen with the Loophole logo"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Side menu</sub></td>
+    <td align="center"><sub>Splash</sub></td>
+  </tr>
+</table>
+
+<sub>Screenshots use a made-up demo playlist, guide and test signal. Every channel, programme and logo in them is fictional.</sub>
 
 ## Features
 
-- Live channels from an M3U playlist or Xtream Codes account, with an XMLTV programme guide.
-- TV guide with a live preview; full-screen playback with an info bar and a channel list overlay.
-- **Favourites:** hold OK (or press ≡) on a channel → *Channel options* → add or remove. Favourites is the first group in the guide; reorder it with *Move*.
-- **History:** channels watched for 10 seconds or more, newest first, from the History tile in the full-screen overlay.
-- **Search:** channels and programmes from the Search item in the side rail, with the on-screen keyboard (and voice where the device offers it).
-- **Scheduled updates:** playlist and guide update on a schedule, at app start, and (optionally) the guide after a playlist update. Settings → EPG sets the past days to keep and can clear the guide.
-- **Start and exit:** optionally reopen the last channel on start; optionally confirm before Back leaves the app.
-- **Several playlists:** Settings → Playlists → *Add playlist* opens the same form as first start. Each playlist can be turned off (its channels, favourites and history disappear until it is turned on again), renamed, given another address or login, its own user agent and update schedule, and updated on its own or with *Update all playlists*. Channel numbers continue from one playlist to the next.
-- **Channel and group edits:** hold OK on a channel or group in the guide, or use Settings → Playlists → (playlist) → *Groups and channels*: hide, rename (and restore the original name), move, sort a group, change a channel's logo with an image link, choose its TV guide channel and shift its guide time. Edits survive playlist updates. Hidden channels and groups come back from *Groups and channels*.
-- **Guides per playlist:** Settings → EPG lists each playlist's own guide (which can be turned off) and any guide links you add.
-- **General:** a user agent for every playlist, and a UDP proxy (udpxy-style) for multicast playlists.
-- **Quick menu:** while watching full screen, press ≡ or hold OK. A row of tiles along the bottom: Search, Channels, Video quality, Audio track, Audio delay (lip-sync, −1000 to +1000 ms), Subtitles, Aspect ratio (Fit, Stretch, Zoom, 16:9, 4:3, kept per channel), Sleep timer, Add to favourites, Channel options, Picture-in-picture (where the TV supports it) and Settings. Track choices last until you change channel.
-- **Playback settings:** Settings → Playback: buffer size (Small, Normal, Large), hardware or software video and audio decoders, auto frame rate, surround sound by default, audio passthrough, DTS to PCM, audio delay, preferred audio and subtitle languages, subtitle size, colour, background and edge, tunneled playback, and (where supported) the Home button opening picture-in-picture.
-- **Per-channel playback:** *Channel options* → video decoder, audio decoder and external player for that channel.
-- **External players:** a channel can open in MX Player, VLC, Kodi or Just Player (when installed), or ask each time. Loophole stops its own stream first, so a one-connection account is not used twice. Coming back lands in the guide with nothing playing.
-- **Picture-in-picture:** on TVs that support it (for example the NVIDIA Shield), from the quick menu or, if turned on, the Home button. Closing the small window stops the stream. Fire TV devices usually do not offer it, and then it is not shown.
-- **Extra audio formats:** software decoders for MP2, AC3/E-AC3 and DTS sound, used only when the TV's own decoders can't play a channel's audio (see *Third-party software*).
+### Playlists & guide
 
-### Local playlist files
+- **Four kinds of playlist:** M3U link, local M3U file, Xtream Codes account or MAC (Stalker) portal, each with an XMLTV programme guide.
+- **TV guide with a live preview:** the channel you pick plays in a small window above the grid, next to the programme's title, time, progress and description.
+- **Several playlists:** Settings → Playlists → *Add playlist*. Each playlist can be turned off, renamed, given another address or login, and have its own user agent and update schedule. Update one on its own or all of them with *Update all playlists*. Channel numbers continue from one playlist to the next.
+- **Guides per playlist:** Settings → EPG lists each playlist's own guide (which you can turn off) and any extra guide links you add. You choose how many past days to keep, and can clear the guide.
+- **Scheduled updates:** playlists and guides update on a schedule and at app start, and the guide can also update after each playlist update.
+- **Search:** find channels and programmes from the side menu, with the on-screen keyboard or voice where the TV offers it.
 
-Choose *Local file* in the playlist form. Loophole uses the TV's own file picker when it has a real one, otherwise its own simple browser (the Download folder, USB drives, and a *Loophole folder* that always works: copy the file into `Android/data/io.github.loopholetv/files/` with a file manager or adb). *Update playlist* reads the file again; if the file or the USB drive is missing, the channels stay and Settings says which copy is in use.
+<details>
+<summary><strong>Local playlist files</strong></summary>
 
-### MAC portals
+Choose *Local file* in the playlist form. Loophole uses the TV's own file picker when it has a real one, otherwise its own simple browser: the Download folder, USB drives, and a *Loophole folder* that always works (copy the file into `Android/data/io.github.loopholetv/files/` with a file manager or adb). *Update playlist* reads the file again. If the file or the USB drive is missing, the channels stay and Settings says which copy is in use.
+
+</details>
+
+<details>
+<summary><strong>MAC portals</strong></summary>
 
 Enter the portal address and the MAC address your provider registered (usually starting `00:1A:79:`), plus the login and device details only if your provider gave them. A portal account usually allows one device at a time.
 
+</details>
+
+### Watching
+
+- **Full screen with an info bar:** now and next, time left, and a row of channels to flip through without leaving the picture.
+- **Quick menu:** press ≡ or hold OK while watching for Search, Channels, Video quality, Audio track, Audio delay, Subtitles, Aspect ratio, Sleep timer, Add to favourites, Channel options, Picture-in-picture (where the TV supports it) and Settings.
+- **History:** channels you watched for 10 seconds or more, newest first, from the History tile in the full-screen overlay.
+- **Sleep timer:** 15 minutes to 2 hours, with a warning before it stops.
+- **Picture-in-picture:** on TVs that support it, from the quick menu or (if you turn it on) the Home button. Closing the small window stops the stream. Fire TV devices usually don't offer it, and then it isn't shown.
+- **External players:** a channel can open in MX Player, VLC, Kodi or Just Player when they're installed, or ask each time. Loophole stops its own stream first, so a one-connection account isn't used twice.
+- **Start and exit:** optionally reopen the last channel on start, and optionally confirm before Back leaves the app.
+
+### Playback & sound
+
+- **Settings → Playback:** buffer size (Small, Normal, Large), hardware or software video and audio decoders, auto frame rate, surround sound by default, audio passthrough, DTS to PCM, audio delay, preferred audio and subtitle languages, subtitle size, colour, background and edge, and tunneled playback.
+- **Audio delay (lip-sync):** −1000 to +1000 ms, from Settings or the quick menu.
+- **Aspect ratio:** Fit, Stretch, Zoom, 16:9 or 4:3, remembered per channel.
+- **Per-channel playback:** a channel can have its own video decoder, audio decoder and external player.
+- **Extra audio formats:** built-in software decoders for MP2, AC3/E-AC3 and DTS sound, used only when the TV's own decoders can't play a channel's audio.
+- **Network:** a user agent for every playlist, and a UDP proxy (udpxy-style) for multicast playlists.
+
+### Organising channels
+
+- **Favourites:** hold OK (or press ≡) on a channel → *Channel options* → *Add to favourites*. Favourites is the first group in the guide, and you can reorder it with *Move*.
+- **Channel and group edits:** hide, rename (and restore the original name), move, sort a group, change a channel's logo with an image link, choose its TV guide channel and shift its guide time. Do it from the guide or from Settings → Playlists → (playlist) → *Groups and channels*.
+- **Edits survive updates:** your changes stay when the playlist updates, and hidden channels and groups come back from *Groups and channels*.
+
+### Privacy
+
+- No analytics, crash reporting or ads.
+- Network requests go only to the playlist, guide, logo and stream addresses you supply.
+
 ## Install
 
-Loophole is not in any app store. Download the latest `loophole-<version>.apk` from the project's Releases page and sideload it.
+Loophole isn't in any app store. Download the latest `loophole-<version>.apk` from the [Releases page](https://github.com/loopholetv/loophole/releases/latest) and sideload it.
 
-**Fire TV (Fire Stick, Fire TV Cube)**
+### Fire TV (Fire TV Stick, Fire TV Cube)
 
 1. Settings → My Fire TV → Developer options: turn on *Apps from Unknown Sources* (or allow the Downloader app to install apps).
 2. Install the **Downloader** app from the Amazon Appstore.
 3. In Downloader, enter the APK's download link and choose *Install* when the download finishes.
 
-**Android TV / Google TV (Shield, Chromecast with Google TV, …)**
+### Android TV and Google TV
 
-- With a computer on the same network: turn on *Developer options → USB/Network debugging*, then run `adb connect <tv-ip>:5555` and `adb install loophole-<version>.apk`.
-- Without a computer: copy the APK to the TV (USB drive or a cloud drive) and open it with a file manager app, allowing that app to install unknown apps when asked.
+- **With a computer on the same network:** turn on *Developer options → USB/Network debugging* on the TV, then run:
 
-**Optional, for the smoothest first run:** after sideloading with adb, ask Android to compile the app ahead of time (otherwise this happens gradually over the first few days):
+  ```sh
+  adb connect <tv-ip>:5555
+  adb install loophole-<version>.apk
+  ```
 
-```
+- **Without a computer:** copy the APK to the TV (on a USB drive or through a cloud drive) and open it with a file manager app, allowing that app to install unknown apps when asked.
+
+### Optional: a smoother first run
+
+After sideloading with adb, you can ask Android to compile the app ahead of time. Otherwise this happens gradually over the first few days.
+
+```sh
 adb shell cmd package compile -m speed-profile -f io.github.loopholetv
 ```
 
 ## Updating
 
-Install the new APK over the old one (the same way as above). Your playlists and settings are kept. Every release is signed with the same key; if Android refuses to update ("App not installed" / signature conflict), you have a build from a different source and must uninstall it first, which removes its data.
+Install the new APK over the old one, the same way as above. Your playlists and settings are kept.
 
-## Building
+Every release is signed with the same key. If Android refuses to update ("App not installed" or a signature conflict), the installed copy came from a different source. Uninstall it first, which removes its data, then install the new APK.
 
-```
+## Building from source
+
+You need JDK 17 and the Android SDK (set `sdk.dir` in `local.properties` or `ANDROID_HOME`).
+
+```sh
 ./gradlew assembleDebug      # debug build
 ./gradlew assembleRelease    # release build (R8)
+./gradlew test               # unit tests
 ```
 
-Release signing reads a `keystore.properties` file (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) from the path in the Gradle property `loophole.signing`, else the environment variable `LOOPHOLE_SIGNING_PROPERTIES`, else `~/.loophole-signing/keystore.properties`. Without it the release APK is built unsigned and Gradle prints a warning. Keystores and signing properties are never committed.
+Release signing reads a `keystore.properties` file (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) from the path in the Gradle property `loophole.signing`, else the environment variable `LOOPHOLE_SIGNING_PROPERTIES`, else `~/.loophole-signing/keystore.properties`. Without it, the release APK is built unsigned and Gradle prints a warning. Keystores and signing properties are never committed.
 
 ## Privacy
 
-Loophole has no analytics, crash reporting or ads. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply. Playlist URLs and credentials are redacted from logs and error messages.
+Loophole has no analytics, crash reporting or ads, and no account of its own. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply. Playlist URLs and credentials are redacted from logs and error messages.
 
-## Licence
+## Licence & third-party notices
 
-GPL-3.0. See [LICENSE](LICENSE).
+Loophole is free software, licensed under the [GNU General Public License v3.0](LICENSE).
 
-## Third-party software
+It bundles the FFmpeg audio decoder for Media3 built by the Jellyfin project ([jellyfin-androidx-media](https://github.com/jellyfin/jellyfin-androidx-media)), which contains code from [FFmpeg](https://ffmpeg.org) and is licensed under GPL-3.0. Its source code is available from that repository and from FFmpeg. [NOTICE](NOTICE) lists this and the other third-party components and their licences.
 
-Loophole bundles the FFmpeg audio decoder for Media3 built by the Jellyfin project ([jellyfin-androidx-media](https://github.com/jellyfin/jellyfin-androidx-media)), which contains code from [FFmpeg](https://ffmpeg.org) and is licensed under the GNU General Public License v3.0. Its source code is available from that repository and from FFmpeg. See [NOTICE](NOTICE) for this and the other third-party components.
+## Contributing
+
+Bug reports and pull requests are welcome. Please keep pull requests focused, run `./gradlew test` before opening one, and describe how you tested the change on a TV or emulator. By contributing, you agree that your work is licensed under GPL-3.0.
+
+Please don't post playlist links, logins or screenshots of real subscriptions in issues.
