@@ -33,7 +33,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import io.github.loopholetv.update.UpdateAction
+import io.github.loopholetv.update.UpdateStatus
+import io.github.loopholetv.update.backActionFor
+import io.github.loopholetv.update.cardFor
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -388,6 +395,47 @@ fun GuideScreen(
     // Composed after the one above, so in Move mode (a channel or a group) Back finishes the move first.
     BackHandler(enabled = moveKind != null) { vm.endMove() }
 
+    // The update card (top-right of the programme details). Only while the guide is the screen in
+    // front: a dialog destination over it (Settings) puts this entry below RESUMED.
+    val updater = container.updater
+    val updateStatus by updater.status.collectAsStateWithLifecycle()
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsStateWithLifecycle()
+    val updateCard = cardFor(updateStatus).takeIf { lifecycle.isAtLeast(Lifecycle.State.RESUMED) }
+    val cardFocus = remember { FocusRequester() }
+    var cardHasFocus by remember { mutableStateOf(false) }
+
+    /** Focus back to where it was in the guide before the card took it. */
+    fun leaveCard() {
+        when (focusArea) {
+            GuideArea.Preview -> if (!previewFocus.tryFocus()) focusGrid()
+            GuideArea.Rail -> if (!railFocus.tryFocus()) focusGrid()
+            GuideArea.Groups -> focusSelectedGroup()
+            GuideArea.Grid, GuideArea.None -> if (channels.itemCount > 0) focusGrid() else focusSelectedGroup()
+        }
+    }
+
+    fun onCardAction(action: UpdateAction) {
+        updater.perform(action)
+        if (action == UpdateAction.LATER || action == UpdateAction.CLOSE) leaveCard()
+    }
+    val cardShown = updateCard != null
+    // The first time the card appears in this process, focus moves to its first button (once the
+    // guide has placed its own start focus).
+    LaunchedEffect(cardShown) {
+        if (!cardShown) return@LaunchedEffect
+        withTimeoutOrNull(3_000) { snapshotFlow { gridFocusPending }.first { !it } }
+        if (!updater.claimFirstFocus()) return@LaunchedEffect
+        repeat(20) {
+            if (cardFocus.tryFocus()) return@LaunchedEffect
+            delay(50)
+        }
+    }
+    // Composed last: while the card has focus, Back means Later (or just leaves a running download).
+    BackHandler(enabled = cardHasFocus && updateCard != null) {
+        backActionFor(updateStatus)?.let(updater::perform)
+        leaveCard()
+    }
+
     // The edit dialog open after an option was picked (rename, logo, TV guide, time shift, sort...).
     var channelEdit by remember { mutableStateOf<PendingChannelEdit?>(null) }
     var groupOptions by remember { mutableStateOf<GroupItem?>(null) }
@@ -482,7 +530,20 @@ fun GuideScreen(
                         onDown = { if (channels.itemCount > 0) focusGrid() else focusSelectedGroup() },
                         modifier = Modifier.fillMaxHeight().onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Preview) },
                     )
-                    ProgrammeInfo(focused, now, format, Modifier.weight(1f).fillMaxHeight().padding(top = 4.dp), moving = moveTitle)
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        ProgrammeInfo(focused, now, format, Modifier.fillMaxSize().padding(top = 4.dp), moving = moveTitle)
+                        updateCard?.let { card ->
+                            UpdateCard(
+                                card = card,
+                                progress = (updateStatus as? UpdateStatus.Downloading)?.percent,
+                                primaryFocus = cardFocus,
+                                onAction = ::onCardAction,
+                                onLeave = ::leaveCard,
+                                onFocusChange = { cardHasFocus = it },
+                                modifier = Modifier.align(Alignment.TopEnd),
+                            )
+                        }
+                    }
                 }
                 Row(Modifier.fillMaxSize().padding(top = PREVIEW_GAP)) {
                     // Always composed (zero wide while collapsed), so a focus request on a group always

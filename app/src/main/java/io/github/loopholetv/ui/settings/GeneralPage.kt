@@ -48,6 +48,12 @@ fun GeneralPage(ui: SettingsUi, vm: SettingsViewModel, focusKey: String?, onFocu
             Modifier.focusRequester(host.requester(LAST_CHANNEL_KEY)),
         )
         ToggleRow("Confirm exit", o.confirmExit, { vm.setOption { it.copy(confirmExit = !it.confirmExit) } })
+        ToggleRow(
+            "Check for updates",
+            o.checkForUpdates,
+            { vm.setOption { it.copy(checkForUpdates = !it.checkForUpdates) } },
+            supporting = "Once a day, when Loophole starts",
+        )
         ValueRow(
             "User agent",
             generalUserAgentText(o.userAgent, BuildConfig.VERSION_NAME),

@@ -1,7 +1,6 @@
 package io.github.loopholetv.ui.settings
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,6 +32,11 @@ import androidx.tv.material3.ListItemDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import io.github.loopholetv.BuildConfig
+import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.update.AboutCheck
+import io.github.loopholetv.update.aboutCheckText
+import io.github.loopholetv.update.cardFor
+import androidx.compose.ui.platform.LocalContext
 import io.github.loopholetv.ui.manage.GroupsAndChannelsEditor
 import io.github.loopholetv.ui.onboarding.PLAYER_ONLY_NOTICE
 import io.github.loopholetv.ui.onboarding.PillButton as OnboardingPillButton
@@ -266,13 +270,32 @@ private fun Confirm(text: String, action: String, onAction: () -> Unit, onCancel
 
 @Composable
 private fun AboutPage() {
+    val context = LocalContext.current
+    val updater = remember(context) { (context.applicationContext as LoopholeApp).container.updater }
+    val check by updater.about.collectAsStateWithLifecycle()
+    val status by updater.status.collectAsStateWithLifecycle()
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusSoon(focus) }
-    // Focusable so the D-pad and Back have a target on device.
-    Column(Modifier.focusRequester(focus).focusable(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Loophole", style = MaterialTheme.typography.titleLarge, color = Tokens.OnBackground)
         Text("Version ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge, color = Tokens.OnBackground)
         Text("Licence: GPL-3.0", style = MaterialTheme.typography.bodyLarge, color = Tokens.OnBackground)
+        ActionRow(
+            "Check for updates",
+            onClick = { updater.checkNow() },
+            modifier = Modifier.focusRequester(focus),
+            supporting = aboutCheckText(check),
+            supportingIsError = check == AboutCheck.Failed,
+        )
+        // The offered update's next step (Update, Cancel, Install...), as on the guide's card.
+        cardFor(status)?.let { card ->
+            val action = card.buttons.firstOrNull()
+            ActionRow(
+                action?.first ?: card.message,
+                onClick = { action?.second?.let(updater::perform) },
+                supporting = if (action != null) card.message else null,
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Text(PLAYER_ONLY_NOTICE, style = MaterialTheme.typography.bodyMedium, color = Tokens.Muted)
     }
