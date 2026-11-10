@@ -147,7 +147,9 @@ adb shell cmd package compile -m speed-profile -f io.github.loopholetv
 
 ## Updating
 
-Install the new APK over the old one, the same way as above. Your playlists and settings are kept.
+From 0.4.1, Loophole checks for new releases by itself, at most once a day. When one is available, a small card on the guide offers it: choose **Update**, and Android asks you to confirm the install. The first time, Android asks you to allow Loophole to install apps. You can turn the check off in **Settings → General**, or check now from **Settings → About**.
+
+You can also install a new APK over the old one by hand, the same way as above. Either way, your playlists and settings are kept.
 
 Every release is signed with the same key. If Android refuses to update ("App not installed" or a signature conflict), the installed copy came from a different source. Uninstall it first, which removes its data, then install the new APK.
 
