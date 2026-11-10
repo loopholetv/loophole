@@ -111,7 +111,7 @@ Enter the portal address and the MAC address your provider registered (usually s
 - **Channel and group edits:** hide, rename (and restore the original name), move, sort a group, change a channel's logo with an image link, choose its TV guide channel and shift its guide time. Do it from the guide or from Settings → Playlists → (playlist) → *Groups and channels*.
 - **Edits survive updates:** your changes stay when the playlist updates, and hidden channels and groups come back from *Groups and channels*.
 
-### Privacy
+### Private by design
 
 - No analytics, crash reporting or ads.
 - Network requests go only to the playlist, guide, logo and stream addresses you supply.
