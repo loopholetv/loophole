@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +41,7 @@ internal const val LOST_RESULT_MS = 3_000L
 class Updater(
     scope: CoroutineScope,
     private val checker: UpdateChecker,
-    private val downloader: UpdateDownloader,
+    private val downloader: UpdateFiles,
     private val platform: InstallPlatform,
     private val enabled: suspend () -> Boolean,
     /** Returns once the start-up splash is gone. */
@@ -55,6 +56,7 @@ class Updater(
     val about: StateFlow<AboutCheck> = _about.asStateFlow()
 
     private var download: Job? = null
+    @Volatile private var downloadGeneration = 0
     private var firstFocusTaken = false
 
     private fun send(e: UpdateEvent) = _status.update { reduce(it, e) }
@@ -71,8 +73,8 @@ class Updater(
         }
         val offer = checker.onStart(on)
         if (offer == null) {
-            // Nothing newer remembered (e.g. this build is the update): drop any old download.
-            if (checker.rememberedOffer() == null) downloader.clear()
+            // Nothing to offer (turned off, Later, or this build is the update): no file is kept.
+            if (_status.value is UpdateStatus.None) downloader.clear()
             return@launch
         }
         offer(offer)
@@ -103,27 +105,38 @@ class Updater(
         if (s !is UpdateStatus.Available && s !is UpdateStatus.Failed) return null
         val r = s.releaseOrNull() ?: return null
         send(UpdateEvent.StartDownload)
+        val previous = download
+        val generation = ++downloadGeneration
+        // Events from a cancelled download that is still winding down must not reach the card.
+        fun sendIfCurrent(e: UpdateEvent) {
+            if (generation == downloadGeneration) send(e)
+        }
         return scope.launch {
+            // A cancelled download finishes its own clean-up before the next one touches the directory.
+            previous?.cancelAndJoin()
             try {
-                val file = downloader.download(r) { send(UpdateEvent.Progress(it)) }
+                val file = downloader.download(r) { sendIfCurrent(UpdateEvent.Progress(it)) }
                 if (platform.verify(file) == VerifyResult.OK) {
-                    send(UpdateEvent.Downloaded)
+                    sendIfCurrent(UpdateEvent.Downloaded)
                 } else {
                     file.delete()
-                    send(UpdateEvent.VerifyFailed)
+                    sendIfCurrent(UpdateEvent.VerifyFailed)
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: NotEnoughSpaceException) {
+                sendIfCurrent(UpdateEvent.NotEnoughSpace)
             } catch (_: Exception) {
-                send(UpdateEvent.DownloadFailed)
+                sendIfCurrent(UpdateEvent.DownloadFailed)
             }
         }.also { download = it }
     }
 
     private fun cancelDownload() {
         if (_status.value !is UpdateStatus.Downloading) return
+        // Kept in [download] so the next start waits for it to finish cleaning up.
         download?.cancel()
-        download = null
+        downloadGeneration++
         send(UpdateEvent.CancelDownload)
     }
 

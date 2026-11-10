@@ -11,7 +11,8 @@ sealed interface UpdateStatus {
     data class NeedsPermission(val release: Release) : UpdateStatus
     /** Handed to the system installer; its confirmation is showing. */
     data class Installing(val release: Release) : UpdateStatus
-    data class Failed(val release: Release) : UpdateStatus
+    /** [noSpace]: the download was refused for lack of free space. */
+    data class Failed(val release: Release, val noSpace: Boolean = false) : UpdateStatus
 }
 
 sealed interface UpdateEvent {
@@ -24,6 +25,7 @@ sealed interface UpdateEvent {
     data object Downloaded : UpdateEvent
     data object CancelDownload : UpdateEvent
     data object DownloadFailed : UpdateEvent
+    data object NotEnoughSpace : UpdateEvent
     data object VerifyFailed : UpdateEvent
     data object NoInstallPermission : UpdateEvent
     data object InstallStarted : UpdateEvent
@@ -55,6 +57,7 @@ fun reduce(s: UpdateStatus, e: UpdateEvent): UpdateStatus {
         UpdateEvent.Downloaded -> if (s is UpdateStatus.Downloading) UpdateStatus.Ready(s.release) else s
         UpdateEvent.CancelDownload -> if (s is UpdateStatus.Downloading) UpdateStatus.Available(s.release) else s
         UpdateEvent.DownloadFailed -> if (s is UpdateStatus.Downloading) UpdateStatus.Failed(s.release) else s
+        UpdateEvent.NotEnoughSpace -> if (s is UpdateStatus.Downloading) UpdateStatus.Failed(s.release, noSpace = true) else s
         UpdateEvent.VerifyFailed -> if (r != null && s !is UpdateStatus.None) UpdateStatus.Failed(r) else s
         UpdateEvent.NoInstallPermission -> when (s) {
             is UpdateStatus.Ready, is UpdateStatus.NeedsPermission, is UpdateStatus.Installing -> UpdateStatus.NeedsPermission(r!!)
@@ -104,7 +107,7 @@ fun cardFor(s: UpdateStatus): UpdateCardUi? = when (s) {
     )
     is UpdateStatus.Installing -> UpdateCardUi("Installing…", emptyList())
     is UpdateStatus.Failed -> UpdateCardUi(
-        "Update failed",
+        if (s.noSpace) "Not enough free space for the update" else "Update failed",
         listOf("Try again" to UpdateAction.RETRY, "Close" to UpdateAction.CLOSE),
     )
 }

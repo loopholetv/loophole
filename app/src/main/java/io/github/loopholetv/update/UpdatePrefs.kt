@@ -19,15 +19,25 @@ data class UpdateRecord(
     val later: Boolean = false,
 )
 
-/** Update-check state in the app's settings DataStore. Key names are persisted: never rename. */
-class UpdatePrefs(private val store: DataStore<Preferences>) {
+/**
+ * Update-check state in the app's settings DataStore. Key names are persisted: never rename. A
+ * stored offer whose URL [policy] no longer allows (or whose size is out of range) reads as none.
+ */
+class UpdatePrefs(
+    private val store: DataStore<Preferences>,
+    private val policy: UpdateUrlPolicy = UpdateUrlPolicy.GITHUB_ONLY,
+) {
 
     suspend fun read(): UpdateRecord {
         val p = store.data.first()
         val version = p[OFFER_VERSION]?.let(SemVer::parse)
         val url = p[OFFER_URL]
         val size = p[OFFER_SIZE]
-        val offer = if (version != null && url != null && size != null) Release(version, url, size) else null
+        val offer = if (version != null && url != null && policy.allows(url) && size != null && size in 1..MAX_APK_BYTES) {
+            Release(version, url, size, p[OFFER_SHA256])
+        } else {
+            null
+        }
         return UpdateRecord(lastCheckMs = p[LAST_CHECK], offer = offer, later = p[LATER] ?: false)
     }
 
@@ -36,6 +46,7 @@ class UpdatePrefs(private val store: DataStore<Preferences>) {
         store.edit { p ->
             p[LAST_CHECK] = nowMs
             p[LATER] = false
+            p.remove(OFFER_SHA256)
             if (offer == null) {
                 p.remove(OFFER_VERSION)
                 p.remove(OFFER_URL)
@@ -44,6 +55,7 @@ class UpdatePrefs(private val store: DataStore<Preferences>) {
                 p[OFFER_VERSION] = offer.version.display
                 p[OFFER_URL] = offer.apkUrl
                 p[OFFER_SIZE] = offer.size
+                offer.sha256?.let { p[OFFER_SHA256] = it }
             }
         }
     }
@@ -57,6 +69,7 @@ class UpdatePrefs(private val store: DataStore<Preferences>) {
         val OFFER_VERSION = stringPreferencesKey("update_offer_version")
         val OFFER_URL = stringPreferencesKey("update_offer_url")
         val OFFER_SIZE = longPreferencesKey("update_offer_size")
+        val OFFER_SHA256 = stringPreferencesKey("update_offer_sha256")
         val LATER = booleanPreferencesKey("update_later")
     }
 }

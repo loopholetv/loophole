@@ -84,13 +84,24 @@ class AppContainer(context: Context) {
     /** Release check, download and install of app updates; lives for the process. */
     val updater: io.github.loopholetv.update.Updater by lazy {
         val ua = io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME)
-        val client = io.github.loopholetv.update.ReleaseClient(http, { io.github.loopholetv.update.releaseUrl(appContext) }, ua)
+        // Release builds fetch only https GitHub URLs; debug builds also allow a local test server.
+        val policy = if (BuildConfig.DEBUG) {
+            io.github.loopholetv.update.UpdateUrlPolicy.ANY_HTTP
+        } else {
+            io.github.loopholetv.update.UpdateUrlPolicy.GITHUB_ONLY
+        }
+        val updateHttp = io.github.loopholetv.update.updateHttpClient(http, policy)
+        val client = io.github.loopholetv.update.ReleaseClient(
+            updateHttp, { io.github.loopholetv.update.releaseUrl(appContext) }, ua, policy,
+        )
         io.github.loopholetv.update.Updater(
             scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
             checker = io.github.loopholetv.update.UpdateChecker(
-                client::latest, io.github.loopholetv.update.UpdatePrefs(settingsDataStore), BuildConfig.VERSION_NAME,
+                client::latest, io.github.loopholetv.update.UpdatePrefs(settingsDataStore, policy), BuildConfig.VERSION_NAME,
             ),
-            downloader = io.github.loopholetv.update.UpdateDownloader(http, java.io.File(appContext.cacheDir, "updates"), ua),
+            downloader = io.github.loopholetv.update.UpdateDownloader(
+                updateHttp, java.io.File(appContext.cacheDir, "updates"), ua, policy,
+            ),
             platform = io.github.loopholetv.update.AndroidInstallPlatform(appContext),
             enabled = { settingsStore.current().checkForUpdates },
             gate = startGate::await,

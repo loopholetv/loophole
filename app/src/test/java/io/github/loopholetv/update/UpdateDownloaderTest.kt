@@ -1,6 +1,12 @@
 package io.github.loopholetv.update
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -39,7 +45,72 @@ class UpdateDownloaderTest {
     private fun release(size: Long = bytes.size.toLong()) =
         Release(SemVer(0, 4, 2), server.url("/a.apk").toString(), size)
 
-    private fun downloader() = UpdateDownloader(OkHttpClient(), dir, "Loophole/0.4.1")
+    private fun downloader(
+        policy: UpdateUrlPolicy = UpdateUrlPolicy.ANY_HTTP,
+        freeSpace: (File) -> Long = { Long.MAX_VALUE },
+    ) = UpdateDownloader(OkHttpClient(), dir, "Loophole/0.4.1", policy, freeSpace)
+
+    private suspend fun assertFails(block: suspend () -> Unit): Exception {
+        try {
+            block()
+        } catch (e: IOException) {
+            return e
+        }
+        fail("expected a failure")
+        error("unreachable")
+    }
+
+    @Test
+    fun aUrlThePolicyRejectsIsNeverRequested() = runTest {
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        assertTrue(assertFails { downloader(UpdateUrlPolicy.GITHUB_ONLY).download(release()) {} } is BlockedUpdateUrlException)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun tooLittleFreeSpaceFailsBeforeDownloading() = runTest {
+        val size = bytes.size.toLong()
+        val needed = 2 * size + SPACE_MARGIN_BYTES
+        assertTrue(assertFails { downloader(freeSpace = { needed - 1 }).download(release()) {} } is NotEnoughSpaceException)
+        assertEquals(0, server.requestCount)
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        downloader(freeSpace = { needed }).download(release()) {}
+    }
+
+    @Test
+    fun anOversizedReleaseIsRefused() = runTest {
+        assertFails { downloader().download(release(size = MAX_APK_BYTES + 1)) {} }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun aContentLengthOtherThanTheReleaseSizeFails() = runTest {
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        assertFails { downloader().download(release(size = bytes.size - 1L)) {} }
+        assertTrue(dir.list().isNullOrEmpty())
+    }
+
+    @Test
+    fun theDigestIsCheckedWhenTheReleaseHasOne() = runTest {
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        assertFails { downloader().download(release().copy(sha256 = "00".repeat(32))) {} }
+        assertTrue(dir.list().isNullOrEmpty())
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        val file = downloader().download(release().copy(sha256 = sha256Hex(bytes))) {}
+        assertArrayEquals(bytes, file.readBytes())
+    }
+
+    @Test
+    fun cancellingStopsTheCallAtOnceAndLeavesNothing() = runBlocking {
+        // 1 KB a second: without Call.cancel() this would take minutes.
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)).throttleBody(1024, 1, TimeUnit.SECONDS))
+        val job = launch(Dispatchers.Default) { downloader().download(release()) {} }
+        delay(500)
+        val started = System.nanoTime()
+        job.cancelAndJoin()
+        assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(3))
+        assertTrue(dir.list().isNullOrEmpty())
+    }
 
     @Test
     fun downloadsWithProgressAndReplacesStaleFiles() = runTest {

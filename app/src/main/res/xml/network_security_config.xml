@@ -2,4 +2,9 @@
 <!-- IPTV sources are almost all plain http://. Only user-supplied playlist, guide, logo and stream URLs are fetched. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true" />
+    <!-- App updates come from GitHub over https only. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+    </domain-config>
 </network-security-config>

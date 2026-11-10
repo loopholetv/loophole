@@ -4,7 +4,11 @@ import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.emptyPreferences
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -60,15 +64,21 @@ class UpdaterTest {
             corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
             scope = scope,
         ) { File(tmp.root, "settings.preferences_pb") },
+        UpdateUrlPolicy.ANY_HTTP,
     )
 
-    private val downloader by lazy { UpdateDownloader(OkHttpClient(), File(tmp.root, "updates"), "Loophole/0.4.1") }
+    private val updatesDir by lazy { File(tmp.root, "updates") }
+    private val downloader by lazy { UpdateDownloader(OkHttpClient(), updatesDir, "Loophole/0.4.1", UpdateUrlPolicy.ANY_HTTP) }
 
-    private fun TestScope.updater(p: UpdatePrefs = prefs(backgroundScope), gate: suspend () -> Unit = { this@UpdaterTest.gate.await() }) =
+    private fun TestScope.updater(
+        p: UpdatePrefs = prefs(backgroundScope),
+        gate: suspend () -> Unit = { this@UpdaterTest.gate.await() },
+        files: UpdateFiles = downloader,
+    ) =
         Updater(
             scope = backgroundScope,
             checker = UpdateChecker({ latest }, p, "0.4.1", clock = { 1_000L }),
-            downloader = downloader,
+            downloader = files,
             platform = platform,
             enabled = { enabled },
             gate = gate,
@@ -218,5 +228,72 @@ class UpdaterTest {
         assertTrue(u.status.value is UpdateStatus.Downloading)
         u.perform(UpdateAction.CANCEL)
         assertEquals(UpdateStatus.Available(latest!!), u.status.value)
+    }
+
+    /** First download ignores cancellation until [release1] completes; the second waits on [release2]. */
+    private class SlowFiles(private val dir: File) : UpdateFiles {
+        val events = mutableListOf<String>()
+        val release1 = CompletableDeferred<Unit>()
+        val release2 = CompletableDeferred<Unit>()
+        private var calls = 0
+        override fun existing(r: Release): File? = null
+        override fun clear() {}
+        override suspend fun download(r: Release, onProgress: (Int) -> Unit): File {
+            val n = ++calls
+            events += "start$n"
+            if (n == 1) {
+                withContext(NonCancellable) {
+                    release1.await()
+                    onProgress(77)
+                    events += "end1"
+                }
+                throw CancellationException("cancelled")
+            }
+            release2.await()
+            return File(dir, "x.apk").apply { parentFile!!.mkdirs(); writeText("apk") }
+        }
+    }
+
+    @Test
+    fun updateAfterCancelWaitsForTheCancelledDownloadToFinish() = runTest {
+        val files = SlowFiles(updatesDir)
+        val u = updater(files = files)
+        u.onColdStart().join()
+        assertEquals(UpdateStatus.Available(latest!!), u.status.value)
+        u.perform(UpdateAction.UPDATE)
+        delay(10) // lets the background jobs run
+        assertEquals(listOf("start1"), files.events)
+        u.perform(UpdateAction.CANCEL)
+        val second = u.perform(UpdateAction.UPDATE)!!
+        delay(10) // lets the background jobs run
+        assertEquals(listOf("start1"), files.events)
+        files.release1.complete(Unit)
+        delay(10) // lets the background jobs run
+        assertEquals(listOf("start1", "end1", "start2"), files.events)
+        // The cancelled download's late progress did not reach the card.
+        assertEquals(UpdateStatus.Downloading(latest!!, 0), u.status.value)
+        files.release2.complete(Unit)
+        second.join()
+        assertEquals(UpdateStatus.Ready(latest!!), u.status.value)
+    }
+
+    @Test
+    fun notEnoughSpaceIsShownOnTheCard() = runTest {
+        val tight = UpdateDownloader(OkHttpClient(), updatesDir, "Loophole/0.4.1", UpdateUrlPolicy.ANY_HTTP, freeSpace = { 0L })
+        val u = updater(files = tight)
+        u.onColdStart().join()
+        u.perform(UpdateAction.UPDATE)!!.join()
+        assertEquals(UpdateStatus.Failed(latest!!, noSpace = true), u.status.value)
+        assertEquals("Not enough free space for the update", cardFor(u.status.value)!!.message)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun aStartWithNothingToOfferDeletesOldDownloads() = runTest {
+        updatesDir.mkdirs()
+        File(updatesDir, "loophole-0.4.2.apk").writeText("old")
+        enabled = false
+        updater().onColdStart().join()
+        assertTrue(updatesDir.list()!!.isEmpty())
     }
 }

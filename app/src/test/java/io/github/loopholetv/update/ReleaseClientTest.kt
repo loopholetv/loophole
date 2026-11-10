@@ -23,7 +23,9 @@ class ReleaseClientTest {
     @After
     fun tearDown() = server.shutdown()
 
-    private fun client() = ReleaseClient(http, { server.url("/repos/loopholetv/loophole/releases/latest").toString() }, "Loophole/0.4.1")
+    private fun client(policy: UpdateUrlPolicy = UpdateUrlPolicy.ANY_HTTP) = ReleaseClient(
+        updateHttpClient(http, policy), { server.url("/repos/loopholetv/loophole/releases/latest").toString() }, "Loophole/0.4.1", policy,
+    )
 
     private fun respond(code: Int, body: String) =
         server.enqueue(MockResponse().setResponseCode(code).setBody(body))
@@ -88,11 +90,59 @@ class ReleaseClientTest {
     }
 
     @Test
-    fun aNonHttpsAssetUrlOrMissingSizeGivesNull() = runTest {
+    fun aNonHttpAssetUrlOrMissingSizeGivesNull() = runTest {
         respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"ftp://e/a.apk","size":3}]}""")
         assertNull(client().latest())
         respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://e/a.apk"}]}""")
         assertNull(client().latest())
+    }
+
+    @Test
+    fun aTooLargeAssetGivesNull() = runTest {
+        respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://e/a.apk","size":${MAX_APK_BYTES + 1}}]}""")
+        assertNull(client().latest())
+        respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://e/a.apk","size":$MAX_APK_BYTES}]}""")
+        assertEquals(MAX_APK_BYTES, client().latest()!!.size)
+    }
+
+    @Test
+    fun readsTheSha256DigestWhenPresent() = runTest {
+        val hex = "AB".repeat(32)
+        respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://e/a.apk","size":3,"digest":"sha256:$hex"}]}""")
+        assertEquals(hex.lowercase(), client().latest()!!.sha256)
+        respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://e/a.apk","size":3,"digest":"md5:abc"}]}""")
+        assertNull(client().latest()!!.sha256)
+    }
+
+    @Test
+    fun githubOnlyRejectsAnHttpAssetAndAnOffListHost() = runTest {
+        val strict = UpdateUrlPolicy { it.port == server.port || (it.isHttps && it.host in GITHUB_UPDATE_HOSTS) }
+        respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"http://github.com/a.apk","size":3}]}""")
+        assertNull(client(strict).latest())
+        respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://evil.example/a.apk","size":3}]}""")
+        assertNull(client(strict).latest())
+        respond(200, """{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://release-assets.githubusercontent.com/a.apk","size":3}]}""")
+        assertEquals("https://release-assets.githubusercontent.com/a.apk", client(strict).latest()!!.apkUrl)
+    }
+
+    @Test
+    fun anEndpointThePolicyRejectsIsNeverRequested() = runTest {
+        assertNull(client(UpdateUrlPolicy.GITHUB_ONLY).latest())
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun aRedirectToAnOffListHostIsRefused() = runTest {
+        val other = MockWebServer().also { it.start() }
+        try {
+            other.enqueue(MockResponse().setBody("""{"tag_name":"v0.4.2","assets":[{"name":"a.apk","browser_download_url":"https://e/a.apk","size":3}]}"""))
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", other.url("/latest").toString()))
+            val onlyFirst = UpdateUrlPolicy { it.port == server.port || it.isHttps }
+            assertNull(client(onlyFirst).latest())
+            assertEquals(0, other.requestCount)
+        } finally {
+            other.shutdown()
+        }
     }
 
     @Test

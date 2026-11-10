@@ -32,6 +32,7 @@ class UpdateCheckerTest {
             corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
             scope = scope,
         ) { File(tmp.root, "settings.preferences_pb") },
+        UpdateUrlPolicy.ANY_HTTP,
     )
 
     private fun checker(prefs: UpdatePrefs) =
@@ -127,6 +128,16 @@ class UpdateCheckerTest {
         response = null
         assertEquals(CheckResult.Failed, c.checkNow())
         assertEquals(last, p.read().lastCheckMs)
+    }
+
+    @Test
+    fun aRememberedOfferWhoseUrlIsNoLongerAllowedIsDropped() = runTest {
+        val file = File(tmp.root, "strict.preferences_pb")
+        val store = PreferenceDataStoreFactory.create(scope = backgroundScope) { file }
+        UpdatePrefs(store, UpdateUrlPolicy.ANY_HTTP).recordCheck(now, newer.copy(apkUrl = "http://github.com/a.apk"))
+        assertNull(UpdatePrefs(store, UpdateUrlPolicy.GITHUB_ONLY).read().offer)
+        UpdatePrefs(store, UpdateUrlPolicy.ANY_HTTP).recordCheck(now, newer.copy(apkUrl = "https://github.com/a.apk", sha256 = "ab".repeat(32)))
+        assertEquals("ab".repeat(32), UpdatePrefs(store, UpdateUrlPolicy.GITHUB_ONLY).read().offer!!.sha256)
     }
 
     @Test

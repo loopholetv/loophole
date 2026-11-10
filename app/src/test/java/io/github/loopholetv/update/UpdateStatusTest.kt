@@ -82,6 +82,9 @@ class UpdateStatusTest {
         assertEquals("Allow Loophole to install updates", cardFor(S.NeedsPermission(r))!!.message)
         assertEquals("Open settings", cardFor(S.NeedsPermission(r))!!.buttons.first().first)
         assertEquals("Update failed", cardFor(S.Failed(r))!!.message)
+        assertEquals("Not enough free space for the update", cardFor(S.Failed(r, noSpace = true))!!.message)
+        assertEquals(S.Failed(r, noSpace = true), run(E.NotEnoughSpace, from = S.Downloading(r, 0)))
+        assertEquals(S.Downloading(r, 0), run(E.StartDownload, from = S.Failed(r, noSpace = true)))
     }
 
     @Test
