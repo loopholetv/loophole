@@ -68,7 +68,7 @@ class UpdaterTest {
     )
 
     private val updatesDir by lazy { File(tmp.root, "updates") }
-    private val downloader by lazy { UpdateDownloader(OkHttpClient(), updatesDir, "Loophole/0.4.1", UpdateUrlPolicy.ANY_HTTP) }
+    private val downloader by lazy { UpdateDownloader(OkHttpClient(), updatesDir, "Loophole/0.4.1", UpdateUrlPolicy.ANY_HTTP) { Long.MAX_VALUE } }
 
     private fun TestScope.updater(
         p: UpdatePrefs = prefs(backgroundScope),

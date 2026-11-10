@@ -45,7 +45,8 @@ class UpdateDownloader(
     private val dir: File,
     private val userAgent: String,
     private val policy: UpdateUrlPolicy = UpdateUrlPolicy.GITHUB_ONLY,
-    private val freeSpace: (File) -> Long = { it.usableSpace },
+    /** Bytes that can still be written in a directory (see [freeBytesFor]). */
+    private val freeSpace: (File) -> Long,
 ) : UpdateFiles {
     fun fileFor(r: Release): File = File(dir, "loophole-${r.version.display}.apk")
 

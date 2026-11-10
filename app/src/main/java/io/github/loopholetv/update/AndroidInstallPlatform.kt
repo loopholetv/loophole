@@ -122,3 +122,14 @@ internal fun releaseUrl(context: Context): String {
     }
     return GITHUB_LATEST_RELEASE_URL
 }
+
+/** Bytes the app may still write in [dir]: allocatable space from API 26 (counts clearable cache). */
+fun freeBytesFor(context: Context, dir: File): Long = runCatching {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val storage = context.getSystemService(android.os.storage.StorageManager::class.java)
+        storage.getAllocatableBytes(storage.getUuidForPath(dir))
+    } else {
+        @Suppress("UsableSpace")
+        dir.usableSpace
+    }
+}.getOrDefault(0L)

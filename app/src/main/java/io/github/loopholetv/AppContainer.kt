@@ -101,6 +101,7 @@ class AppContainer(context: Context) {
             ),
             downloader = io.github.loopholetv.update.UpdateDownloader(
                 updateHttp, java.io.File(appContext.cacheDir, "updates"), ua, policy,
+                freeSpace = { io.github.loopholetv.update.freeBytesFor(appContext, it) },
             ),
             platform = io.github.loopholetv.update.AndroidInstallPlatform(appContext),
             enabled = { settingsStore.current().checkForUpdates },
