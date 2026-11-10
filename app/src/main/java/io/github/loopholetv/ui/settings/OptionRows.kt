@@ -47,7 +47,7 @@ private fun OptionItem(
                     s,
                     style = MaterialTheme.typography.bodySmall,
                     color = if (supportingIsError) Tokens.Error else Color.Unspecified,
-                    maxLines = 3,
+                    maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -72,11 +72,17 @@ fun ToggleRow(label: String, value: Boolean, onToggle: () -> Unit, modifier: Mod
 /** Values longer than this go under the label, so they don't squeeze it in the narrow panel. */
 private const val TRAILING_MAX_CHARS = 14
 
-/** A row whose value is picked from a list; [valueText] is the current choice. */
+/**
+ * A row whose value is picked from a list; [valueText] is the current choice. A long value goes on
+ * the second line, ahead of the optional [supporting] text.
+ */
 @Composable
-fun ChoiceRow(label: String, valueText: String, onClick: () -> Unit, modifier: Modifier = Modifier) =
-    if (valueText.length > TRAILING_MAX_CHARS) OptionItem(label, null, modifier, valueText, onClick = onClick)
-    else OptionItem(label, valueText, modifier, onClick = onClick)
+fun ChoiceRow(label: String, valueText: String, onClick: () -> Unit, modifier: Modifier = Modifier, supporting: String? = null) =
+    if (valueText.length > TRAILING_MAX_CHARS) {
+        OptionItem(label, null, modifier, listOfNotNull(valueText, supporting).joinToString("\n"), onClick = onClick)
+    } else {
+        OptionItem(label, valueText, modifier, supporting, onClick = onClick)
+    }
 
 /** A plain action row with no trailing value; [supporting] is an optional second line. */
 @Composable
@@ -160,12 +166,14 @@ fun <T> ChoiceHost.Row(
     current: T,
     text: (T) -> String,
     key: String = label,
+    supporting: String? = null,
     onPick: (T) -> Unit,
 ) {
     ChoiceRow(
         label = label,
         valueText = text(current),
         modifier = Modifier.focusRequester(requester(key)),
+        supporting = supporting,
         onClick = {
             open(key, ChoiceSpec(label, values.map { text(it) to (it == current) }) { i -> onPick(values[i]); close() })
         },

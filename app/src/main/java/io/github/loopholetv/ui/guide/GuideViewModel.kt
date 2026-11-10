@@ -26,6 +26,7 @@ import io.github.loopholetv.data.repo.GuideKey
 import io.github.loopholetv.data.repo.guideKey
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
+import io.github.loopholetv.player.PreviewHold
 import io.github.loopholetv.ui.manage.EditActions
 import io.github.loopholetv.ui.manage.asEditActions
 import kotlinx.coroutines.CoroutineScope
@@ -205,6 +206,10 @@ class GuideViewModel(
     playlistsOn: Flow<Int> = flowOf(1),
     /** Whether any playlist exists at all. */
     playlistsExist: Flow<Boolean> = flowOf(true),
+    /** Set when the player stopped on purpose (external player, sleep timer): come back idle. */
+    private val previewHold: PreviewHold = PreviewHold(),
+    /** Fires when the sleep timer has stopped playback. */
+    sleepExpired: Flow<Unit> = emptyFlow(),
 ) : ViewModel() {
 
     // Not properties named like the public functions below (a call would resolve to the function).
@@ -702,28 +707,41 @@ class GuideViewModel(
     /**
      * The guide is on screen again. If the player switched channel meanwhile (channel up/down in
      * full screen), the preview and the focused row follow it; if playback was stopped (app in the
-     * background), the previewing channel resumes. With nothing previewing but a channel loading
+     * background), the previewing channel resumes, unless the stop was held ([PreviewHold]): then
+     * the preview clears and nothing plays. With nothing previewing but a channel loading
      * or playing (full screen opened from Search, or at start), that channel becomes the preview,
      * so audio never plays under an idle preview pane.
      */
     fun onScreenStarted() {
         playerPending = false
         refreshLatestEnd()
+        // Always taken, so a hold left while something still plays can't blank a later return.
+        val held = previewHold.consume()
         when (val state = playback.state.value) {
-            is PlaybackState.Idle -> _previewing.value?.let { previous ->
-                viewModelScope.launch {
-                    // The channel may be gone, hidden or turned off meanwhile: don't replay a ghost.
-                    val channel = channelById(previous.id)
-                    if (channel == null) {
-                        _previewing.value = null
-                    } else {
-                        playback.play(channel)
-                    }
-                }
+            // Stopped on purpose (another player may hold the one connection, or the sleep timer
+            // ran out): nothing replays and the pane asks for OK.
+            is PlaybackState.Idle -> if (held) {
+                _previewing.value = null
+            } else {
+                resumePreview()
             }
             else -> {
                 val adopted = if (_previewing.value == null) state.playingChannelId() else null
                 adopt(adopted ?: returnChannelId() ?: return)
+            }
+        }
+    }
+
+    /** Replays the previewing channel after a stop (app in the background). */
+    private fun resumePreview() {
+        val previous = _previewing.value ?: return
+        viewModelScope.launch {
+            // The channel may be gone, hidden or turned off meanwhile: don't replay a ghost.
+            val channel = channelById(previous.id)
+            if (channel == null) {
+                _previewing.value = null
+            } else {
+                playback.play(channel)
             }
         }
     }
@@ -741,6 +759,8 @@ class GuideViewModel(
     // Last in the class: on Dispatchers.Main.immediate this may run inline, so every property it
     // touches must be initialised already.
     init {
+        // The sleep timer stopped playback (on any screen): the guide comes back with nothing previewing.
+        viewModelScope.launch { sleepExpired.collect { _previewing.value = null } }
         viewModelScope.launch {
             val remembered = runCatching { initialScope() }.getOrDefault(ChannelScope.All)
             // A choice made meanwhile (OK on a group) wins, and is a change to remember.
@@ -813,6 +833,8 @@ class GuideViewModel(
                     edits = c.channelEdits.asEditActions(),
                     playlistsOn = playlists.map { list -> list.count { it.enabled } },
                     playlistsExist = playlists.map { it.isNotEmpty() },
+                    previewHold = c.previewHold,
+                    sleepExpired = c.sleepTimer.expired,
                 ) as T
             }
         }

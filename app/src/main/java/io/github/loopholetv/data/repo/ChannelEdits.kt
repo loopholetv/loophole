@@ -9,6 +9,8 @@ import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.GroupOrderRow
 import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.GroupSort
+import io.github.loopholetv.data.settings.AspectMode
+import io.github.loopholetv.data.settings.DecoderChoice
 
 /** Guide time shift step. */
 const val SHIFT_STEP_MINUTES = 30
@@ -51,6 +53,22 @@ class ChannelEdits(private val db: AppDatabase, private val overlay: ChannelOver
         require(minutes in SHIFT_CHOICES) { "Unsupported time shift: $minutes" }
         editChannel(ref) { it.copy(epgShiftMinutes = minutes) }
     }
+
+    /** Null follows the playback settings. */
+    suspend fun setVideoDecoder(ref: ChannelRef, choice: DecoderChoice?) =
+        editPlayback(ref) { it.copy(videoDecoder = choice) }
+
+    /** Null follows the playback settings. */
+    suspend fun setAudioDecoder(ref: ChannelRef, choice: DecoderChoice?) =
+        editPlayback(ref) { it.copy(audioDecoder = choice) }
+
+    /** A package name, or `"ask"` for the system chooser; blank or null plays the channel here. */
+    suspend fun setExternalPlayer(ref: ChannelRef, choice: String?) =
+        editPlayback(ref) { it.copy(externalPlayer = choice.blankToNull()) }
+
+    /** [AspectMode.FIT] is the default and is stored as null. */
+    suspend fun setAspect(ref: ChannelRef, mode: AspectMode?) =
+        editPlayback(ref) { it.copy(aspectMode = mode?.takeIf { m -> m != AspectMode.FIT }) }
 
     /**
      * Moves [channel] one place up (`direction < 0`) or down within its group, in `groupRank` order.
@@ -153,6 +171,10 @@ class ChannelEdits(private val db: AppDatabase, private val overlay: ChannelOver
             writeChannelPrefs(ref, change)
             overlay.applyChannel(ref.playlistId, ref.key)
         }
+
+    /** A playback-only edit: nothing on `channels` derives from it, so nothing is re-derived. */
+    private suspend fun editPlayback(ref: ChannelRef, change: (ChannelPrefsEntity) -> ChannelPrefsEntity) =
+        db.withTransaction { writeChannelPrefs(ref, change) }
 
     private suspend fun writeChannelPrefs(ref: ChannelRef, change: (ChannelPrefsEntity) -> ChannelPrefsEntity) {
         val next = change(channelPrefs.get(ref.playlistId, ref.key) ?: ChannelPrefsEntity(ref.playlistId, ref.key))

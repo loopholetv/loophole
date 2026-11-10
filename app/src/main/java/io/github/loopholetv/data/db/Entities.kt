@@ -7,6 +7,8 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
+import io.github.loopholetv.data.settings.AspectMode
+import io.github.loopholetv.data.settings.DecoderChoice
 import java.time.Instant
 
 /**
@@ -154,6 +156,14 @@ data class ChannelPrefsEntity(
     val epgShiftMinutes: Int = 0,
     /** Manual position within its group (used by [GroupSort.CUSTOM]). */
     val position: Int? = null,
+    /** Video decoder for this channel; null follows the playback settings. */
+    val videoDecoder: DecoderChoice? = null,
+    /** Audio decoder for this channel; null follows the playback settings. */
+    val audioDecoder: DecoderChoice? = null,
+    /** External player package name, or `"ask"` for the system chooser; null plays here. */
+    val externalPlayer: String? = null,
+    /** Picture fit for this channel; null means [AspectMode.FIT]. */
+    val aspectMode: AspectMode? = null,
 ) {
     /** True when the row holds no edit (it can be deleted). */
     fun isDefault(): Boolean = this == ChannelPrefsEntity(playlistId, channelKey)

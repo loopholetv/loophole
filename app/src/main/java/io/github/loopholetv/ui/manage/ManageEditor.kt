@@ -43,6 +43,7 @@ import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.EditorChannelRow
 import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.displayName
+import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
 import io.github.loopholetv.ui.common.ChannelOptionsDialog
 import io.github.loopholetv.ui.common.HeldKeyGate
 import io.github.loopholetv.ui.common.KeyPhase
@@ -224,7 +225,7 @@ private fun GroupPage(vm: ManageViewModel, title: String, group: EditorGroupItem
         val c = row.channel
         ChannelOptionsDialog(
             title = channelOptionsTitle(c),
-            options = channelEditOptions(c, hidden = row.hidden, canMove = true) { edit ->
+            options = channelEditOptions(c, hidden = row.hidden, canMove = true, playback = rememberChannelPlayback(c) ?: ChannelPlaybackPrefs.NONE) { edit ->
                 options = null
                 if (edit == ChannelEdit.Move) moving = c else channelEdit = edit to c
             },
@@ -232,7 +233,7 @@ private fun GroupPage(vm: ManageViewModel, title: String, group: EditorGroupItem
         )
     }
     channelEdit?.let { (edit, c) ->
-        ChannelEditHost(edit, c, vm.actions, onDone = { channelEdit = null; focusId = c.id })
+        ChannelEditHost(edit, c, vm.actions, rememberChannelPlayback(c), onDone = { channelEdit = null; focusId = c.id })
     }
     groupEdit?.let { edit ->
         GroupEditHost(

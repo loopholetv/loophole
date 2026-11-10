@@ -10,6 +10,15 @@ import org.junit.Test
 
 class StartDestinationTest {
     @Test
+    fun searchFromThePlayerReplacesIt() {
+        // Back from Search then returns to the guide, not to the player.
+        val options = searchFromPlayerOptions()
+        assertEquals(Routes.PLAYER, options.popUpToRoute)
+        assertTrue(options.isPopUpToInclusive())
+        assertTrue(options.shouldLaunchSingleTop())
+    }
+
+    @Test
     fun noPlaylistStartsAtOnboarding() {
         assertEquals(Routes.ONBOARDING, startDestination(hasPlaylist = false))
     }

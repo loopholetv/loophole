@@ -21,6 +21,12 @@ Early development. Not yet released.
 - **Channel and group edits:** hold OK on a channel or group in the guide, or use Settings → Playlists → (playlist) → *Groups and channels*: hide, rename (and restore the original name), move, sort a group, change a channel's logo with an image link, choose its TV guide channel and shift its guide time. Edits survive playlist updates. Hidden channels and groups come back from *Groups and channels*.
 - **Guides per playlist:** Settings → EPG lists each playlist's own guide (which can be turned off) and any guide links you add.
 - **General:** a user agent for every playlist, and a UDP proxy (udpxy-style) for multicast playlists.
+- **Quick menu:** while watching full screen, press ≡ or hold OK. A row of tiles along the bottom: Search, Channels, Video quality, Audio track, Audio delay (lip-sync, −1000 to +1000 ms), Subtitles, Aspect ratio (Fit, Stretch, Zoom, 16:9, 4:3, kept per channel), Sleep timer, Add to favourites, Channel options, Picture-in-picture (where the TV supports it) and Settings. Track choices last until you change channel.
+- **Playback settings:** Settings → Playback: buffer size (Small, Normal, Large), hardware or software video and audio decoders, auto frame rate, surround sound by default, audio passthrough, DTS to PCM, audio delay, preferred audio and subtitle languages, subtitle size, colour, background and edge, tunneled playback, and (where supported) the Home button opening picture-in-picture.
+- **Per-channel playback:** *Channel options* → video decoder, audio decoder and external player for that channel.
+- **External players:** a channel can open in MX Player, VLC, Kodi or Just Player (when installed), or ask each time. Loophole stops its own stream first, so a one-connection account is not used twice. Coming back lands in the guide with nothing playing.
+- **Picture-in-picture:** on TVs that support it (for example the NVIDIA Shield), from the quick menu or, if turned on, the Home button. Closing the small window stops the stream. Fire TV devices usually do not offer it, and then it is not shown.
+- **Extra audio formats:** software decoders for MP2, AC3/E-AC3 and DTS sound, used only when the TV's own decoders can't play a channel's audio (see *Third-party software*).
 
 ### Local playlist files
 
@@ -71,3 +77,7 @@ Loophole has no analytics, crash reporting or ads. The only network requests it 
 ## Licence
 
 GPL-3.0. See [LICENSE](LICENSE).
+
+## Third-party software
+
+Loophole bundles the FFmpeg audio decoder for Media3 built by the Jellyfin project ([jellyfin-androidx-media](https://github.com/jellyfin/jellyfin-androidx-media)), which contains code from [FFmpeg](https://ffmpeg.org) and is licensed under the GNU General Public License v3.0. Its source code is available from that repository and from FFmpeg. See [NOTICE](NOTICE) for this and the other third-party components.

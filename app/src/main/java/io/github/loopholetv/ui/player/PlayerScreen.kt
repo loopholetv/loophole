@@ -1,10 +1,15 @@
 package io.github.loopholetv.ui.player
 
-import android.view.KeyEvent
-import android.view.LayoutInflater
-import android.view.ViewGroup
-import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.view.KeyEvent
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,8 +23,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
@@ -36,22 +44,24 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.PlayerView
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import io.github.loopholetv.LoopholeApp
-import io.github.loopholetv.R
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.ref
-import io.github.loopholetv.player.Playback
+import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
+import io.github.loopholetv.player.ExternalPlayers
+import io.github.loopholetv.player.enterPictureInPicture
+import io.github.loopholetv.player.rememberInPictureInPicture
 import io.github.loopholetv.ui.common.ChannelOption
 import io.github.loopholetv.ui.common.ChannelOptionsDialog
 import io.github.loopholetv.ui.common.KeyPhase
@@ -63,6 +73,7 @@ import io.github.loopholetv.ui.guide.rememberGuideFormat
 import io.github.loopholetv.ui.guide.tryFocus
 import io.github.loopholetv.ui.manage.ChannelEditHost
 import io.github.loopholetv.ui.manage.channelEditOptions
+import io.github.loopholetv.ui.manage.rememberChannelPlayback
 import io.github.loopholetv.ui.theme.Tokens
 import kotlinx.coroutines.delay
 
@@ -70,13 +81,19 @@ private const val CLOCK_TICK_MS = 5_000L
 
 /**
  * Full-screen playback. Bare video or the slim banner a channel key shows: D-pad Up, Down and OK
- * open the full overlay, holding OK (or Menu) opens the current channel's options, Back hides the
- * banner / returns to the guide. Full overlay: group and clock on top, info bar and channel row at
- * the bottom; the D-pad moves along the row, OK on a tile changes channel (held: its options),
- * Back hides it. Channel keys and digits work everywhere.
+ * open the full overlay, holding OK (or Menu) opens the quick menu, Back hides the banner /
+ * returns to the guide. Full overlay: group and clock on top, info bar and channel row at the
+ * bottom; the D-pad moves along the row, OK on a tile changes channel (held: its options), Back
+ * hides it. Channel keys and digits work everywhere. In picture-in-picture only the video shows.
  */
 @Composable
-fun PlayerScreen(channelId: Long, scope: ChannelScope, onExit: () -> Unit) {
+fun PlayerScreen(
+    channelId: Long,
+    scope: ChannelScope,
+    onExit: () -> Unit,
+    onSearch: () -> Unit = {},
+    onSettings: () -> Unit = {},
+) {
     val vm: PlayerViewModel = viewModel(factory = PlayerViewModel.factory(channelId, scope))
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as LoopholeApp).container }
@@ -88,9 +105,62 @@ fun PlayerScreen(channelId: Long, scope: ChannelScope, onExit: () -> Unit) {
     val optionsFor by vm.optionsFor.collectAsStateWithLifecycle()
     val editing by vm.editing.collectAsStateWithLifecycle()
     val exitToGuide by vm.exitToGuide.collectAsStateWithLifecycle()
+    val quickMenu by vm.quickMenu.collectAsStateWithLifecycle()
+    val aspect by vm.aspect.collectAsStateWithLifecycle()
+    val subtitleStyle by vm.subtitleStyle.collectAsStateWithLifecycle()
+    val autoFrameRate by vm.autoFrameRate.collectAsStateWithLifecycle()
+    // Not the countdown itself: that is read only by the card, so the screen doesn't recompose each second.
+    val sleepWarningShown by vm.sleepWarningShown.collectAsStateWithLifecycle()
+    val tracks by playback.tracks.collectAsStateWithLifecycle()
+    val inPip = rememberInPictureInPicture()
+    LaunchedEffect(inPip) { vm.onPipChanged(inPip) }
+    // Read when the user presses Home; the view model clears it as soon as an exit starts.
+    DisposableEffect(Unit) {
+        container.pipGate.playerShowing = true
+        onDispose { container.pipGate.playerShowing = false }
+    }
 
-    // The current channel was hidden and nothing is left in the scope: back to the guide.
-    LaunchedEffect(exitToGuide) { if (exitToGuide) onExit() }
+    // Back to the guide (hidden channel, sleep timer, other player) only while this entry is
+    // resumed: after Settings closes, or once the user is back from the other player.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val lifeState by lifecycle.currentStateFlow.collectAsState()
+    var awaitingReturn by remember { mutableStateOf(false) }
+    var returned by remember { mutableStateOf(false) }
+    LaunchedEffect(awaitingReturn, lifeState) {
+        if (awaitingReturn && !lifeState.isAtLeast(Lifecycle.State.RESUMED)) returned = true
+    }
+    val resumed = lifeState.isAtLeast(Lifecycle.State.RESUMED) && (!awaitingReturn || returned)
+    LaunchedEffect(exitToGuide, resumed) { if (shouldExit(exitToGuide, resumed)) onExit() }
+
+    val activity = LocalActivity.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
+    val search by rememberUpdatedState(onSearch)
+    val settings by rememberUpdatedState(onSettings)
+    LaunchedEffect(vm) {
+        vm.events.collect { event ->
+            when (event) {
+                is PlayerEvent.LaunchExternal -> {
+                    // Never logged: the intent carries the stream link and its headers.
+                    val intent = ExternalPlayers.intentFor(event.choice, event.handoff, event.title)
+                        .addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION)
+                    try {
+                        launcher.launch(intent)
+                        awaitingReturn = true
+                        vm.onExternalLaunched()
+                    } catch (_: ActivityNotFoundException) {
+                        vm.onExternalFailed()
+                    }
+                }
+                PlayerEvent.EnterPip -> activity?.let { enterPictureInPicture(it) }
+                PlayerEvent.OpenSearch -> {
+                    // Leaving the player: settle it (no picture-in-picture on the way out) first.
+                    vm.leave()
+                    search()
+                }
+                PlayerEvent.OpenSettings -> settings()
+            }
+        }
+    }
 
     LaunchedEffect(vm) {
         while (true) {
@@ -114,6 +184,8 @@ fun PlayerScreen(channelId: Long, scope: ChannelScope, onExit: () -> Unit) {
     val retryFocus = remember { FocusRequester() }
     // Key codes whose key-down was consumed, so their key-up is swallowed too (no stray clicks).
     val consumed = remember { mutableSetOf<Int>() }
+    // Keys taken by the sleep timer warning ("press any button"): their key-up does nothing either.
+    val keptAwake = remember { mutableSetOf<Int>() }
     // The OK press the root follows (see rootOkRoute): only presses that begin here click or hold.
     var rootPress by remember { mutableStateOf(RootPress.None) }
 
@@ -124,6 +196,8 @@ fun PlayerScreen(channelId: Long, scope: ChannelScope, onExit: () -> Unit) {
             .onPreviewKeyEvent { e ->
                 val code = e.nativeKeyEvent.keyCode
                 when {
+                    e.type == KeyEventType.KeyUp && keptAwake.remove(code) -> true
+                    e.type == KeyEventType.KeyDown && vm.consumeSleepWarning() -> { keptAwake += code; true }
                     // Handled here, not via the back dispatcher: with focus on a row tile Compose
                     // could swallow the first Back press (seen on the Shield).
                     code == KeyEvent.KEYCODE_BACK -> {
@@ -144,15 +218,29 @@ fun PlayerScreen(channelId: Long, scope: ChannelScope, onExit: () -> Unit) {
             .focusRequester(rootFocus)
             .focusable(),
     ) {
-        FullScreenVideo(playback)
+        // One surface for full screen and picture-in-picture: it is never recreated, only the
+        // overlays come and go. MPEG-TS tracks often carry no frame rate; the decoded format may.
+        val player = playback.player
+        val frameRate = decodedFrameRate(player) ?: tracks.frameRate
+        VideoSurface(
+            player = player,
+            aspect = aspect,
+            subtitleStyle = subtitleStyle,
+            autoFrameRate = autoFrameRate,
+            frameRate = frameRate,
+            inPip = inPip,
+            onSurfaceAttached = playback::setFullScreenSurface,
+            subtitlesShown = subtitlesShown(quickMenuOpen = quickMenu != null && !inPip),
+        )
         val u = ui ?: return@Box
+        if (inPip) return@Box
         val showError = u.error != null
 
         // Bare video: focus sits on the error card's button if there is one, else on the screen
-        // (also once the options dialog closes).
-        val optionsOpen = optionsFor != null || editing != null
-        LaunchedEffect(u.overlayVisible, showError, optionsOpen) {
-            if (u.overlayVisible || optionsOpen) return@LaunchedEffect
+        // (also once a dialog closes).
+        val dialogOpen = optionsFor != null || editing != null || quickMenu != null
+        LaunchedEffect(u.overlayVisible, showError, dialogOpen) {
+            if (u.overlayVisible || dialogOpen) return@LaunchedEffect
             repeat(10) {
                 if ((if (showError) retryFocus else rootFocus).tryFocus()) return@LaunchedEffect
                 delay(30)
@@ -193,13 +281,32 @@ fun PlayerScreen(channelId: Long, scope: ChannelScope, onExit: () -> Unit) {
                         vm.toggleFavourite(c)
                     },
                 // The player shows only visible channels, and has no move mode.
-                ) + channelEditOptions(c, hidden = false, canMove = false) { edit -> vm.pickEdit(c, edit) },
+                ) + channelEditOptions(
+                    c, hidden = false, canMove = false, playback = rememberChannelPlayback(c) ?: ChannelPlaybackPrefs.NONE,
+                ) { edit -> vm.pickEdit(c, edit) },
                 onDismiss = vm::dismissOptions,
             )
         }
         editing?.let { e ->
-            ChannelEditHost(edit = e.edit, channel = e.channel, edits = container.channelEdits, onDone = vm::onEditDone)
+            ChannelEditHost(
+                edit = e.edit,
+                channel = e.channel,
+                edits = container.channelEdits,
+                playback = rememberChannelPlayback(e.channel),
+                onDone = vm::onEditDone,
+            )
         }
+        quickMenu?.let { menu ->
+            QuickMenu(
+                ui = menu,
+                onPick = vm::pickQuickItem,
+                onChoice = vm::pickChoice,
+                onStep = vm::stepAudioDelay,
+                onClosePanel = vm::closePanel,
+                onDismiss = vm::dismissQuickMenu,
+            )
+        }
+        if (sleepWarningShown) SleepWarningHost(vm.sleep, Modifier.align(Alignment.TopCenter).padding(top = 40.dp))
         u.error?.let {
             // Centred on bare video; above the info bar while the overlay is up.
             val place = if (u.overlayVisible || u.bannerVisible) Modifier.align(Alignment.TopCenter).padding(top = 110.dp) else Modifier.align(Alignment.Center)
@@ -224,30 +331,12 @@ fun PlayerScreen(channelId: Long, scope: ChannelScope, onExit: () -> Unit) {
                 color = Tokens.OnBackground,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 72.dp)
+                    .padding(top = if (sleepWarningShown) 150.dp else 72.dp)
                     .background(Tokens.SurfaceRaised, RoundedCornerShape(10.dp))
                     .padding(horizontal = 20.dp, vertical = 10.dp),
             )
         }
     }
-}
-
-/** Binds the shared player to a full-screen SurfaceView; detaching only unbinds it. */
-@OptIn(UnstableApi::class)
-@Composable
-private fun FullScreenVideo(playback: Playback) {
-    AndroidView(
-        factory = { context ->
-            (LayoutInflater.from(context).inflate(R.layout.fullscreen_player_view, null) as PlayerView).apply {
-                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                // The guide preview may still hold the player during the transition; the player
-                // moves to this surface, and the preview's later unbind leaves it alone.
-                player = playback.player
-            }
-        },
-        onRelease = { it.player = null },
-        modifier = Modifier.fillMaxSize(),
-    )
 }
 
 /**
@@ -267,7 +356,7 @@ private inline fun rootOkAction(
         KeyEventType.KeyUp -> KeyPhase.Up
         else -> return false
     }
-    val state = RootKeyState(ui.overlayVisible, ui.numberEntry != null, vm.optionsFor.value != null || vm.editing.value != null)
+    val state = RootKeyState(ui.overlayVisible, ui.numberEntry != null, vm.dialogOpen())
     val result = rootOkRoute(state, code, phase, e.nativeKeyEvent.repeatCount, press)
     setPress(result.press)
     when (result.action) {
@@ -342,3 +431,11 @@ private fun ErrorCard(message: String, onRetry: () -> Unit, focus: FocusRequeste
         Button(onClick = onRetry, modifier = Modifier.focusRequester(focus)) { Text("Try again") }
     }
 }
+
+/**
+ * The frame rate of the video format being decoded, when known. Read during composition: the
+ * screen recomposes when the stream goes from buffering to playing, after the format is known.
+ */
+@OptIn(UnstableApi::class)
+private fun decodedFrameRate(player: Player): Float? =
+    (player as? ExoPlayer)?.videoFormat?.frameRate?.takeIf { it > 0f }

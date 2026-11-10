@@ -18,6 +18,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.player.rememberInPictureInPicture
+import io.github.loopholetv.shouldCloseAbovePlayerForPip
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.channelScopeFromArg
 import io.github.loopholetv.data.db.toArg
@@ -29,6 +31,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.navigation.NavHostController
+import androidx.navigation.NavOptions
+import androidx.navigation.navOptions
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -73,6 +77,12 @@ const val NO_EDIT = -1L
 
 fun playlistFormEditId(arg: Long?): Long? = arg?.takeIf { it != NO_EDIT }
 
+/** Search opened from the player takes its place, so Back from Search returns to the guide. */
+fun searchFromPlayerOptions(): NavOptions = navOptions {
+    popUpTo(Routes.PLAYER) { inclusive = true }
+    launchSingleTop = true
+}
+
 /**
  * Every playlist counts, turned on or off: with all of them off the guide stays and says so,
  * so [hasPlaylist] comes from all playlists, never only the enabled ones.
@@ -105,6 +115,14 @@ fun AppNav(
     }
     // One holder for the whole app: per-screen holders fight over the single ComposeView flag.
     KeepScreenOnWhilePlaying(container.playback)
+    // Only the player enters picture-in-picture; whatever was open above it (Settings over the
+    // video) closes so the window shows the video alone.
+    val inPip = rememberInPictureInPicture()
+    LaunchedEffect(inPip, navController) {
+        if (shouldCloseAbovePlayerForPip(inPip, navController.currentDestination?.route)) {
+            navController.popBackStack(Routes.PLAYER, inclusive = false)
+        }
+    }
     NavHost(
         navController = navController,
         startDestination = startDestination,
@@ -160,6 +178,9 @@ fun AppNav(
                 // Only while this entry is resumed: a second Back during the exit fade must not
                 // pop the guide too.
                 onExit = dropUnlessResumed { navController.popBackStack() },
+                onSearch = dropUnlessResumed { navController.navigate(Routes.SEARCH, searchFromPlayerOptions()) },
+                // A dialog destination: the video keeps playing underneath.
+                onSettings = dropUnlessResumed { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
             )
         }
         // A dialog destination keeps the previous screen composed underneath; Back pops it.

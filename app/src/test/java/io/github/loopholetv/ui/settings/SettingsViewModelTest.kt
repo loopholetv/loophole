@@ -7,6 +7,8 @@ import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.repo.ImportError
 import io.github.loopholetv.data.repo.ImportResult
 import io.github.loopholetv.data.settings.AppSettings
+import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -86,7 +88,7 @@ class SettingsViewModelTest {
         val settings = MutableStateFlow(AppSettings())
         var clears = 0
 
-        fun vm() = SettingsViewModel(
+        fun vm(pipSupported: Boolean = false) = SettingsViewModel(
             playlists = playlists,
             channelCounts = counts,
             epgStatus = { id -> statuses.map { it[id] } },
@@ -118,6 +120,7 @@ class SettingsViewModelTest {
             },
             setUseSourceEpg = { id, use -> useSourceSet += id to use; playlists.update { l -> l.map { if (it.id == id) it.copy(useSourceEpg = use) else it } } },
             playingPlaylistId = playing,
+            pipSupported = pipSupported,
         )
     }
 
@@ -616,7 +619,7 @@ class SettingsViewModelTest {
     @Test fun pagesSurviveSaveAndRestore() {
         val pages = listOf(
             SettingsPage.Sections, SettingsPage.General, SettingsPage.Playlists, SettingsPage.Playlist(7),
-            SettingsPage.Editor(42), SettingsPage.Epg, SettingsPage.About,
+            SettingsPage.Editor(42), SettingsPage.Epg, SettingsPage.Playback, SettingsPage.About,
         )
         for (p in pages) assertEquals(p, SettingsPage.fromKey(p.key))
         assertEquals("playlist:7", SettingsPage.Playlist(7).key)
@@ -708,6 +711,58 @@ class SettingsViewModelTest {
         assertEquals(UDP_PROXY_INVALID, vm.state.value.udpProxyError)
         vm.clearUdpProxyError()
         assertNull(vm.state.value.udpProxyError)
+    }
+
+    // --- Playback page ---
+
+    @Test fun playbackSectionEnabledAndKeyed() {
+        assertEquals(SettingsPage.Playback, SettingsPage.fromKey("playback"))
+        assertEquals("playback", SettingsPage.Playback.key)
+        assertFalse("Playback" in DISABLED_SECTIONS)
+    }
+
+    @Test fun pickingBufferWritesPreset() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.setPlayback { it.copy(bufferPreset = BufferPreset.LARGE) }
+        assertEquals(BufferPreset.LARGE, f.settings.value.playback.bufferPreset)
+        assertEquals(BufferPreset.LARGE, vm.state.value.options.playback.bufferPreset)
+        // Other settings are untouched.
+        assertEquals(AppSettings().copy(playback = PlaybackSettings(bufferPreset = BufferPreset.LARGE)), f.settings.value)
+    }
+
+    @Test fun subtitleLanguageOffStoresNull() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        val choices = subtitleLanguageChoices()
+        vm.setPlayback { it.copy(subtitleLanguage = choices.first { c -> c.second == "German" }.first) }
+        assertEquals("de", f.settings.value.playback.subtitleLanguage)
+        vm.setPlayback { it.copy(subtitleLanguage = choices.first().first) }
+        assertNull(f.settings.value.playback.subtitleLanguage)
+    }
+
+    @Test fun togglesWriteThrough() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.setPlayback { it.copy(autoFrameRate = !it.autoFrameRate) }
+        vm.setPlayback { it.copy(preferSurround = !it.preferSurround) }
+        vm.setPlayback { it.copy(decodeDtsToPcm = !it.decodeDtsToPcm) }
+        vm.setPlayback { it.copy(tunneling = !it.tunneling) }
+        vm.setPlayback { it.copy(pipOnHome = !it.pipOnHome) }
+        val p = f.settings.value.playback
+        assertTrue(p.autoFrameRate)
+        assertFalse(p.preferSurround)
+        assertTrue(p.decodeDtsToPcm)
+        assertTrue(p.tunneling)
+        assertTrue(p.pipOnHome)
+        vm.setPlayback { it.copy(tunneling = !it.tunneling) }
+        assertFalse(f.settings.value.playback.tunneling)
+    }
+
+    @Test fun pipSupportComesFromTheDevice() {
+        val f = Fakes(listOf(playlist(1)))
+        assertFalse(f.vm().pipSupported)
+        assertTrue(f.vm(pipSupported = true).pipSupported)
     }
 
     @Test fun choiceTextFallsBackForUnknownValues() {

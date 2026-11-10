@@ -3,6 +3,7 @@ package io.github.loopholetv.ui.manage
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.GroupSort
+import io.github.loopholetv.data.settings.DecoderChoice
 
 /** Records every edit as a readable line, e.g. `rename(1:k1, null)`. */
 internal class FakeEditActions : EditActions {
@@ -16,6 +17,9 @@ internal class FakeEditActions : EditActions {
     override suspend fun setLogo(ref: ChannelRef, url: String?) { calls += "setLogo(${ref.s()}, $url)" }
     override suspend fun setEpgOverride(ref: ChannelRef, epgId: String?) { calls += "setEpgOverride(${ref.s()}, $epgId)" }
     override suspend fun setShift(ref: ChannelRef, minutes: Int) { calls += "setShift(${ref.s()}, $minutes)" }
+    override suspend fun setVideoDecoder(ref: ChannelRef, choice: DecoderChoice?) { calls += "setVideoDecoder(${ref.s()}, $choice)" }
+    override suspend fun setAudioDecoder(ref: ChannelRef, choice: DecoderChoice?) { calls += "setAudioDecoder(${ref.s()}, $choice)" }
+    override suspend fun setExternalPlayer(ref: ChannelRef, choice: String?) { calls += "setExternalPlayer(${ref.s()}, $choice)" }
     override suspend fun move(channel: ChannelEntity, direction: Int): Boolean {
         calls += "move(${channel.key}, $direction)"
         return moveResult

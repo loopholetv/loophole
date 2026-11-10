@@ -46,6 +46,32 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             lastGuideScope = this[LAST_GUIDE_SCOPE],
             userAgent = this[USER_AGENT]?.trim()?.takeIf { it.isNotEmpty() },
             udpProxy = this[UDP_PROXY]?.trim()?.takeIf { it.isNotEmpty() },
+            playback = readPlayback(),
+        )
+    }
+
+    private fun Preferences.readPlayback(): PlaybackSettings {
+        val d = PlaybackSettings()
+        val ds = d.subtitleStyle
+        return PlaybackSettings(
+            bufferPreset = this[BUFFER_PRESET].validOr(d.bufferPreset),
+            videoDecoder = this[VIDEO_DECODER].validOr(d.videoDecoder),
+            audioDecoder = this[AUDIO_DECODER].validOr(d.audioDecoder),
+            autoFrameRate = this[AUTO_FRAME_RATE] ?: d.autoFrameRate,
+            preferSurround = this[PREFER_SURROUND] ?: d.preferSurround,
+            passthrough = this[AUDIO_PASSTHROUGH].validOr(d.passthrough),
+            decodeDtsToPcm = this[DECODE_DTS_PCM] ?: d.decodeDtsToPcm,
+            tunneling = this[TUNNELED_PLAYBACK] ?: d.tunneling,
+            audioLanguage = this[AUDIO_LANGUAGE].languageOrNull(),
+            subtitleLanguage = this[SUBTITLE_LANGUAGE].languageOrNull(),
+            audioDelayMs = this[AUDIO_DELAY_MS]?.let(::normaliseAudioDelay) ?: d.audioDelayMs,
+            subtitleStyle = SubtitleStyle(
+                size = this[SUBTITLE_SIZE].validOr(ds.size),
+                colour = this[SUBTITLE_COLOUR].validOr(ds.colour),
+                background = this[SUBTITLE_BACKGROUND].validOr(ds.background),
+                edge = this[SUBTITLE_EDGE].validOr(ds.edge),
+            ),
+            pipOnHome = this[PIP_ON_HOME] ?: d.pipOnHome,
         )
     }
 
@@ -63,6 +89,26 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         if (scope == null) remove(LAST_GUIDE_SCOPE) else this[LAST_GUIDE_SCOPE] = scope
         putOrRemove(USER_AGENT, s.userAgent)
         putOrRemove(UDP_PROXY, s.udpProxy)
+        writePlayback(s.playback)
+    }
+
+    private fun MutablePreferences.writePlayback(p: PlaybackSettings) {
+        this[BUFFER_PRESET] = p.bufferPreset.name
+        this[VIDEO_DECODER] = p.videoDecoder.name
+        this[AUDIO_DECODER] = p.audioDecoder.name
+        this[AUTO_FRAME_RATE] = p.autoFrameRate
+        this[PREFER_SURROUND] = p.preferSurround
+        this[AUDIO_PASSTHROUGH] = p.passthrough.name
+        this[DECODE_DTS_PCM] = p.decodeDtsToPcm
+        this[TUNNELED_PLAYBACK] = p.tunneling
+        putOrRemove(AUDIO_LANGUAGE, p.audioLanguage)
+        putOrRemove(SUBTITLE_LANGUAGE, p.subtitleLanguage)
+        this[AUDIO_DELAY_MS] = normaliseAudioDelay(p.audioDelayMs)
+        this[SUBTITLE_SIZE] = p.subtitleStyle.size.name
+        this[SUBTITLE_COLOUR] = p.subtitleStyle.colour.name
+        this[SUBTITLE_BACKGROUND] = p.subtitleStyle.background.name
+        this[SUBTITLE_EDGE] = p.subtitleStyle.edge.name
+        this[PIP_ON_HOME] = p.pipOnHome
     }
 
     /** Blank and null both remove the key. */
@@ -72,6 +118,16 @@ class SettingsStore(private val store: DataStore<Preferences>) {
 
     private fun Int?.validOr(allowed: List<Int>, default: Int): Int =
         if (this != null && this in allowed) this else default
+
+    /** A stored enum name; unknown or missing names give [default]. */
+    private inline fun <reified E : Enum<E>> String?.validOr(default: E): E =
+        enumValues<E>().firstOrNull { it.name == this } ?: default
+
+    /** A stored language code from [PLAYBACK_LANGUAGES]; anything else (blank included) is null. */
+    private fun String?.languageOrNull(): String? {
+        val code = this?.trim()
+        return PLAYBACK_LANGUAGES.firstOrNull { it.code == code }?.code
+    }
 
     private companion object {
         val PLAYLIST_HOURS = intPreferencesKey("playlist_update_hours")
@@ -86,5 +142,21 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         val LAST_GUIDE_SCOPE = stringPreferencesKey("last_guide_scope")
         val USER_AGENT = stringPreferencesKey("user_agent")
         val UDP_PROXY = stringPreferencesKey("udp_proxy")
+        val BUFFER_PRESET = stringPreferencesKey("buffer_preset")
+        val VIDEO_DECODER = stringPreferencesKey("video_decoder")
+        val AUDIO_DECODER = stringPreferencesKey("audio_decoder")
+        val AUTO_FRAME_RATE = booleanPreferencesKey("auto_frame_rate")
+        val PREFER_SURROUND = booleanPreferencesKey("prefer_surround")
+        val AUDIO_PASSTHROUGH = stringPreferencesKey("audio_passthrough")
+        val DECODE_DTS_PCM = booleanPreferencesKey("decode_dts_pcm")
+        val TUNNELED_PLAYBACK = booleanPreferencesKey("tunneled_playback")
+        val AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
+        val SUBTITLE_LANGUAGE = stringPreferencesKey("subtitle_language")
+        val AUDIO_DELAY_MS = intPreferencesKey("audio_delay_ms")
+        val SUBTITLE_SIZE = stringPreferencesKey("subtitle_size")
+        val SUBTITLE_COLOUR = stringPreferencesKey("subtitle_colour")
+        val SUBTITLE_BACKGROUND = stringPreferencesKey("subtitle_background")
+        val SUBTITLE_EDGE = stringPreferencesKey("subtitle_edge")
+        val PIP_ON_HOME = booleanPreferencesKey("pip_on_home")
     }
 }

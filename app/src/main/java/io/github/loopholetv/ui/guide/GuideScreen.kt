@@ -49,6 +49,7 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.data.settings.SubtitleStyle
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.toArg
@@ -68,13 +69,17 @@ import io.github.loopholetv.ui.manage.ChannelEditHost
 import io.github.loopholetv.ui.manage.GroupEdit
 import io.github.loopholetv.ui.manage.GroupEditHost
 import io.github.loopholetv.ui.manage.channelEditOptions
+import io.github.loopholetv.ui.manage.rememberChannelPlayback
+import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
 import io.github.loopholetv.ui.manage.groupEditOptions
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.paging.PagingData
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 
@@ -95,6 +100,9 @@ fun GuideScreen(
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as LoopholeApp).container }
     val playback = container.playback
+    val subtitleStyle by remember(container) {
+        container.settingsStore.settings.map { it.playback.subtitleStyle }.distinctUntilChanged().catch { }
+    }.collectAsStateWithLifecycle(SubtitleStyle())
     val format = rememberGuideFormat()
 
     val groups by vm.groups.collectAsStateWithLifecycle()
@@ -470,6 +478,7 @@ fun GuideScreen(
                         focusRequester = previewFocus,
                         onOk = ::openPreview,
                         onLongPress = { channel -> options = OptionsTarget(channel, fromPreview = true) },
+                        subtitleStyle = subtitleStyle,
                         onDown = { if (channels.itemCount > 0) focusGrid() else focusSelectedGroup() },
                         modifier = Modifier.fillMaxHeight().onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Preview) },
                     )
@@ -594,7 +603,7 @@ fun GuideScreen(
             // Then the channel's edits. "Move" within a group's list, from its rows.
             val canMove = !target.fromPreview && vm.canMoveInGroup(channel)
             addAll(
-                channelEditOptions(channel, hidden = false, canMove = canMove) { edit ->
+                channelEditOptions(channel, hidden = false, canMove = canMove, playback = rememberChannelPlayback(channel) ?: ChannelPlaybackPrefs.NONE) { edit ->
                     when (edit) {
                         ChannelEdit.Move -> {
                             vm.startMove(channel)
@@ -634,7 +643,7 @@ fun GuideScreen(
     }
 
     channelEdit?.let { pending ->
-        ChannelEditHost(pending.edit, pending.channel, container.channelEdits) {
+        ChannelEditHost(pending.edit, pending.channel, container.channelEdits, rememberChannelPlayback(pending.channel)) {
             channelEdit = null
             vm.onChannelEdited(pending.channel.id)
             closeOptions(pending.back)

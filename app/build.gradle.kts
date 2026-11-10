@@ -30,8 +30,8 @@ android {
         applicationId = "io.github.loopholetv"
         minSdk = 25
         targetSdk = 37
-        versionCode = 5
-        versionName = "0.3.2"
+        versionCode = 6
+        versionName = "0.4.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -78,6 +78,13 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
 
+    packaging {
+        // Keep native libraries compressed in the APK; the device extracts only its own ABI.
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     sourceSets {
         // Room's exported schemas, read from assets by MigrationTestHelper. Robolectric unit tests only
         // see the variant's merged assets (not the test source set's), so they go in debug; release is unaffected.
@@ -112,6 +119,8 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer.hls)
     implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.androidx.media3.ui)
+    // Prebuilt FFmpeg audio decoders (GPL-3.0); used only as a fallback after MediaCodec.
+    implementation(libs.jellyfin.media3.ffmpeg)
 
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)

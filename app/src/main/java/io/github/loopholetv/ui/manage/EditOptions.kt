@@ -12,7 +12,10 @@ import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.displayName
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.data.repo.ChannelEdits
+import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
 import io.github.loopholetv.data.repo.SHIFT_CHOICES
+import io.github.loopholetv.data.settings.DecoderChoice
+import io.github.loopholetv.player.ExternalPlayers
 import io.github.loopholetv.ui.common.ChannelOption
 import io.github.loopholetv.ui.common.OPTION_MOVE
 import kotlinx.coroutines.CancellationException
@@ -51,18 +54,23 @@ sealed interface ChannelEdit {
     data object RestoreLogo : ChannelEdit
     data object ChooseGuide : ChannelEdit
     data object TimeShift : ChannelEdit
+    data object VideoDecoder : ChannelEdit
+    data object AudioDecoder : ChannelEdit
+    data object ExternalPlayer : ChannelEdit
     data object Move : ChannelEdit
 }
 
 /**
  * The edit rows of a channel's options, in order. [hidden] is the channel's own hidden edit
  * (`EditorChannelRow.hidden`), not `visible`: a channel hidden only through its group still
- * offers "Hide channel". The guide and player pass false. "Move" only when [canMove].
+ * offers "Hide channel". The guide and player pass false. "Move" only when [canMove]. [playback]
+ * is the channel's observed playback overrides, shown in the decoder and external player rows.
  */
 fun channelEditOptions(
     channel: ChannelEntity,
     hidden: Boolean,
     canMove: Boolean,
+    playback: ChannelPlaybackPrefs = ChannelPlaybackPrefs.NONE,
     onPick: (ChannelEdit) -> Unit,
 ): List<ChannelOption> = buildList {
     fun add(label: String, edit: ChannelEdit) = add(ChannelOption(label) { onPick(edit) })
@@ -73,6 +81,9 @@ fun channelEditOptions(
     if (channel.customLogo != null) add("Restore original logo", ChannelEdit.RestoreLogo)
     add(EPG_PICKER_TITLE, ChannelEdit.ChooseGuide)
     add("Guide time shift (${shiftText(channel.epgShiftMinutes)})", ChannelEdit.TimeShift)
+    add("Video decoder (${decoderText(playback.video)})", ChannelEdit.VideoDecoder)
+    add("Audio decoder (${decoderText(playback.audio)})", ChannelEdit.AudioDecoder)
+    add("External player (${ExternalPlayers.choiceLabel(playback.externalPlayer)})", ChannelEdit.ExternalPlayer)
     if (canMove) add(OPTION_MOVE, ChannelEdit.Move)
 }
 
@@ -126,6 +137,9 @@ interface EditActions {
     suspend fun setLogo(ref: ChannelRef, url: String?)
     suspend fun setEpgOverride(ref: ChannelRef, epgId: String?)
     suspend fun setShift(ref: ChannelRef, minutes: Int)
+    suspend fun setVideoDecoder(ref: ChannelRef, choice: DecoderChoice?) = Unit
+    suspend fun setAudioDecoder(ref: ChannelRef, choice: DecoderChoice?) = Unit
+    suspend fun setExternalPlayer(ref: ChannelRef, choice: String?) = Unit
     suspend fun move(channel: ChannelEntity, direction: Int): Boolean
     suspend fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean)
     suspend fun renameGroup(playlistId: Long, title: String, name: String?)
@@ -140,6 +154,9 @@ fun ChannelEdits.asEditActions(): EditActions = object : EditActions {
     override suspend fun setLogo(ref: ChannelRef, url: String?) { e.setLogo(ref, url) }
     override suspend fun setEpgOverride(ref: ChannelRef, epgId: String?) { e.setEpgOverride(ref, epgId) }
     override suspend fun setShift(ref: ChannelRef, minutes: Int) { e.setShift(ref, minutes) }
+    override suspend fun setVideoDecoder(ref: ChannelRef, choice: DecoderChoice?) { e.setVideoDecoder(ref, choice) }
+    override suspend fun setAudioDecoder(ref: ChannelRef, choice: DecoderChoice?) { e.setAudioDecoder(ref, choice) }
+    override suspend fun setExternalPlayer(ref: ChannelRef, choice: String?) { e.setExternalPlayer(ref, choice) }
     override suspend fun move(channel: ChannelEntity, direction: Int): Boolean = e.move(channel, direction)
     override suspend fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean) {
         e.setGroupHidden(playlistId, title, hidden)
@@ -176,6 +193,16 @@ class ChannelEditActions(
 
     fun setShift(channel: ChannelEntity, minutes: Int, onDone: () -> Unit) =
         write(onDone) { edits.setShift(channel.ref, minutes) }
+
+    fun setVideoDecoder(channel: ChannelEntity, choice: DecoderChoice?, onDone: () -> Unit) =
+        write(onDone) { edits.setVideoDecoder(channel.ref, choice) }
+
+    fun setAudioDecoder(channel: ChannelEntity, choice: DecoderChoice?, onDone: () -> Unit) =
+        write(onDone) { edits.setAudioDecoder(channel.ref, choice) }
+
+    /** [choice] is a player package name, [io.github.loopholetv.player.ASK_EACH_TIME], or null for off. */
+    fun setExternalPlayer(channel: ChannelEntity, choice: String?, onDone: () -> Unit) =
+        write(onDone) { edits.setExternalPlayer(channel.ref, choice) }
 
     /**
      * Sets the manual guide id ([epgId] null = "Automatic"). When the guide id the channel uses
@@ -229,17 +256,32 @@ private fun rememberEditActions(edits: ChannelEdits): ChannelEditActions {
 }
 
 /**
- * Carries out [edit] on [channel]: opens its dialog (rename, logo, TV guide, time shift) or writes
- * at once (hide, show, restore), then calls [onDone]; dismissing a dialog also calls [onDone].
+ * Carries out [edit] on [channel]: opens its dialog (rename, logo, TV guide, time shift, decoders,
+ * external player) or writes at once (hide, show, restore), then calls [onDone]; dismissing a
+ * dialog also calls [onDone].
  * Null shows nothing. [ChannelEdit.Move] is not handled here: the caller enters its own move
- * mode; passing it just calls [onDone].
+ * mode; passing it just calls [onDone]. [playback] supplies the current value each playback dialog
+ * focuses first; null means not read yet, and a playback dialog then waits for it.
  */
 @Composable
-fun ChannelEditHost(edit: ChannelEdit?, channel: ChannelEntity, edits: ChannelEdits, onDone: () -> Unit) =
-    ChannelEditHost(edit, channel, rememberEditActions(edits), onDone)
+fun ChannelEditHost(
+    edit: ChannelEdit?,
+    channel: ChannelEntity,
+    edits: ChannelEdits,
+    playback: ChannelPlaybackPrefs? = ChannelPlaybackPrefs.NONE,
+    onDone: () -> Unit,
+) = ChannelEditHost(edit, channel, rememberEditActions(edits), playback, onDone)
 
 @Composable
-internal fun ChannelEditHost(edit: ChannelEdit?, channel: ChannelEntity, actions: ChannelEditActions, onDone: () -> Unit) {
+internal fun ChannelEditHost(
+    edit: ChannelEdit?,
+    channel: ChannelEntity,
+    actions: ChannelEditActions,
+    playback: ChannelPlaybackPrefs? = ChannelPlaybackPrefs.NONE,
+    onDone: () -> Unit,
+) {
+    if (!playbackEditReady(edit, playback)) return
+    val saved = playback ?: ChannelPlaybackPrefs.NONE
     when (edit) {
         null -> Unit
         ChannelEdit.Rename -> TextEntryDialog(
@@ -271,6 +313,23 @@ internal fun ChannelEditHost(edit: ChannelEdit?, channel: ChannelEntity, actions
             options = SHIFT_CHOICES.map(::shiftText),
             selected = SHIFT_CHOICES.indexOf(channel.epgShiftMinutes).takeIf { it >= 0 } ?: SHIFT_CHOICES.indexOf(0),
             onPick = { i -> actions.setShift(channel, SHIFT_CHOICES[i], onDone) },
+            onDismiss = onDone,
+        )
+        ChannelEdit.VideoDecoder -> DecoderDialog(
+            title = "Video decoder",
+            current = saved.video,
+            onPick = { actions.setVideoDecoder(channel, it, onDone) },
+            onDismiss = onDone,
+        )
+        ChannelEdit.AudioDecoder -> DecoderDialog(
+            title = "Audio decoder",
+            current = saved.audio,
+            onPick = { actions.setAudioDecoder(channel, it, onDone) },
+            onDismiss = onDone,
+        )
+        ChannelEdit.ExternalPlayer -> ExternalPlayerDialog(
+            current = saved.externalPlayer,
+            onPick = { actions.setExternalPlayer(channel, it, onDone) },
             onDismiss = onDone,
         )
         else -> LaunchedEffect(edit, channel.id) {

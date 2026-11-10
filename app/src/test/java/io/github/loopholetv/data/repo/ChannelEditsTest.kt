@@ -4,6 +4,8 @@ import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.settings.AspectMode
+import io.github.loopholetv.data.settings.DecoderChoice
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -229,6 +231,55 @@ class ChannelEditsTest {
         edits.setShift(p.ref("A"), 30)
         edits.setEpgOverride(p.ref("A"), "a.uk")
         assertEquals("sentinel", p.channel("B").customLogo)
+    }
+
+    @Test fun playbackPrefsWrittenAndClearedToDefault() = runTest(timeout = 60.seconds) {
+        p.add(entries("A"))
+        val a = p.ref("A")
+        edits.setVideoDecoder(a, DecoderChoice.SOFTWARE)
+        assertEquals(DecoderChoice.SOFTWARE, db.channelPrefsDao().get(a.playlistId, a.key)?.videoDecoder)
+        edits.setVideoDecoder(a, null)
+        assertNull(db.channelPrefsDao().get(a.playlistId, a.key))
+
+        edits.setAudioDecoder(a, DecoderChoice.HARDWARE)
+        assertEquals(DecoderChoice.HARDWARE, db.channelPrefsDao().get(a.playlistId, a.key)?.audioDecoder)
+        edits.setExternalPlayer(a, "org.example.player")
+        assertEquals("org.example.player", db.channelPrefsDao().get(a.playlistId, a.key)?.externalPlayer)
+        edits.setAudioDecoder(a, null)
+        assertNull(db.channelPrefsDao().get(a.playlistId, a.key)?.audioDecoder)
+        edits.setExternalPlayer(a, "  ")
+        assertNull(db.channelPrefsDao().get(a.playlistId, a.key))
+
+        // A playback pref sits beside other edits and clearing it keeps them.
+        edits.setHidden(a, true)
+        edits.setAspect(a, AspectMode.ZOOM)
+        edits.setAspect(a, null)
+        val row = db.channelPrefsDao().get(a.playlistId, a.key)!!
+        assertTrue(row.hidden)
+        assertNull(row.aspectMode)
+    }
+
+    @Test fun aspectFitStoredAsNull() = runTest(timeout = 60.seconds) {
+        p.add(entries("A"))
+        val a = p.ref("A")
+        edits.setAspect(a, AspectMode.RATIO_4_3)
+        assertEquals(AspectMode.RATIO_4_3, db.channelPrefsDao().get(a.playlistId, a.key)?.aspectMode)
+        edits.setAspect(a, AspectMode.FIT)
+        assertNull(db.channelPrefsDao().get(a.playlistId, a.key))
+    }
+
+    @Test fun playbackEditDoesNotRederiveChannel() = runTest(timeout = 60.seconds) {
+        p.add(entries("A"))
+        val a = p.channel("A")
+        // A sentinel only a re-derive would overwrite (no logo pref exists for A).
+        db.openHelper.writableDatabase.execSQL("UPDATE channels SET customLogo = 'sentinel' WHERE id = ${a.id}")
+        val before = p.channel("A")
+        edits.setVideoDecoder(p.ref("A"), DecoderChoice.SOFTWARE)
+        edits.setAudioDecoder(p.ref("A"), DecoderChoice.SOFTWARE)
+        edits.setExternalPlayer(p.ref("A"), "ask")
+        edits.setAspect(p.ref("A"), AspectMode.STRETCH)
+        assertEquals(before, p.channel("A"))
+        assertEquals("sentinel", p.channel("A").customLogo)
     }
 
     @Test fun shiftOutsideChoicesRejected() = runTest(timeout = 60.seconds) {

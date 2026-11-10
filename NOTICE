@@ -1,0 +1,36 @@
+Loophole
+Copyright the Loophole contributors.
+Licensed under the GNU General Public License v3.0 (see LICENSE).
+
+This product includes third-party software, listed below with its licence.
+
+--------------------------------------------------------------------------------
+FFmpeg audio decoder for Media3 (org.jellyfin.media3:media3-ffmpeg-decoder)
+--------------------------------------------------------------------------------
+Version bundled: 1.9.0+1 (Maven Central: org.jellyfin.media3:media3-ffmpeg-decoder:1.9.0+1)
+Built and published by the Jellyfin project.
+Source: https://github.com/jellyfin/jellyfin-androidx-media (release 1.9.0+1)
+Licence: GNU General Public License v3.0
+         https://www.gnu.org/licenses/gpl-3.0.txt (also in LICENSE)
+
+This component contains native libraries built from FFmpeg.
+FFmpeg source: https://ffmpeg.org/download.html
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+
+The complete corresponding source code of these libraries is available from
+the locations above. Loophole uses them only to decode audio formats (such as
+MP2, AC3/E-AC3 and DTS) that the device's own decoders cannot play.
+
+--------------------------------------------------------------------------------
+Apache License 2.0
+--------------------------------------------------------------------------------
+https://www.apache.org/licenses/LICENSE-2.0
+
+- AndroidX libraries, including Compose, Compose for TV, Navigation, Room,
+  DataStore, Paging, WorkManager and Lifecycle (The Android Open Source Project)
+- AndroidX Media3 / ExoPlayer (The Android Open Source Project)
+- Kotlin standard library and kotlinx.coroutines (JetBrains s.r.o.)
+- OkHttp and Okio (Square, Inc.)
+- Moshi (Square, Inc.)
+- Coil (Coil Contributors)
+- Material Symbols icon outlines, used as vector paths (Google LLC)

@@ -16,6 +16,7 @@ data class AppSettings(
     val userAgent: String? = null,
     /** UDP proxy as `host:port`; null means off. */
     val udpProxy: String? = null,
+    val playback: PlaybackSettings = PlaybackSettings(),
 ) {
     companion object {
         val INTERVAL_HOURS = listOf(0, 3, 6, 12, 24, 48)

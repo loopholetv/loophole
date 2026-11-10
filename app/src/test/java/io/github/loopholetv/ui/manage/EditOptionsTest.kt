@@ -32,6 +32,9 @@ class EditOptionsTest {
                 "Restore original logo",
                 "Choose TV guide",
                 "Guide time shift (+1:30)",
+                "Video decoder (Same as Settings)",
+                "Audio decoder (Same as Settings)",
+                "External player (Off)",
                 "Move",
             ),
             labels(ch),
@@ -40,7 +43,10 @@ class EditOptionsTest {
 
     @Test fun restoreOnlyWhenEdited() {
         assertEquals(
-            listOf("Hide channel", "Rename", "Change logo", "Choose TV guide", "Guide time shift (Off)", "Move"),
+            listOf(
+                "Hide channel", "Rename", "Change logo", "Choose TV guide", "Guide time shift (Off)",
+                "Video decoder (Same as Settings)", "Audio decoder (Same as Settings)", "External player (Off)", "Move",
+            ),
             labels(testChannel()),
         )
     }
@@ -70,7 +76,8 @@ class EditOptionsTest {
         assertEquals(
             listOf(
                 ChannelEdit.Hide, ChannelEdit.Rename, ChannelEdit.RestoreName, ChannelEdit.Logo,
-                ChannelEdit.RestoreLogo, ChannelEdit.ChooseGuide, ChannelEdit.TimeShift, ChannelEdit.Move,
+                ChannelEdit.RestoreLogo, ChannelEdit.ChooseGuide, ChannelEdit.TimeShift,
+                ChannelEdit.VideoDecoder, ChannelEdit.AudioDecoder, ChannelEdit.ExternalPlayer, ChannelEdit.Move,
             ),
             picked,
         )

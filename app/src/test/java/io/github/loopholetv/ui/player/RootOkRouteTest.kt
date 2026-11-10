@@ -9,13 +9,13 @@ class RootOkRouteTest {
     private val ok = KeyEvent.KEYCODE_DPAD_CENTER
     private val menu = KeyEvent.KEYCODE_MENU
 
-    private data class Screen(var overlay: Boolean = false, var number: Boolean = false, var options: Boolean = false)
+    private data class Screen(var overlay: Boolean = false, var number: Boolean = false, var dialog: Boolean = false)
 
     /** Feeds key events through [rootOkRoute] like the screen does, collecting the actions. */
     private class Driver(val screen: Screen) {
         var press = RootPress.None
         fun send(code: Int, phase: KeyPhase, repeat: Int = 0): RootOkAction {
-            val r = rootOkRoute(RootKeyState(screen.overlay, screen.number, screen.options), code, phase, repeat, press)
+            val r = rootOkRoute(RootKeyState(screen.overlay, screen.number, screen.dialog), code, phase, repeat, press)
             press = r.press
             return r.action
         }
@@ -50,7 +50,7 @@ class RootOkRouteTest {
         assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Down, 2))
         assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Down, 3))
         assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Up))
-        screen.options = true
+        screen.dialog = true
         assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Down, 4))
         assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Up))
     }
@@ -88,6 +88,24 @@ class RootOkRouteTest {
             assertEquals("no tile click, no overlay", RootOkAction.Consume, d.send(ok, KeyPhase.Up))
             assertEquals(RootPress.None, d.press)
         }
+    }
+
+    @Test fun menuOnBareVideoIsLongClick() {
+        // Menu (and a held OK) on bare video or the banner opens the quick menu.
+        assertEquals(RootOkAction.LongClick, Driver(Screen()).send(menu, KeyPhase.Down, 0))
+        val d = Driver(Screen())
+        d.send(ok, KeyPhase.Down, 0)
+        assertEquals(RootOkAction.LongClick, d.send(ok, KeyPhase.Down, 1))
+    }
+
+    @Test fun dialogOpenConsumesOkAndMenu() {
+        val d = Driver(Screen(dialog = true))
+        assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Down, 0))
+        assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Down, 1))
+        assertEquals(RootOkAction.Consume, d.send(ok, KeyPhase.Up))
+        assertEquals(RootOkAction.Consume, d.send(menu, KeyPhase.Down, 0))
+        assertEquals(RootOkAction.Consume, d.send(menu, KeyPhase.Up))
+        assertEquals(RootPress.None, d.press)
     }
 
     @Test fun otherKeysPassThrough() {

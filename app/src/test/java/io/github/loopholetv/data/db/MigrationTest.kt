@@ -4,6 +4,8 @@ import androidx.room.Room
 import androidx.room.testing.MigrationTestHelper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
+import io.github.loopholetv.data.settings.AspectMode
+import io.github.loopholetv.data.settings.DecoderChoice
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -232,7 +234,100 @@ class MigrationTest {
         }
     }
 
-    @Test fun migrate1To4ViaAllMigrations() = runTest {
+    /**
+     * A v0.3.2 install: playlist with options set, a channel with derived edits, a channel_prefs
+     * row (hidden, renamed, shifted), a group_prefs row, a favourite, history and an EPG source.
+     */
+    @Test fun migrate4To5AddsPlaybackColumnsAndKeepsPrefs() = runTest {
+        helper.createDatabase(DB, 4).use { v4 ->
+            v4.execSQL(
+                """INSERT INTO playlists (id, name, type, url, epgUrlsFromSource, enabled, userAgent, updateHours,
+                   updateOnStart, useSourceEpg, rekeyPending) VALUES (7, 'My TV', 'M3U', 'http://example.test/list.m3u',
+                   '', 1, 'UA/1', 6, 0, 1, 0)""",
+            )
+            v4.execSQL(
+                """INSERT INTO channels (id, playlistId, `key`, number, name, streamUrl, groupTitle, groupOrder, sortOrder,
+                   epgChannelId, visible, guideNumber, groupRank, customName, guideEpgId, epgShiftMinutes, needsLink)
+                   VALUES (1, 7, 'b', 3, 'B', 'http://example.test/b.ts', 'News', 0, 0, 'b.uk', 0, 3, 3, 'Bee',
+                   'b.uk', 60, 0)""",
+            )
+            v4.execSQL(
+                """INSERT INTO channel_prefs (playlistId, channelKey, hidden, customName, customLogo, epgOverride,
+                   epgShiftMinutes, position) VALUES (7, 'b', 1, 'Bee', NULL, NULL, 60, 2)""",
+            )
+            v4.execSQL(
+                """INSERT INTO group_prefs (playlistId, groupTitle, hidden, customName, position, sortMode)
+                   VALUES (7, 'News', 0, 'Headlines', 1, 'CUSTOM')""",
+            )
+            v4.execSQL("INSERT INTO favourites (playlistId, channelKey, position, addedAt) VALUES (7, 'b', 0, 10)")
+            v4.execSQL("INSERT INTO history (playlistId, channelKey, watchedAt) VALUES (7, 'b', 20)")
+            v4.execSQL("INSERT INTO epg_sources (id, playlistId, url, position) VALUES (1, 7, 'http://example.test/epg.xml', 0)")
+        }
+
+        // Validates the migrated schema against the exported schema 5.json.
+        helper.runMigrationsAndValidate(DB, 5, true, MIGRATION_4_5).use { v5 ->
+            v5.query(
+                """SELECT hidden, customName, epgShiftMinutes, position, videoDecoder, audioDecoder, externalPlayer,
+                   aspectMode FROM channel_prefs WHERE playlistId = 7 AND channelKey = 'b'""",
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1, c.getInt(0))
+                assertEquals("Bee", c.getString(1))
+                assertEquals(60, c.getInt(2))
+                assertEquals(2, c.getInt(3))
+                for (i in 4..7) assertTrue("column $i not null", c.isNull(i))
+            }
+        }
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            assertEquals(
+                ChannelPrefsEntity(7, "b", hidden = true, customName = "Bee", epgShiftMinutes = 60, position = 2),
+                db.channelPrefsDao().get(7, "b"),
+            )
+            val p = db.playlistDao().byId(7)!!
+            assertEquals(listOf<Any?>("My TV", "UA/1", 6, false), listOf(p.name, p.userAgent, p.updateHours, p.updateOnStart))
+            val ch = db.channelDao().byId(1)!!
+            assertEquals("Bee", ch.displayName)
+            assertFalse(ch.visible)
+            assertEquals(60, ch.epgShiftMinutes)
+            assertEquals("b.uk", ch.guideEpgId)
+            assertEquals(GroupPrefsEntity(7, "News", false, "Headlines", 1, GroupSort.CUSTOM), db.groupPrefsDao().get(7, "News"))
+            assertEquals(listOf(ChannelRef(7, "b")), db.favouriteDao().refs().first())
+            db.openHelper.readableDatabase.query("SELECT channelKey, watchedAt FROM history").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("b", c.getString(0))
+                assertEquals(20L, c.getLong(1))
+            }
+            assertEquals(listOf("http://example.test/epg.xml"), db.epgSourceDao().forPlaylist(7).map { it.url })
+
+            // The new columns hold enum names and round-trip.
+            db.channelPrefsDao().upsert(
+                db.channelPrefsDao().get(7, "b")!!.copy(
+                    videoDecoder = DecoderChoice.SOFTWARE,
+                    audioDecoder = DecoderChoice.HARDWARE,
+                    externalPlayer = "ask",
+                    aspectMode = AspectMode.RATIO_16_9,
+                ),
+            )
+            val row = db.channelPrefsDao().get(7, "b")!!
+            assertEquals(DecoderChoice.SOFTWARE, row.videoDecoder)
+            assertEquals(DecoderChoice.HARDWARE, row.audioDecoder)
+            assertEquals("ask", row.externalPlayer)
+            assertEquals(AspectMode.RATIO_16_9, row.aspectMode)
+            db.openHelper.readableDatabase.query("SELECT videoDecoder, aspectMode FROM channel_prefs").use { c ->
+                c.moveToFirst()
+                assertEquals("SOFTWARE", c.getString(0))
+                assertEquals("RATIO_16_9", c.getString(1))
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun migrate1To5ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 1).use { v1 ->
             v1.execSQL(
                 """INSERT INTO playlists (id, name, type, epgUrlsFromSource, manualEpgUrl)
@@ -244,7 +339,7 @@ class MigrationTest {
             )
         }
 
-        helper.runMigrationsAndValidate(DB, 4, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(DB, 5, true, *ALL_MIGRATIONS).close()
 
         val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
             .addMigrations(*ALL_MIGRATIONS)
@@ -261,12 +356,14 @@ class MigrationTest {
             assertNull(db.playlistDao().byId(7)!!.manualEpgUrl)
             db.channelPrefsDao().upsert(ChannelPrefsEntity(7, "k", hidden = true))
             assertTrue(db.channelPrefsDao().get(7, "k")!!.hidden)
+            db.channelPrefsDao().upsert(ChannelPrefsEntity(7, "k", aspectMode = AspectMode.ZOOM))
+            assertEquals(AspectMode.ZOOM, db.channelPrefsDao().get(7, "k")!!.aspectMode)
         } finally {
             db.close()
         }
     }
 
-    @Test fun migrate2To4ViaAllMigrations() = runTest {
+    @Test fun migrate2To5ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 2).use { v2 ->
             v2.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
             v2.execSQL(
@@ -279,7 +376,7 @@ class MigrationTest {
             )
         }
 
-        helper.runMigrationsAndValidate(DB, 4, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(DB, 5, true, *ALL_MIGRATIONS).close()
 
         val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
             .addMigrations(*ALL_MIGRATIONS)

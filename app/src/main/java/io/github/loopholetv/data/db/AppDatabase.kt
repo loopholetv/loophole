@@ -10,7 +10,7 @@ import androidx.room.TypeConverters
         EpgPendingEntity::class, FavouriteEntity::class, HistoryEntity::class, ChannelPrefsEntity::class,
         GroupPrefsEntity::class, EpgSourceEntity::class, EpgChannelEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

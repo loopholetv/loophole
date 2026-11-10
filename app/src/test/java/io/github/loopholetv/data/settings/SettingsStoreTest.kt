@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -118,6 +119,73 @@ class SettingsStoreTest {
         assertEquals("h:1", store.current().udpProxy)
         ds.edit { it[androidx.datastore.preferences.core.stringPreferencesKey("user_agent")] = "  X  " }
         assertEquals("X", store.current().userAgent)
+    }
+
+    @Test
+    fun playbackDefaults() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        assertEquals(PlaybackSettings(), store.current().playback)
+    }
+
+    @Test
+    fun playbackRoundTrip() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        val playback = PlaybackSettings(
+            bufferPreset = BufferPreset.LARGE,
+            videoDecoder = DecoderChoice.SOFTWARE,
+            audioDecoder = DecoderChoice.SOFTWARE,
+            autoFrameRate = true,
+            preferSurround = false,
+            passthrough = Passthrough.OFF,
+            decodeDtsToPcm = true,
+            tunneling = true,
+            audioLanguage = "de",
+            subtitleLanguage = "fr",
+            audioDelayMs = -350,
+            subtitleStyle = SubtitleStyle(
+                size = SubtitleSize.EXTRA_LARGE,
+                colour = SubtitleColour.YELLOW,
+                background = SubtitleBackground.BLACK,
+                edge = SubtitleEdge.SHADOW,
+            ),
+            pipOnHome = true,
+        )
+        store.update { it.copy(playback = playback, confirmExit = false) }
+        val s = store.current()
+        assertEquals(playback, s.playback)
+        assertEquals(false, s.confirmExit)
+
+        // Back to defaults: optional languages are removed, not kept.
+        store.update { it.copy(playback = PlaybackSettings()) }
+        assertEquals(PlaybackSettings(), store.current().playback)
+    }
+
+    @Test
+    fun invalidPlaybackValuesFallBack() = runTest {
+        val ds = dataStore(backgroundScope)
+        ds.edit {
+            it[stringPreferencesKey("buffer_preset")] = "HUGE"
+            it[stringPreferencesKey("video_decoder")] = "hardware"
+            it[stringPreferencesKey("audio_passthrough")] = ""
+            it[stringPreferencesKey("audio_language")] = "xx"
+            it[stringPreferencesKey("subtitle_language")] = "  "
+            it[intPreferencesKey("audio_delay_ms")] = 37
+            it[stringPreferencesKey("subtitle_size")] = "TINY"
+            it[stringPreferencesKey("subtitle_colour")] = "RED"
+            it[stringPreferencesKey("subtitle_background")] = "GREY"
+            it[stringPreferencesKey("subtitle_edge")] = "GLOW"
+        }
+        val p = SettingsStore(ds).current().playback
+        assertEquals(BufferPreset.NORMAL, p.bufferPreset)
+        assertEquals(DecoderChoice.HARDWARE, p.videoDecoder)
+        assertEquals(Passthrough.AUTO, p.passthrough)
+        assertEquals(null, p.audioLanguage)
+        assertEquals(null, p.subtitleLanguage)
+        assertEquals(50, p.audioDelayMs)
+        assertEquals(SubtitleStyle(), p.subtitleStyle)
+
+        ds.edit { it[intPreferencesKey("audio_delay_ms")] = 5000 }
+        assertEquals(1000, SettingsStore(ds).current().playback.audioDelayMs)
     }
 
     @Test

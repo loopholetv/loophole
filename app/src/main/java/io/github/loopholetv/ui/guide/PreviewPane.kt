@@ -43,6 +43,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
+import io.github.loopholetv.data.settings.SubtitleSize
+import io.github.loopholetv.data.settings.SubtitleStyle
+import io.github.loopholetv.ui.player.applySubtitleStyle
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import io.github.loopholetv.R
@@ -52,6 +55,16 @@ import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.ui.common.okPress
 import io.github.loopholetv.ui.theme.Tokens
 import java.time.Instant
+
+/**
+ * Subtitles in the preview start this far up the pane (a fraction of its height), above the
+ * channel label along its bottom edge.
+ */
+const val PREVIEW_SUBTITLE_BOTTOM_FRACTION = 0.18f
+
+/** The preview is small: subtitles keep the chosen style but are never drawn larger than Normal. */
+fun previewSubtitleStyle(style: SubtitleStyle): SubtitleStyle =
+    if (style.size.scale > SubtitleSize.NORMAL.scale) style.copy(size = SubtitleSize.NORMAL) else style
 
 /**
  * The live preview (with sound) bound to the app's single player. Focusable (Up from the grid's top
@@ -70,6 +83,8 @@ fun PreviewPane(
     modifier: Modifier = Modifier,
     /** Held OK or Menu: the previewing channel's options (nothing while nothing previews). */
     onLongPress: (ChannelEntity) -> Unit = {},
+    /** How subtitles are drawn when a channel previews with them on. */
+    subtitleStyle: SubtitleStyle = SubtitleStyle(),
 ) {
     val state by playback.state.collectAsState()
     var focused by remember { mutableStateOf(false) }
@@ -99,6 +114,13 @@ fun PreviewPane(
                 (LayoutInflater.from(context).inflate(R.layout.preview_player_view, null) as PlayerView).apply {
                     layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                     player = playback.player
+                }
+            },
+            update = { view ->
+                if (view.tag != subtitleStyle) {
+                    view.subtitleView?.applySubtitleStyle(previewSubtitleStyle(subtitleStyle))
+                    view.subtitleView?.setBottomPaddingFraction(PREVIEW_SUBTITLE_BOTTOM_FRACTION)
+                    view.tag = subtitleStyle
                 }
             },
             // Detaching only unbinds the surface: playback carries on (e.g. into the full-screen player).

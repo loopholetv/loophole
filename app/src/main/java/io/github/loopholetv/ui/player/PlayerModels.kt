@@ -17,6 +17,15 @@ const val NUMBER_ENTRY_IDLE_MS = 1_500L
 const val MAX_NUMBER_DIGITS = 4
 const val MESSAGE_MS = 2_000L
 
+/** The link for a channel set to an external player could not be resolved. */
+const val EXTERNAL_RESOLVE_FAILED = "Couldn't open this channel in the other player."
+
+/** A channel's aspect ratio could not be saved; the saved one stays. */
+const val ASPECT_SAVE_FAILED = "Couldn't save the aspect ratio."
+
+/** The channel's external player is no longer installed. */
+const val EXTERNAL_LAUNCH_FAILED = "That player isn't installed any more. Playing here instead."
+
 /**
  * Zaps are coalesced: each press moves the target channel at once (its info shows immediately),
  * but play() runs only once no zap key has come for this long, so holding Down (key repeats)
@@ -109,3 +118,18 @@ internal fun digitOf(keyCode: Int): Int? = when (keyCode) {
  */
 internal fun relabelError(error: String?, oldName: String, newName: String): String? =
     if (error != null && oldName != newName && error.startsWith("$oldName: ")) newName + error.substring(oldName.length) else error
+
+/** [PlayerUi] with [s]'s tags, error and loading state for its channel. */
+internal fun PlayerUi.withPlayback(s: PlaybackState): PlayerUi {
+    val id = channel.id
+    return copy(
+        tags = (s as? PlaybackState.Playing)?.takeIf { it.channelId == id }?.tags ?: StreamTags.NONE,
+        error = (s as? PlaybackState.Error)?.takeIf { it.channelId == id }?.message,
+        buffering = when (s) {
+            is PlaybackState.Buffering -> true
+            is PlaybackState.Playing -> s.channelId != id
+            is PlaybackState.Error -> s.channelId != id
+            PlaybackState.Idle -> false
+        },
+    )
+}

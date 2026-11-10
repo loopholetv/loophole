@@ -17,6 +17,8 @@ import androidx.compose.runtime.mutableStateOf
 import io.github.loopholetv.data.db.channelScopeFromArg
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.orDefaultsOnError
+import io.github.loopholetv.player.DisplayModeSwitcher
+import io.github.loopholetv.player.enterPictureInPicture
 import androidx.compose.runtime.remember
 import io.github.loopholetv.ui.nav.StartSlot
 import io.github.loopholetv.ui.nav.resolveStartPlayback
@@ -41,6 +43,11 @@ private val firstActivityInProcess = FirstInProcess()
 
 class MainActivity : ComponentActivity() {
     private var splash: SplashSession? = null
+
+    /** This activity's window display mode (frame-rate matching); one per activity, never shared. */
+    private val displayModes by lazy { DisplayModeSwitcher(window) }
+
+    private val container get() = (application as LoopholeApp).container
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,6 +84,16 @@ class MainActivity : ComponentActivity() {
             }
             if (exists) app.startupRefresher.start()
             hasPlaylist.value = exists
+        }
+
+        // A picture-in-picture window must not hold the TV at the stream's frame rate while
+        // another app is full screen behind it; full screen asks again once it settles.
+        addOnPictureInPictureModeChangedListener { if (it.isInPictureInPictureMode) displayModes.restore() }
+        // The sleep timer has stopped playback: a picture-in-picture window would stay open, black.
+        lifecycleScope.launch {
+            app.container.sleepTimer.expired.collect {
+                if (shouldCloseWindowOnSleepExpiry(isInPictureInPictureMode)) moveTaskToBack(true)
+            }
         }
 
         setContent {
@@ -129,9 +146,31 @@ class MainActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
-    /** Leaving the app (Home, another app, screen off) stops the stream; screens restart it on return. */
+    /** Home while the full-screen player plays opens picture-in-picture, when that is turned on. */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val c = container
+        val enter = shouldEnterPipOnLeave(
+            pipOnHome = c.settingsSnapshot.current.playback.pipOnHome,
+            playerShowing = c.pipGate.playerShowing,
+            state = c.playback.state.value,
+            supported = c.pipSupported,
+        )
+        if (enter) enterPictureInPicture(this)
+    }
+
+    /**
+     * Leaving the app (Home, another app, screen off, or closing the picture-in-picture window)
+     * stops the stream and the sleep timer and gives the display back its own mode; screens
+     * restart playback on return. Picture-in-picture itself only pauses the activity.
+     */
     override fun onStop() {
         super.onStop()
-        if (!isChangingConfigurations) (application as LoopholeApp).container.playback.stop()
+        if (shouldReleaseOnStop(isChangingConfigurations)) {
+            val c = container
+            c.playback.stop()
+            c.sleepTimer.cancel()
+            displayModes.restore()
+        }
     }
 }

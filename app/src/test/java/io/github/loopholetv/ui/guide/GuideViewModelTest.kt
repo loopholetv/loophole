@@ -16,6 +16,8 @@ import io.github.loopholetv.ui.manage.EditActions
 import io.github.loopholetv.ui.manage.FakeEditActions
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
+import io.github.loopholetv.player.PreviewHold
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -99,6 +101,8 @@ class GuideViewModelTest {
         }
     }
     private val playlistsOn = MutableStateFlow(1)
+    private val previewHold = PreviewHold()
+    private val sleepExpired = MutableSharedFlow<Unit>()
     private var lookups: List<ChannelEntity> = all
 
     /** Like ShiftedProgrammes.inWindow: every key in the map, its rows shifted (shown = stored + shift). */
@@ -133,6 +137,8 @@ class GuideViewModelTest {
         saveScope = { saved += it },
         edits = dbEdits,
         playlistsOn = playlistsOn,
+        previewHold = previewHold,
+        sleepExpired = sleepExpired,
     )
 
     @Test fun groupsListStartsWithFavouritesThenAllChannels() = runTest {
@@ -247,6 +253,60 @@ class GuideViewModelTest {
         // Started again while still previewing: no reconnect.
         vm.onScreenStarted()
         assertEquals(listOf(1L, 1L), playback.played)
+    }
+
+    @Test fun heldPreviewNotResumedOnReturn() = runTest {
+        val vm = vm()
+        vm.onOk(all[0], null)
+        vm.onOk(all[2], null)
+        playback.stop() // the player stopped it (external player hand-off, sleep timer)
+        previewHold.hold()
+        vm.onScreenStarted()
+        advanceUntilIdle()
+        assertEquals(listOf(1L, 3L), playback.played)
+        assertNull(vm.previewing.value)
+        // The hold is one-shot: the next return with a preview replays it again.
+        vm.onOk(all[1], null)
+        playback.stop()
+        vm.onScreenStarted()
+        advanceUntilIdle()
+        assertEquals(listOf(1L, 3L, 2L, 2L), playback.played)
+    }
+
+    @Test fun unheldPreviewStillResumes() = runTest {
+        val vm = vm()
+        vm.onOk(all[2], null)
+        playback.stop()
+        vm.onScreenStarted()
+        advanceUntilIdle()
+        assertEquals(listOf(3L, 3L), playback.played)
+        assertEquals(all[2], vm.previewing.value)
+    }
+
+    @Test fun staleHoldDiscardedWhenSomethingPlays() = runTest {
+        val vm = vm()
+        backgroundScope.launch { vm.focused.collect {} }
+        vm.onOk(all[0], null)
+        previewHold.hold()
+        // Back with the player still playing (not stopped): the preview follows it, and the hold
+        // does not linger to blank a later, ordinary return.
+        vm.onScreenStarted()
+        advanceUntilIdle()
+        assertFalse(previewHold.consume())
+        assertEquals(all[0], vm.previewing.value)
+    }
+
+    @Test fun sleepExpiryClearsPreview() = runTest {
+        val vm = vm()
+        runCurrent()
+        vm.onOk(all[0], null)
+        playback.stop() // the timer stops playback itself
+        sleepExpired.emit(Unit)
+        runCurrent()
+        assertNull(vm.previewing.value)
+        vm.onScreenStarted()
+        advanceUntilIdle()
+        assertEquals(listOf(1L), playback.played)
     }
 
     @Test fun screenStartWithoutPreviewPlaysNothing() = runTest {

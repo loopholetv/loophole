@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.BehindLiveWindowException
@@ -23,6 +25,20 @@ import io.github.loopholetv.data.stalker.StalkerLinkException
 import io.github.loopholetv.data.stalker.StalkerSessions
 import io.github.loopholetv.data.stalker.testHttp
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.TrackGroup
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
+import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.DecoderChoice
+import io.github.loopholetv.data.settings.Passthrough
+import io.github.loopholetv.data.settings.PlaybackSettings
+import io.github.loopholetv.player.engine.EngineParts
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
@@ -55,13 +71,32 @@ private class SeamPlayer(private val real: ExoPlayer) : ExoPlayer by real {
     val listeners = mutableListOf<Player.Listener>()
     var fakeError: ExoPlaybackException? = null
     var fakeState: Int? = null
+    var fakeTracks: Tracks? = null
+    /** Ordered log of stop/prepare calls; tests may append their own events to it. */
+    val events = mutableListOf<String>()
+    var onPrepare: () -> Unit = {}
+    var lastSource: MediaSource? = null
 
     override fun prepare() {
         prepareCount++
+        events += "prepare"
+        onPrepare()
         fakeError = null
         fakeState = null
         real.prepare()
     }
+
+    override fun stop() {
+        events += "stop"
+        real.stop()
+    }
+
+    override fun setMediaSource(mediaSource: MediaSource) {
+        lastSource = mediaSource
+        real.setMediaSource(mediaSource)
+    }
+
+    override fun getCurrentTracks(): Tracks = fakeTracks ?: real.currentTracks
 
     override fun seekToDefaultPosition() {
         seekToDefaultCount++
@@ -715,5 +750,624 @@ class PlaybackManagerTest {
         assertEquals(PlaybackState.Buffering(1), manager.state.value)
         assertEquals(listOf(1L), fake.resolved)
         assertEquals(2, prepareCount)
+    }
+
+    // ---- Engine, settings, tracks and hand-off ----
+
+    private lateinit var engine: EngineParts
+    private val settingsFlow = MutableStateFlow(PlaybackSettings())
+    private var settingsGate: CompletableDeferred<Unit>? = null
+    private var prefs = ChannelPlaybackPrefs.NONE
+    /** What a channel-prefs observer sees; tests set it together with [prefs] (a saved edit). */
+    private val prefsFlow = MutableStateFlow(ChannelPlaybackPrefs.NONE)
+
+    /** Saves [p] for the channel, as an edit from any screen does: the read and the observer both see it. */
+    private fun saveChannelPrefs(p: ChannelPlaybackPrefs) {
+        prefs = p
+        prefsFlow.value = p
+    }
+    /** When set, the play-time read returns this instead of the live flow's value (a lagging snapshot). */
+    private var staleSnapshot: PlaybackSettings? = null
+
+    /** A manager wired to [engine], [settingsFlow] (or [settings]), an optional [settingsGate] and [prefs]. */
+    private fun engineManager(
+        resolver: FakeResolver = FakeResolver(),
+        settings: kotlinx.coroutines.flow.Flow<PlaybackSettings> = settingsFlow,
+    ): FakeResolver {
+        manager.release()
+        engine = EngineParts()
+        exo = TestExoPlayerBuilder(context).setLoadControl(engine.loadControl).build()
+        seam = SeamPlayer(exo)
+        manager = PlaybackManager(
+            context, OkHttpClient(), seam, clock = { nowMs }, resolver = resolver,
+            engine = engine,
+            settings = settings,
+            awaitSettings = { settingsGate?.await(); staleSnapshot ?: settingsFlow.value },
+            channelPrefs = { prefs },
+            observeChannelPrefs = { prefsFlow },
+            evictConnections = { seam.events += "evict" },
+        )
+        return resolver
+    }
+
+    private val params get() = exo.trackSelectionParameters as DefaultTrackSelector.Parameters
+
+    private fun audioGroup(id: String, vararg langs: String) = Tracks.Group(
+        TrackGroup(
+            id,
+            *langs.map { lang ->
+                Format.Builder().setSampleMimeType(MimeTypes.AUDIO_AAC).setLanguage(lang).setChannelCount(2).build()
+            }.toTypedArray(),
+        ),
+        false,
+        IntArray(langs.size) { C.FORMAT_HANDLED },
+        BooleanArray(langs.size) { it == 0 },
+    )
+
+    /** Reports READY through the listeners so the manager's state becomes Playing. */
+    private fun reportReady() {
+        seam.fakeState = Player.STATE_READY
+        seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_READY) }
+        assertTrue(manager.state.value is PlaybackState.Playing)
+    }
+
+    @Test
+    fun firstPlayAwaitsSettings() {
+        settingsGate = CompletableDeferred()
+        engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        assertEquals(0, prepareCount)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+
+        settingsGate!!.complete(Unit)
+        idleMain()
+        assertEquals(1, prepareCount)
+    }
+
+    @Test
+    fun channelDecoderOverrideAppliedBeforeLoad() {
+        prefs = ChannelPlaybackPrefs(video = DecoderChoice.SOFTWARE)
+        engineManager()
+        var atPrepare: Pair<DecoderChoice, DecoderChoice>? = null
+        seam.onPrepare = { atPrepare = engine.codecPolicy.video to engine.codecPolicy.audio }
+        manager.play(channel(1, "/live/1.ts"))
+        assertEquals(DecoderChoice.SOFTWARE to DecoderChoice.HARDWARE, atPrepare)
+    }
+
+    @Test
+    fun settingsDecoderUsedWhenNoOverride() {
+        settingsFlow.value = PlaybackSettings(videoDecoder = DecoderChoice.SOFTWARE, audioDecoder = DecoderChoice.SOFTWARE)
+        engineManager()
+        var atPrepare: Pair<DecoderChoice, DecoderChoice>? = null
+        seam.onPrepare = { atPrepare = engine.codecPolicy.video to engine.codecPolicy.audio }
+        manager.play(channel(1, "/live/1.ts"))
+        assertEquals(DecoderChoice.SOFTWARE to DecoderChoice.SOFTWARE, atPrepare)
+
+        prefs = ChannelPlaybackPrefs(audio = DecoderChoice.HARDWARE)
+        manager.play(channel(2, "/live/2.ts"))
+        assertEquals(DecoderChoice.SOFTWARE to DecoderChoice.HARDWARE, atPrepare)
+    }
+
+    @Test
+    fun passthroughAndDtsAppliedBeforeLoad() {
+        settingsFlow.value = PlaybackSettings(passthrough = Passthrough.OFF, decodeDtsToPcm = true)
+        engineManager()
+        var atPrepare: Pair<Passthrough, Boolean>? = null
+        seam.onPrepare = { atPrepare = engine.sinkPolicy.passthrough to engine.sinkPolicy.decodeDtsToPcm }
+        manager.play(channel(1, "/live/1.ts"))
+        assertEquals(Passthrough.OFF to true, atPrepare)
+    }
+
+    @Test
+    fun bufferPresetSetBeforeLoad() {
+        settingsFlow.value = PlaybackSettings(bufferPreset = BufferPreset.LARGE)
+        engineManager()
+        var pendingAtPrepare: BufferPreset? = null
+        seam.onPrepare = { pendingAtPrepare = engine.loadControl.pendingPreset }
+        manager.play(channel(1, "/live/1.ts"))
+        assertEquals(BufferPreset.LARGE, pendingAtPrepare)
+        RobolectricUtil.runMainLooperUntil { engine.loadControl.activePreset == BufferPreset.LARGE }
+    }
+
+    @Test
+    fun mediaSourceWrappedForAudioDelay() {
+        engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        assertTrue(seam.lastSource is AudioDelayMediaSource)
+    }
+
+    @Test
+    fun audioDelayFollowsSettingsLive() {
+        engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        val stops = seam.events.count { it == "stop" }
+
+        settingsFlow.value = settingsFlow.value.copy(audioDelayMs = 200)
+        idleMain()
+
+        assertEquals(200, engine.audioDelay.delayMs)
+        assertEquals(stops, seam.events.count { it == "stop" })
+        assertEquals(1, prepareCount)
+        assertTrue(manager.state.value is PlaybackState.Playing)
+    }
+
+    @Test
+    fun setAudioDelayAppliesWithoutRestart() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+
+        manager.setAudioDelay(237)
+        assertEquals(250, engine.audioDelay.delayMs)
+        manager.setAudioDelay(5_000)
+        assertEquals(1_000, engine.audioDelay.delayMs)
+        idleMain()
+
+        assertEquals(1, prepareCount)
+        assertEquals(listOf(1L), fake.resolved)
+        assertTrue(manager.state.value is PlaybackState.Playing)
+    }
+
+    @Test
+    fun zapClearsTrackOverridesKeepsPreferences() {
+        settingsFlow.value = PlaybackSettings(audioLanguage = "de")
+        engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        seam.fakeTracks = Tracks(listOf(audioGroup("a", "de", "en")))
+        manager.selectTrack(TrackType.AUDIO, TrackChoice.Pick(TrackId("a", 1)))
+        assertEquals(1, params.overrides.size)
+
+        seam.fakeTracks = null
+        manager.play(channel(2, "/live/2.ts"))
+
+        assertTrue(params.overrides.isEmpty())
+        assertEquals(listOf("de"), params.preferredAudioLanguages)
+    }
+
+    @Test
+    fun tracksFlowUpdatesWhenGroupsArriveLate() {
+        engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        assertTrue(manager.tracks.value.audio.isEmpty())
+
+        val late = Tracks(listOf(audioGroup("a", "en", "de")))
+        seam.fakeTracks = late
+        seam.listeners.forEach { it.onTracksChanged(late) }
+
+        assertEquals(2, manager.tracks.value.audio.size)
+
+        manager.stop()
+        assertEquals(PlayerTracks.NONE, manager.tracks.value)
+    }
+
+    @Test
+    fun zapClearsTracksUntilNewTracksArrive() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        val a = Tracks(listOf(audioGroup("a", "en", "de")))
+        seam.fakeTracks = a
+        seam.listeners.forEach { it.onTracksChanged(a) }
+        assertEquals(2, manager.tracks.value.audio.size)
+
+        fake.gate = CompletableDeferred()
+        manager.play(channel(2, "/live/2.ts"))
+        assertEquals(PlayerTracks.NONE, manager.tracks.value)
+        // A late event from the previous stream while the new one resolves publishes nothing.
+        seam.listeners.forEach { it.onTracksChanged(a) }
+        assertEquals(PlayerTracks.NONE, manager.tracks.value)
+
+        fake.gate!!.complete(Unit)
+        idleMain()
+        val b = Tracks(listOf(audioGroup("b", "fr")))
+        seam.fakeTracks = b
+        seam.listeners.forEach { it.onTracksChanged(b) }
+        assertEquals(1, manager.tracks.value.audio.size)
+    }
+
+    @Test
+    fun engineSettingChangeWhilePlayingRestartsOnce() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        var seenAtResolve: Pair<Int, Int>? = null
+        fake.onResolve = { seenAtResolve = exo.playbackState to exo.mediaItemCount }
+        seam.events.clear()
+
+        settingsFlow.value = settingsFlow.value.copy(videoDecoder = DecoderChoice.SOFTWARE)
+        idleMain()
+
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertEquals(2, prepareCount)
+        // The old stream was released before the new link was resolved.
+        assertEquals(Player.STATE_IDLE to 0, seenAtResolve)
+        assertEquals("prepare", seam.events.last())
+        assertEquals(1, seam.events.count { it == "prepare" })
+        assertEquals(DecoderChoice.SOFTWARE, engine.codecPolicy.video)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+
+        // A setting that applies live does not restart again.
+        settingsFlow.value = settingsFlow.value.copy(audioLanguage = "en")
+        idleMain()
+        assertEquals(listOf(1L, 1L), fake.resolved)
+    }
+
+    @Test
+    fun restartUsesTriggeringSettingsWhenSnapshotIsStale() {
+        staleSnapshot = PlaybackSettings()
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        var atPrepare: Pair<DecoderChoice, BufferPreset>? = null
+        seam.onPrepare = { atPrepare = engine.codecPolicy.video to engine.loadControl.pendingPreset }
+
+        settingsFlow.value = settingsFlow.value.copy(videoDecoder = DecoderChoice.SOFTWARE, bufferPreset = BufferPreset.LARGE)
+        idleMain()
+
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertEquals(DecoderChoice.SOFTWARE to BufferPreset.LARGE, atPrepare)
+        // What was applied matches the live value, so a later unrelated change does not restart again.
+        settingsFlow.value = settingsFlow.value.copy(audioLanguage = "en")
+        idleMain()
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertEquals(2, prepareCount)
+    }
+
+    @Test
+    fun streamStartPrefersLiveSettingsOverStaleSnapshot() {
+        staleSnapshot = PlaybackSettings()
+        engineManager()
+        settingsFlow.value = PlaybackSettings(audioDecoder = DecoderChoice.SOFTWARE)
+        idleMain()
+        var atPrepare: DecoderChoice? = null
+        seam.onPrepare = { atPrepare = engine.codecPolicy.audio }
+
+        manager.play(channel(1, "/live/1.ts"))
+
+        assertEquals(DecoderChoice.SOFTWARE, atPrepare)
+    }
+
+    @Test
+    fun endedSettingsFlowFallsBackToPlayTimeRead() {
+        // The live updates stopped after a read error (caught upstream): the last value is frozen.
+        val ended = kotlinx.coroutines.flow.flow {
+            emit(PlaybackSettings(bufferPreset = BufferPreset.LARGE))
+            throw IOException("settings unreadable")
+        }.catch { }
+        engineManager(settings = ended)
+        idleMain()
+        settingsFlow.value = PlaybackSettings(bufferPreset = BufferPreset.SMALL)
+        var atPrepare: BufferPreset? = null
+        seam.onPrepare = { atPrepare = engine.loadControl.pendingPreset }
+
+        manager.play(channel(1, "/live/1.ts"))
+
+        assertEquals(BufferPreset.SMALL, atPrepare)
+    }
+
+    @Test
+    fun failingSettingsFlowNeverCrashesAndPlaysWithPlayTimeRead() {
+        val failing = kotlinx.coroutines.flow.flow<PlaybackSettings> {
+            emit(PlaybackSettings(audioDecoder = DecoderChoice.SOFTWARE))
+            throw IOException("settings unreadable")
+        }
+        engineManager(settings = failing)
+        idleMain()
+        var atPrepare: DecoderChoice? = null
+        seam.onPrepare = { atPrepare = engine.codecPolicy.audio }
+
+        manager.play(channel(1, "/live/1.ts"))
+
+        assertEquals(DecoderChoice.HARDWARE, atPrepare)
+        assertEquals(1, prepareCount)
+    }
+
+    @Test
+    fun engineRestartKeepsTrackPicks() {
+        engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        seam.fakeTracks = Tracks(listOf(audioGroup("a", "de", "en")))
+        manager.selectTrack(TrackType.AUDIO, TrackChoice.Pick(TrackId("a", 1)))
+        val picked = params.overrides
+
+        settingsFlow.value = settingsFlow.value.copy(passthrough = Passthrough.OFF)
+        idleMain()
+
+        assertEquals(2, prepareCount)
+        assertEquals(picked, params.overrides)
+    }
+
+    @Test
+    fun restartOfThePlayingChannelKeepsTrackPicks() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        seam.fakeTracks = Tracks(listOf(audioGroup("a", "de", "en")))
+        manager.selectTrack(TrackType.AUDIO, TrackChoice.Pick(TrackId("a", 1)))
+        val picked = params.overrides
+
+        manager.restart(channel(1, "/live/1.ts"))
+        idleMain()
+
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertEquals(2, prepareCount)
+        assertEquals(picked, params.overrides)
+    }
+
+    @Test
+    fun decoderEditOnPreviewingChannelRestartsOnceAndFullScreenKeepsIt() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.play(ch)
+        idleMain()
+        reportReady()
+        var atPrepare: DecoderChoice? = null
+        seam.onPrepare = { atPrepare = engine.codecPolicy.video }
+
+        // Edited from the guide's or the channel editor's options while it previews.
+        saveChannelPrefs(ChannelPlaybackPrefs(video = DecoderChoice.SOFTWARE))
+        idleMain()
+
+        assertEquals("one reconnect", listOf(1L, 1L), fake.resolved)
+        assertEquals(DecoderChoice.SOFTWARE, atPrepare)
+        reportReady()
+
+        // Opening it full screen resumes the same stream, with the new decoder already in use.
+        manager.play(ch)
+        idleMain()
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertEquals(2, prepareCount)
+        assertEquals(DecoderChoice.SOFTWARE, engine.codecPolicy.video)
+    }
+
+    @Test
+    fun decoderEditBeforeFirstStartIsReadByTheStartWithoutARestart() {
+        saveChannelPrefs(ChannelPlaybackPrefs(audio = DecoderChoice.SOFTWARE))
+        val fake = engineManager()
+        var atPrepare: DecoderChoice? = null
+        seam.onPrepare = { atPrepare = engine.codecPolicy.audio }
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        assertEquals(DecoderChoice.SOFTWARE, atPrepare)
+        assertEquals(listOf(1L), fake.resolved)
+    }
+
+    @Test
+    fun decoderEditOnChannelShowingAnErrorRestartsIt() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        seam.fakeState = Player.STATE_ENDED
+        seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_ENDED) }
+        assertTrue(manager.state.value is PlaybackState.Error)
+
+        saveChannelPrefs(ChannelPlaybackPrefs(video = DecoderChoice.SOFTWARE))
+        idleMain()
+
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+    }
+
+    @Test
+    fun nonDecoderEditOrStoppedChannelDoesNotRestart() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        saveChannelPrefs(ChannelPlaybackPrefs(aspect = io.github.loopholetv.data.settings.AspectMode.ZOOM, externalPlayer = "ask"))
+        idleMain()
+        assertEquals(listOf(1L), fake.resolved)
+
+        manager.stop()
+        saveChannelPrefs(ChannelPlaybackPrefs(video = DecoderChoice.SOFTWARE))
+        idleMain()
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+    }
+
+    @Test
+    fun remintKeepsTrackOverrides() {
+        val forbidden = serve { MockResponse().setResponseCode(403) }
+        try {
+            val fake = FakeResolver { forbidden.url("/live/${it.id}.ts").toString() }
+            fake.remint = true
+            engineManager(fake)
+            manager.play(channel(1, "/unused"))
+            seam.fakeTracks = Tracks(listOf(audioGroup("a", "de", "en")))
+            manager.selectTrack(TrackType.AUDIO, TrackChoice.Pick(TrackId("a", 1)))
+            assertEquals(1, params.overrides.size)
+
+            RobolectricUtil.runMainLooperUntil { fake.resolved.size == 2 }
+            idleMain()
+
+            assertEquals(1, params.overrides.size)
+        } finally {
+            forbidden.shutdown()
+        }
+    }
+
+    @Test
+    fun handOffReturnsNullWhenPlayStartsDuringResolve() {
+        val fake = engineManager()
+        val handOffGate = CompletableDeferred<Unit>()
+        fake.gate = handOffGate
+        var done = false
+        var result: Handoff? = null
+        kotlinx.coroutines.MainScope().launch {
+            result = manager.handOff(channel(2, "/live/2.ts"))
+            done = true
+        }
+        RobolectricUtil.runMainLooperUntil { fake.resolved.isNotEmpty() }
+
+        // The user starts another channel while the hand-off link is still resolving.
+        fake.gate = null
+        manager.play(channel(3, "/live/3.ts"))
+        handOffGate.complete(Unit)
+        RobolectricUtil.runMainLooperUntil { done }
+
+        assertNull(result)
+        assertEquals(PlaybackState.Buffering(3), manager.state.value)
+        assertEquals("3", exo.currentMediaItem!!.mediaId)
+    }
+
+    @Test
+    fun firstSettingsEmissionWhilePlayingDoesNotRestart() {
+        settingsFlow.value = PlaybackSettings(bufferPreset = BufferPreset.SMALL)
+        settingsGate = CompletableDeferred()
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain() // the collector sees its first value while the play waits for settings
+        assertEquals(0, prepareCount)
+
+        settingsGate!!.complete(Unit)
+        idleMain()
+
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(1, prepareCount)
+        assertEquals(BufferPreset.SMALL, engine.loadControl.pendingPreset)
+    }
+
+    @Test
+    fun languageChangeWhilePlayingDoesNotRestart() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        seam.fakeTracks = Tracks(listOf(audioGroup("a", "de", "en")))
+        manager.selectTrack(TrackType.AUDIO, TrackChoice.Pick(TrackId("a", 1)))
+
+        settingsFlow.value = settingsFlow.value.copy(audioLanguage = "fr", subtitleLanguage = "de", preferSurround = false)
+        idleMain()
+
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(1, prepareCount)
+        assertEquals(listOf("fr"), params.preferredAudioLanguages)
+        assertEquals(listOf("de"), params.preferredTextLanguages)
+        assertEquals(2, params.maxAudioChannelCount)
+        // The current pick survives a live preference change.
+        assertEquals(1, params.overrides.size)
+    }
+
+    @Test
+    fun engineChangeWhileIdleDoesNotPlay() {
+        val fake = engineManager()
+        settingsFlow.value = settingsFlow.value.copy(bufferPreset = BufferPreset.LARGE)
+        idleMain()
+        assertTrue(fake.resolved.isEmpty())
+        assertEquals(PlaybackState.Idle, manager.state.value)
+
+        manager.play(channel(1, "/live/1.ts"))
+        manager.stop()
+        settingsFlow.value = settingsFlow.value.copy(videoDecoder = DecoderChoice.SOFTWARE)
+        idleMain()
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+        assertEquals(0, exo.mediaItemCount)
+    }
+
+    @Test
+    fun tunnelingOnlyWithFullScreenSurfaceAndSetting() {
+        settingsFlow.value = PlaybackSettings(tunneling = true)
+        engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        assertFalse(params.tunnelingEnabled)
+
+        manager.setFullScreenSurface(true)
+        assertTrue(params.tunnelingEnabled)
+
+        manager.play(channel(2, "/live/2.ts"))
+        assertTrue(params.tunnelingEnabled)
+
+        settingsFlow.value = settingsFlow.value.copy(tunneling = false)
+        idleMain()
+        assertFalse(params.tunnelingEnabled)
+
+        settingsFlow.value = settingsFlow.value.copy(tunneling = true)
+        idleMain()
+        assertTrue(params.tunnelingEnabled)
+        manager.setFullScreenSurface(false)
+        assertFalse(params.tunnelingEnabled)
+    }
+
+    @Test
+    fun softwareAudioFailureRetriesWithHardwareOnce() {
+        settingsFlow.value = PlaybackSettings(audioDecoder = DecoderChoice.SOFTWARE)
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        val audio = Format.Builder().setSampleMimeType(MimeTypes.AUDIO_AC3).build()
+        fun decodeError() = ExoPlaybackException.createForRenderer(
+            IllegalStateException("decode"), "FfmpegAudioRenderer", 1, audio, C.FORMAT_HANDLED, false,
+            PlaybackException.ERROR_CODE_DECODING_FAILED,
+        )
+
+        var error = decodeError()
+        seam.fakeError = error
+        seam.listeners.forEach { it.onPlayerError(error) }
+
+        assertEquals(DecoderChoice.HARDWARE, engine.codecPolicy.audio)
+        assertEquals(2, prepareCount)
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+
+        error = decodeError()
+        seam.fakeError = error
+        seam.listeners.forEach { it.onPlayerError(error) }
+        assertTrue(manager.state.value is PlaybackState.Error)
+        assertEquals(2, prepareCount)
+
+        // A new play follows Settings again.
+        manager.play(channel(2, "/live/2.ts"))
+        assertEquals(DecoderChoice.SOFTWARE, engine.codecPolicy.audio)
+    }
+
+    @Test
+    fun handOffStopsAndEvictsBeforeResolve() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        seam.events.clear()
+        fake.onResolve = { seam.events += "resolve" }
+
+        val handoff = runBlocking { manager.handOff(channel(2, "/live/2.ts")) }
+        idleMain()
+
+        assertEquals(listOf("stop", "evict", "resolve", "evict"), seam.events)
+        assertEquals(server.url("/live/2.ts").toString(), handoff!!.stream.url)
+        assertFalse(handoff.hls)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+        assertEquals(0, exo.mediaItemCount)
+        assertEquals(1, prepareCount)
+        assertEquals(1, fake.keepAlives)
+    }
+
+    @Test
+    fun handOffResolveFailureReturnsNull() {
+        val fake = engineManager()
+        fake.failure = IOException("no link")
+        assertNull(runBlocking { manager.handOff(channel(2, "/live/2.ts")) })
+        assertEquals(PlaybackState.Idle, manager.state.value)
+        assertEquals(0, prepareCount)
+    }
+
+    @Test
+    fun handOffHlsFlagFromUrl() {
+        engineManager(FakeResolver { "http://example.test/live/index.m3u8" })
+        val handoff = runBlocking { manager.handOff(channel(2, "/unused")) }
+        assertTrue(handoff!!.hls)
+        assertEquals(0, prepareCount)
     }
 }

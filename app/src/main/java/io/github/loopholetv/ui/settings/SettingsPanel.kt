@@ -49,10 +49,11 @@ sealed interface SettingsPage {
     /** "Groups and channels" of playlist [id]. */
     data class Editor(val id: Long) : SettingsPage { override val key = "editor:$id" }
     data object Epg : SettingsPage { override val key = "epg" }
+    data object Playback : SettingsPage { override val key = "playback" }
     data object About : SettingsPage { override val key = "about" }
 
     companion object {
-        private val fixed = listOf(Sections, General, Playlists, Epg, About).associateBy { it.key }
+        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, About).associateBy { it.key }
 
         /** Unknown or malformed keys give [Sections]. */
         fun fromKey(key: String): SettingsPage {
@@ -76,10 +77,11 @@ private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     is SettingsPage.Playlist -> ui.playlists.firstOrNull { it.id == id }?.name ?: "Playlists"
     is SettingsPage.Editor -> ui.playlists.firstOrNull { it.id == id }?.name ?: "Playlists"
     SettingsPage.Epg -> "EPG"
+    SettingsPage.Playback -> "Playback"
     SettingsPage.About -> "About"
 }
 
-private val DISABLED_SECTIONS = listOf("Appearance", "Playback", "Remote control", "Parental controls", "Other")
+internal val DISABLED_SECTIONS = listOf("Appearance", "Remote control", "Parental controls", "Other")
 private const val COMING_LATER = "Coming in a later update"
 
 /**
@@ -181,6 +183,7 @@ fun SettingsPanel(
                     onBack = { go(SettingsPage.Playlist(p.id), EDITOR_KEY) },
                 )
                 SettingsPage.Epg -> EpgPage(ui, vm, focusKey, consumeFocus)
+                SettingsPage.Playback -> PlaybackPage(ui, vm, focusKey, consumeFocus, vm.pipSupported)
                 SettingsPage.About -> AboutPage()
             }
         }
@@ -197,7 +200,7 @@ internal fun playlistRowKey(id: Long) = "row:$id"
 internal fun PillButton(label: String, modifier: Modifier = Modifier, onFocus: () -> Unit = {}, onClick: () -> Unit) =
     OnboardingPillButton(label, selected = false, modifier = modifier, containerColor = Tokens.Surface, onFocus = onFocus, onClick = onClick)
 
-private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.About)
+private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.About)
 
 @Composable
 private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
@@ -207,7 +210,8 @@ private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
         SectionItem("General", requesters.getValue(SettingsPage.General)) { onOpen(SettingsPage.General) }
         SectionItem("Playlists", requesters.getValue(SettingsPage.Playlists)) { onOpen(SettingsPage.Playlists) }
         SectionItem("EPG", requesters.getValue(SettingsPage.Epg)) { onOpen(SettingsPage.Epg) }
-        // Not focusable: D-pad moves straight from EPG to About.
+        SectionItem("Playback", requesters.getValue(SettingsPage.Playback)) { onOpen(SettingsPage.Playback) }
+        // Not focusable: D-pad moves straight from Playback to About.
         DISABLED_SECTIONS.forEach { DisabledSection(it) }
         SectionItem("About", requesters.getValue(SettingsPage.About)) { onOpen(SettingsPage.About) }
     }

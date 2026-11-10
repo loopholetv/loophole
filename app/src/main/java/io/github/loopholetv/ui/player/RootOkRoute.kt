@@ -15,7 +15,7 @@ enum class RootOkAction {
     /** A short press that began at the root: OK as before (overlay / Try again / commit). */
     Click,
 
-    /** Held OK or Menu on bare video or the banner: the current channel's options. */
+    /** Held OK or Menu on bare video or the banner: the quick menu. */
     LongClick,
 
     /** OK while typing a number: commit at once (key-down, no hold detection). */
@@ -33,21 +33,23 @@ enum class RootPress {
     Swallow,
 }
 
-data class RootKeyState(val overlayVisible: Boolean, val numberEntry: Boolean, val optionsOpen: Boolean)
+/** [dialogOpen]: the quick menu, one of its lists, or a channel's options or edit is open. */
+data class RootKeyState(val overlayVisible: Boolean, val numberEntry: Boolean, val dialogOpen: Boolean)
 
 data class RootOkResult(val action: RootOkAction, val press: RootPress)
 
 /**
  * Routes OK/Menu at the player root. Only a press that BEGINS at the root (key-down, repeat 0,
  * without the overlay) can click or long-click: the tail of a press that began on a footer tile
- * (whose long click hid the overlay before the options dialog took the keys) is swallowed. Menu
- * acts on its first key-down only, never while typing a number. With the overlay up the tiles
- * handle OK and Menu, except OK while typing a number, which commits.
+ * (whose long click hid the overlay before the options dialog took the keys) and every OK or Menu
+ * event while a dialog is open are swallowed. Menu acts on its first key-down only, never while
+ * typing a number. With the overlay up the tiles handle OK and Menu, except OK while typing a
+ * number, which commits.
  */
 fun rootOkRoute(state: RootKeyState, keyCode: Int, phase: KeyPhase, repeat: Int, press: RootPress): RootOkResult {
     val isOk = isOkKey(keyCode)
     if (!isOk && keyCode != KeyEvent.KEYCODE_MENU) return RootOkResult(RootOkAction.PassThrough, press)
-    if (state.optionsOpen) return RootOkResult(RootOkAction.Consume, RootPress.None)
+    if (state.dialogOpen) return RootOkResult(RootOkAction.Consume, RootPress.None)
     if (!isOk) {
         return when {
             state.overlayVisible -> RootOkResult(RootOkAction.PassThrough, press)

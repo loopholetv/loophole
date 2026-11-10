@@ -14,6 +14,7 @@ import io.github.loopholetv.data.repo.ImportResult
 import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
 import io.github.loopholetv.data.repo.errorCopy
 import io.github.loopholetv.data.settings.AppSettings
+import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.asSetting
@@ -130,6 +131,8 @@ class SettingsViewModel(
     private val setUseSourceEpg: suspend (Long, Boolean) -> Unit = { _, _ -> },
     /** The playlist of the channel that is buffering, playing or failed; null when idle. */
     playingPlaylistId: Flow<Long?> = flowOf(null),
+    /** Whether this device can show picture-in-picture; options for it are hidden otherwise. */
+    val pipSupported: Boolean = false,
 ) : ViewModel() {
     private val work: CoroutineScope get() = workScope ?: viewModelScope
     private val ops = MutableStateFlow(Ops())
@@ -337,6 +340,10 @@ class SettingsViewModel(
         work.launch { updateSettings(transform) }
     }
 
+    /** Changes only the player settings. */
+    fun setPlayback(transform: (PlaybackSettings) -> PlaybackSettings) =
+        setOption { it.copy(playback = transform(it.playback)) }
+
     fun requestClearEpg() = ops.update { it.copy(confirmClearEpg = true, epgCleared = false) }
 
     fun cancelClearEpg() = ops.update { it.copy(confirmClearEpg = false) }
@@ -389,6 +396,7 @@ class SettingsViewModel(
                         .map { it.channelId() }
                         .distinctUntilChanged()
                         .map { id -> id?.let { playlistOfChannel(it) { cid -> c.db.channelDao().byId(cid)?.playlistId } } },
+                    pipSupported = c.pipSupported,
                 ) as T
             }
         }

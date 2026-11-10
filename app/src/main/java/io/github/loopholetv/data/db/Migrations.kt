@@ -101,7 +101,21 @@ val MIGRATION_3_4: Migration = SqlMigration(
     "UPDATE `playlists` SET `manualEpgUrl` = NULL",
 )
 
-val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+/**
+ * v4 → v5: per-channel playback overrides on `channel_prefs` (video and audio decoder, external
+ * player, aspect), all nullable so existing rows keep following the settings. SQL matches Room's
+ * schema 5 export.
+ */
+val MIGRATION_4_5: Migration = SqlMigration(
+    4,
+    5,
+    "ALTER TABLE `channel_prefs` ADD COLUMN `videoDecoder` TEXT",
+    "ALTER TABLE `channel_prefs` ADD COLUMN `audioDecoder` TEXT",
+    "ALTER TABLE `channel_prefs` ADD COLUMN `externalPlayer` TEXT",
+    "ALTER TABLE `channel_prefs` ADD COLUMN `aspectMode` TEXT",
+)
+
+val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */
 private class SqlMigration(from: Int, to: Int, private vararg val statements: String) : Migration(from, to) {

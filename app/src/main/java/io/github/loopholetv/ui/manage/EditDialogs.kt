@@ -97,9 +97,19 @@ fun TextEntryDialog(
     }
 }
 
-/** Pick one of [options] in its own dialog window; focus starts on [selected] (marked ✓). */
+/**
+ * Pick one of [options] in its own dialog window; focus starts on [selected] (marked ✓). [note] is
+ * an optional line of plain text below the list; it never takes focus.
+ */
 @Composable
-fun ChoiceDialog(title: String, options: List<String>, selected: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+fun ChoiceDialog(
+    title: String,
+    options: List<String>,
+    selected: Int,
+    onPick: (Int) -> Unit,
+    onDismiss: () -> Unit,
+    note: String? = null,
+) {
     val start = selected.coerceIn(0, (options.size - 1).coerceAtLeast(0))
     val list = rememberLazyListState(initialFirstVisibleItemIndex = (start - 3).coerceAtLeast(0))
     val focus = remember { FocusRequester() }
@@ -121,6 +131,7 @@ fun ChoiceDialog(title: String, options: List<String>, selected: Int, onPick: (I
                 )
             }
         }
+        if (note != null) Text(note, style = MaterialTheme.typography.bodySmall, color = Tokens.Muted)
     }
 }
 

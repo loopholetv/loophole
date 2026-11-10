@@ -18,6 +18,8 @@ import io.github.loopholetv.data.repo.PlaylistRepository
 import io.github.loopholetv.data.repo.ScopedChannels
 import io.github.loopholetv.data.repo.RefreshCoordinator
 import io.github.loopholetv.data.settings.SettingsStore
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
 import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.player.HistoryRecorder
 import io.github.loopholetv.player.Playback
@@ -88,10 +90,17 @@ class AppContainer(context: Context) {
         val settings = settingsSnapshot
         PlaybackManager(
             appContext, http,
+            exoPlayer = io.github.loopholetv.player.engine.buildEnginePlayer(appContext, engineParts),
             resolver = io.github.loopholetv.player.PlaylistStreamResolver(
                 db.playlistDao()::byId, { settings.await() },
                 io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME), stalkerSessions, stalkerClient,
             ),
+            engine = engineParts,
+            // A read error ends the live updates and keeps what is applied; it never resets to defaults.
+            settings = settingsStore.settings.map { it.playback }.catch { },
+            awaitSettings = { settings.await().playback },
+            channelPrefs = { channelPlayback.get(io.github.loopholetv.data.db.ChannelRef(it.playlistId, it.key)) },
+            observeChannelPrefs = { channelPlayback.observe(io.github.loopholetv.data.db.ChannelRef(it.playlistId, it.key)) },
         )
     }
 
@@ -150,6 +159,40 @@ class AppContainer(context: Context) {
             p?.userAgent,
             settingsStore.current().userAgent,
             io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME),
+        )
+    }
+
+    /** Per-channel playback overrides (decoders, external player, aspect), read at play time. */
+    val channelPlayback: io.github.loopholetv.data.repo.ChannelPlayback by lazy {
+        io.github.loopholetv.data.repo.ChannelPlayback(db.channelPrefsDao())
+    }
+
+    /** Whether the full-screen player is showing, for the picture-in-picture decision on leaving. */
+    val pipGate: io.github.loopholetv.player.PipGate by lazy { io.github.loopholetv.player.PipGate() }
+
+    /** Whether this device supports picture-in-picture; fixed for the process. */
+    val pipSupported: Boolean by lazy { io.github.loopholetv.player.pipSupported(appContext) }
+
+    /** Main-thread scope for work that must touch the player. */
+    val mainScope: kotlinx.coroutines.CoroutineScope by lazy {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+    }
+
+    /** Stops playback after a chosen duration; ticks and expiry run on the main thread. */
+    val sleepTimer: io.github.loopholetv.player.SleepTimer by lazy {
+        io.github.loopholetv.player.SleepTimer(mainScope, onExpire = { playback.stop() })
+    }
+
+    /** Lets the guide keep its current preview after the player closes. */
+    val previewHold: io.github.loopholetv.player.PreviewHold by lazy { io.github.loopholetv.player.PreviewHold() }
+
+    /** The player's switchable engine parts; the large buffer is capped on devices with a small heap. */
+    val engineParts: io.github.loopholetv.player.engine.EngineParts by lazy {
+        val memoryClass = (appContext.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).memoryClass
+        io.github.loopholetv.player.engine.EngineParts(
+            loadControl = io.github.loopholetv.player.engine.SwitchableLoadControl(
+                io.github.loopholetv.data.settings.BufferPreset.NORMAL, memoryClass,
+            ),
         )
     }
 }
