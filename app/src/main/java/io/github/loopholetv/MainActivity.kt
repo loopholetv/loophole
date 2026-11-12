@@ -149,6 +149,12 @@ class MainActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    /** Other TVs can find this one, and it them, only while Loophole is on screen. */
+    override fun onStart() {
+        super.onStart()
+        container.castController.onForeground(true)
+    }
+
     override fun onResume() {
         super.onResume()
         // Back from the install-permission screen or the system installer.
@@ -170,13 +176,16 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Leaving the app (Home, another app, screen off, or closing the picture-in-picture window)
-     * stops the stream and the sleep timer and gives the display back its own mode; screens
-     * restart playback on return. Picture-in-picture itself only pauses the activity.
+     * ends this TV's cast or leaves the one it follows, stops the stream and the sleep timer and
+     * gives the display back its own mode; screens restart playback on return. Picture-in-picture
+     * itself only pauses the activity.
      */
     override fun onStop() {
         super.onStop()
         if (shouldReleaseOnStop(isChangingConfigurations)) {
             val c = container
+            // First, so the other TVs hear "stopped casting" rather than seeing the stream stop.
+            c.castController.onForeground(false)
             c.playback.stop()
             c.sleepTimer.cancel()
             displayModes.restore()

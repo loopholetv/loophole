@@ -2,6 +2,7 @@ package io.github.loopholetv
 
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.player.CAST_CHANNEL_ID
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.StreamTags
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -49,7 +50,23 @@ class PlaylistPlaybackStopTest {
         assertEquals(2, stops)
     }
 
-    @Test fun errorsMidStreamDoNotStopLaterStops() = runTest(UnconfinedTestDispatcher()) {
+    @Test fun aFollowedCastIsNeverStopped() = runTest(UnconfinedTestDispatcher()) {
+        // Another TV's stream belongs to no playlist here, whatever a lookup of its id says.
+        val state = MutableStateFlow<PlaybackState>(PlaybackState.Idle)
+        val playlists = MutableStateFlow(listOf(playlist(1)))
+        var stops = 0
+        stopPlaybackWhenPlaylistGoes(
+            state, playlists, { 1L }, { stops++; state.value = PlaybackState.Idle },
+            backgroundScope, main = UnconfinedTestDispatcher(testScheduler),
+        )
+        state.value = PlaybackState.Buffering(CAST_CHANNEL_ID)
+        state.value = PlaybackState.Playing(CAST_CHANNEL_ID, StreamTags.NONE)
+        playlists.value = listOf(playlist(1, enabled = false))
+        playlists.value = emptyList()
+        assertEquals(0, stops)
+    }
+
+    @Test fun errorsMidStreamDoNotStopLaterStops()= runTest(UnconfinedTestDispatcher()) {
         val state = MutableStateFlow<PlaybackState>(PlaybackState.Idle)
         val playlists = MutableStateFlow(listOf(playlist(1), playlist(2)))
         var failLookup = true

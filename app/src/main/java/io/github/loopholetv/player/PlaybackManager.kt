@@ -1,7 +1,7 @@
 package io.github.loopholetv.player
 
 import android.content.Context
-import android.net.Uri
+import androidx.core.net.toUri
 import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.annotation.VisibleForTesting
@@ -16,20 +16,17 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.Log
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.UnrecognizedInputFormatException
 import androidx.media3.ui.DefaultTrackNameProvider
 import io.github.loopholetv.BuildConfig
+import io.github.loopholetv.cast.net.LocalPeersOnly
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.displayName
 import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
-import io.github.loopholetv.data.settings.BufferPreset
 import io.github.loopholetv.data.settings.DecoderChoice
-import io.github.loopholetv.data.settings.Passthrough
 import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.settings.normaliseAudioDelay
 import io.github.loopholetv.data.stalker.StalkerAuthException
@@ -61,6 +58,7 @@ import okhttp3.OkHttpClient
 import java.net.SocketException
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import java.util.concurrent.TimeUnit
 
 sealed interface PlaybackState {
     data object Idle : PlaybackState
@@ -118,38 +116,46 @@ interface Playback {
 
     fun resume() {}
 
+    /**
+     * True while the player is held paused (it won't play when ready): by [pause], audio focus loss
+     * or anything else that clears play-when-ready. Any play, reopen or [resume] that plays clears it.
+     */
+    val paused: StateFlow<Boolean> get() = NOT_PAUSED
+
     /** The playing archive stream's position in ms from its start. */
     fun positionMs(): Long = 0
 
     /** Seeks inside the loaded archive stream without reopening it. Main thread only. */
     fun seekWithin(positionMs: Long) {}
+
+    /**
+     * Follows another TV's cast: releases the current stream first, then plays [url] (that TV's relay
+     * address) as HLS when [hls], otherwise as MPEG-TS. [state] carries [CAST_CHANNEL_ID] meanwhile and
+     * [mode] is [PlayMode.Cast]; [play], [playArchive] and [stop] leave it. Main thread only.
+     */
+    fun playCast(url: String, hls: Boolean) {}
+
+    /**
+     * Opens what is playing again through the resolver, after releasing it: the live channel, or the
+     * archive from the current position. Nothing happens when idle or following a cast. Main thread only.
+     */
+    fun reopen() {}
 }
+
+/** The channel id [PlaybackState] carries while following another TV's cast. */
+const val CAST_CHANNEL_ID = -2L
+
+/**
+ * Busy-style HTTP statuses a provider may answer while it still counts a connection that was just
+ * released; an open refused with one of them right after a switch is worth trying again.
+ */
+val SWITCH_RETRY_HTTP_CODES: Set<Int> = setOf(403, 429, 503, 509)
 
 private val LIVE_MODE: StateFlow<PlayMode> = MutableStateFlow<PlayMode>(PlayMode.Live).asStateFlow()
 
 private val NO_TRACKS: StateFlow<PlayerTracks> = MutableStateFlow(PlayerTracks.NONE).asStateFlow()
 
-/** The engine choices that need a stream restart to change. */
-private data class EngineConfig(
-    val buffer: BufferPreset,
-    val video: DecoderChoice,
-    val audio: DecoderChoice,
-    val passthrough: Passthrough,
-    val decodeDtsToPcm: Boolean,
-)
-
-private fun engineConfig(s: PlaybackSettings, p: ChannelPlaybackPrefs) = EngineConfig(
-    buffer = s.bufferPreset,
-    video = p.video ?: s.videoDecoder,
-    audio = p.audio ?: s.audioDecoder,
-    passthrough = s.passthrough,
-    decodeDtsToPcm = s.decodeDtsToPcm,
-)
-
-/** The track preferences that apply live, without a restart. */
-private data class TrackPrefs(val audioLanguage: String?, val subtitleLanguage: String?, val preferSurround: Boolean) {
-    constructor(s: PlaybackSettings) : this(s.audioLanguage, s.subtitleLanguage, s.preferSurround)
-}
+private val NOT_PAUSED: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
 
 /**
  * Owns the one [ExoPlayer] for the app lifetime, on the main looper. Providers usually allow a
@@ -174,6 +180,11 @@ private data class TrackPrefs(val audioLanguage: String?, val subtitleLanguage: 
  * just-released connection for a moment, so the first open after a release (within
  * [SWITCH_WINDOW_MS]) that is refused with a busy-style HTTP status or a dropped connection is
  * retried after each of [SWITCH_RETRY_DELAYS_MS], staying Buffering, before it becomes an error.
+ *
+ * [playCast] follows another TV's cast through its own [castHttp] client, with this TV's engine and
+ * track settings but no resolver, keep-alive, re-mint, switch retry or HLS fallback. A cast stream that
+ * ends stays Buffering (the casting TV switched or paused its stream), and falling behind the live
+ * window reloads the same address.
  */
 @OptIn(UnstableApi::class)
 class PlaybackManager internal constructor(
@@ -196,7 +207,12 @@ class PlaybackManager internal constructor(
     private val wallClock: () -> Instant = Instant::now,
     /** Waits between retries of an open refused right after a switch. */
     private val retryDelay: suspend (Long) -> Unit = { delay(it) },
+    /** The client for another TV's relay; separate from [http], whose pool holds provider connections. Built on first use. */
+    castHttp: () -> OkHttpClient = ::defaultCastClient,
 ) : Playback {
+
+    private val castClient by lazy(LazyThreadSafetyMode.NONE, castHttp)
+    private val castUserAgent by lazy(LazyThreadSafetyMode.NONE) { "Loophole/${versionName(context)}" }
 
     override val player: Player get() = exoPlayer
 
@@ -254,6 +270,9 @@ class PlaybackManager internal constructor(
     private val _mode = MutableStateFlow<PlayMode>(PlayMode.Live)
     override val mode: StateFlow<PlayMode> = _mode.asStateFlow()
 
+    private val _paused = MutableStateFlow(!exoPlayer.playWhenReady)
+    override val paused: StateFlow<Boolean> = _paused.asStateFlow()
+
     /** When ([clock] ms) a buffering or playing stream was last released; null before the first. */
     private var lastReleaseAtMs: Long? = null
 
@@ -264,9 +283,17 @@ class PlaybackManager internal constructor(
     /** Set when an archive was released; cleared only once an eviction has completed, so the next open evicts. */
     private var pendingEvict = false
 
+    /** The cast being followed in [PlayMode.Cast], and whether it is loaded yet (the cast's [resolved]). */
+    private var castUrl: String? = null
+    private var castHls = false
+    private var castLoaded = false
+
     private val listener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) = refreshState()
         override fun onIsPlayingChanged(isPlaying: Boolean) = refreshState()
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            _paused.value = !playWhenReady
+        }
         override fun onTracksChanged(tracks: Tracks) {
             refreshState()
             refreshTracks()
@@ -332,10 +359,49 @@ class PlaybackManager internal constructor(
     }
 
     /**
-     * Releases the old stream first (one connection per account) and resets the per-play state for
-     * [channel]; returns the new play's generation. Nothing is resolved here.
+     * Follows another TV's cast at [url]: always a reconnect. The old stream is released and idle
+     * connections evicted before the cast opens; the engine and track settings are this TV's own.
      */
-    private fun beginOpen(channel: ChannelEntity): Long {
+    override fun playCast(url: String, hls: Boolean) {
+        if (_mode.value is PlayMode.Archive) pendingEvict = true
+        prefsJob?.cancel()
+        prefsJob = null
+        val generation = beginOpen(null)
+        castUrl = url
+        castHls = hls
+        _mode.value = PlayMode.Cast
+        startCast(url, hls, generation)
+    }
+
+    /**
+     * Opens the live channel or archive being played again through the resolver, releasing it first.
+     * It stays paused if it was, and keeps the track choices made on it. Unlike [restart] it never
+     * passes through Idle.
+     */
+    override fun reopen() {
+        if (_mode.value is PlayMode.Cast) return
+        val channel = current ?: return
+        val playWhenReady = exoPlayer.playWhenReady
+        // Until this play has loaded, the player's parameters still hold the previous channel's choices.
+        restartChoices = exoPlayer.trackSelectionParameters.takeIf { resolved != null }
+        val archive = (_mode.value as? PlayMode.Archive)?.takeIf { it.channelId == channel.id }
+        if (archive != null) {
+            playArchive(channel, resumeRequest(channel, archive))
+        } else {
+            val generation = beginOpen(channel)
+            _mode.value = PlayMode.Live
+            // The released stream's idle connections close before the next one opens.
+            startResolve(channel, generation, evictFirst = true)
+            watchChannelPrefs(channel)
+        }
+        exoPlayer.playWhenReady = playWhenReady
+    }
+
+    /**
+     * Releases the old stream first (one connection per account) and resets the per-play state for
+     * [channel] (null: a cast); returns the new play's generation. Nothing is resolved here.
+     */
+    private fun beginOpen(channel: ChannelEntity?): Long {
         noteRelease()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
@@ -343,13 +409,15 @@ class PlaybackManager internal constructor(
         val generation = ++playGeneration
         current = channel
         resolved = null
+        castUrl = null
+        castLoaded = false
         hlsFallbackTried = false
         remintable = false
         remintTried = false
         audioFallbackActive = false
         liveWindowRecoveries.clear()
         _tracks.value = PlayerTracks.NONE
-        _state.value = PlaybackState.Buffering(channel.id)
+        _state.value = PlaybackState.Buffering(channel?.id ?: CAST_CHANNEL_ID)
         exoPlayer.playWhenReady = true
         openAfterSwitch = lastReleaseAtMs?.let { clock() - it < SWITCH_WINDOW_MS } == true
         switchRetries = 0
@@ -424,7 +492,7 @@ class PlaybackManager internal constructor(
             if (newChannel) applyChannelTracks(s, keepChoices)
             remintable = canRemint
             resolved = stream
-            load(channel, stream, asHls = forceHls || isHlsUrl(Uri.parse(stream.url)))
+            load(channel, stream, asHls = forceHls || isHlsUrl(stream.url.toUri()))
             startKeepAlive(channel)
         }
     }
@@ -461,9 +529,28 @@ class PlaybackManager internal constructor(
             if (newChannel) applyChannelTracks(s, keepChoices)
             remintable = false
             resolved = stream
-            val hls = isHlsUrl(Uri.parse(stream.url))
+            val hls = isHlsUrl(stream.url.toUri())
             _mode.value = PlayMode.Archive(channel.id, request, hls = hls)
             load(channel, stream, asHls = hls)
+        }
+    }
+
+    /**
+     * Loads the cast at [url] once idle connections are evicted, with the playback settings read as
+     * [startResolve] reads them and no per-channel overrides. Track choices are kept only for a
+     * restart of the same cast.
+     */
+    private fun startCast(url: String, hls: Boolean, generation: Long) {
+        val keepChoices = restartChoices
+        restartChoices = null
+        resolveJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (!evictIdle(generation)) return@launch
+            val read = readOr(PlaybackSettings()) { awaitSettings() }
+            if (generation != playGeneration) return@launch
+            val s = if (settingsLive) latestSettings ?: read else read
+            applyEngine(s, ChannelPlaybackPrefs.NONE, generation)
+            applyChannelTracks(s, keepChoices)
+            loadCast(url, hls)
         }
     }
 
@@ -529,12 +616,17 @@ class PlaybackManager internal constructor(
 
         // Only a stream started with other engine choices restarts; a start still reading settings will
         // pick this emission up itself.
-        val channel = current ?: return
         val state = _state.value
         val active = state is PlaybackState.Buffering || state is PlaybackState.Playing
-        if (active && appliedGeneration == playGeneration && engineConfig(s, appliedPrefs) != appliedEngine) {
-            restart(channel)
+        if (!active || appliedGeneration != playGeneration || engineConfig(s, appliedPrefs) == appliedEngine) return
+        if (_mode.value is PlayMode.Cast) {
+            // The same cast reopens with the new engine; it never goes through the resolver.
+            val url = castUrl ?: return
+            restartChoices = exoPlayer.trackSelectionParameters
+            playCast(url, castHls)
+            return
         }
+        restart(current ?: return)
     }
 
     /** New track preferences for the playing stream, keeping the choices made on it. */
@@ -602,10 +694,12 @@ class PlaybackManager internal constructor(
 
     override fun pause() {
         exoPlayer.playWhenReady = false
+        _paused.value = true
     }
 
     override fun resume() {
         exoPlayer.playWhenReady = true
+        _paused.value = false
     }
 
     override fun positionMs(): Long = exoPlayer.currentPosition
@@ -647,13 +741,14 @@ class PlaybackManager internal constructor(
         evictIdleConnections()
         pendingEvict = false
         if (generation != playGeneration) return null
-        return Handoff(stream, hls = isHlsUrl(Uri.parse(stream.url)))
+        return Handoff(stream, hls = isHlsUrl(stream.url.toUri()))
     }
 
     private fun refreshTracks() {
         // Nothing playing, or the new channel is still resolving: late events from the previous
         // stream must not publish its tracks or frame rate for the new one.
-        if (current == null || resolved == null) {
+        val loaded = if (_mode.value is PlayMode.Cast) castLoaded else current != null && resolved != null
+        if (!loaded) {
             _tracks.value = PlayerTracks.NONE
             return
         }
@@ -693,6 +788,24 @@ class PlaybackManager internal constructor(
         _state.value = PlaybackState.Buffering(channel.id)
     }
 
+    /** Loads (or reloads) the cast through [castClient]; the mime type says TS or HLS, never the URL shape. */
+    private fun loadCast(url: String, hls: Boolean) {
+        currentIsHls = hls
+        castLoaded = true
+        val dataSourceFactory = OkHttpDataSource.Factory(castClient).setUserAgent(castUserAgent)
+        val item = MediaItem.Builder()
+            .setUri(url.toUri())
+            .setMediaId(CAST_CHANNEL_ID.toString())
+            .setMimeType(if (hls) MimeTypes.APPLICATION_M3U8 else MimeTypes.VIDEO_MP2T)
+            .build()
+        val source = AudioDelayMediaSource(
+            DefaultMediaSourceFactory(dataSourceFactory).createMediaSource(item), engine.audioDelay,
+        )
+        exoPlayer.setMediaSource(source)
+        exoPlayer.prepare()
+        _state.value = PlaybackState.Buffering(CAST_CHANNEL_ID)
+    }
+
     override fun stop() {
         noteRelease()
         if (_mode.value is PlayMode.Archive) pendingEvict = true
@@ -702,6 +815,8 @@ class PlaybackManager internal constructor(
         playGeneration++
         current = null
         resolved = null
+        castUrl = null
+        castLoaded = false
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         _tracks.value = PlayerTracks.NONE
@@ -719,12 +834,15 @@ class PlaybackManager internal constructor(
         exoPlayer.release()
         current = null
         resolved = null
+        castUrl = null
+        castLoaded = false
         _mode.value = PlayMode.Live
         _state.value = PlaybackState.Idle
         scope.cancel()
     }
 
     private fun refreshState() {
+        if (_mode.value is PlayMode.Cast) return refreshCastState()
         val channel = current ?: return
         // Still resolving (or re-minting): the player holds nothing of this play yet.
         val stream = resolved ?: return
@@ -747,6 +865,42 @@ class PlaybackManager internal constructor(
                 PlaybackState.Error(channel.id, "${channel.displayName}: can't play this stream")
             else -> _state.value
         }
+    }
+
+    private fun refreshCastState() {
+        // Still evicting or reading settings: the player holds nothing of this cast yet.
+        val url = castUrl?.takeIf { castLoaded } ?: return
+        val error = exoPlayer.playerError
+        if (error != null && recoverCast(url, error)) return
+        val ready = exoPlayer.isPlaying || exoPlayer.playbackState == Player.STATE_READY
+        _state.value = when {
+            error != null -> PlaybackState.Error(CAST_CHANNEL_ID, CAST_ERROR)
+            exoPlayer.playbackState == Player.STATE_BUFFERING -> PlaybackState.Buffering(CAST_CHANNEL_ID)
+            ready -> PlaybackState.Playing(CAST_CHANNEL_ID, streamTags(exoPlayer.videoFormat, exoPlayer.audioFormat))
+            // The casting TV switched or paused its stream: wait for the next one, not a failure.
+            exoPlayer.playbackState == Player.STATE_ENDED -> PlaybackState.Buffering(CAST_CHANNEL_ID)
+            else -> _state.value
+        }
+    }
+
+    /**
+     * The fixes a cast gets: back to the live edge of the same address, and software audio that failed
+     * reloads it once on the hardware decoder. Nothing re-resolves or retries; returns true when reloaded.
+     */
+    private fun recoverCast(url: String, error: PlaybackException): Boolean = when {
+        error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && withinLiveWindowBudget() -> {
+            exoPlayer.seekToDefaultPosition()
+            exoPlayer.prepare()
+            _state.value = PlaybackState.Buffering(CAST_CHANNEL_ID)
+            true
+        }
+        !audioFallbackActive && engine.codecPolicy.audio == DecoderChoice.SOFTWARE && error.isAudioRendererError() -> {
+            audioFallbackActive = true
+            engine.codecPolicy.audio = DecoderChoice.HARDWARE
+            loadCast(url, castHls)
+            true
+        }
+        else -> false
     }
 
     /** Publishes whether the loaded archive can seek, its length once known, and whether it ended. */
@@ -879,7 +1033,7 @@ class PlaybackManager internal constructor(
     }
 
     private fun mediaItem(channel: ChannelEntity, stream: ResolvedStream, asHls: Boolean): MediaItem {
-        val builder = MediaItem.Builder().setUri(Uri.parse(stream.url)).setMediaId(channel.id.toString())
+        val builder = MediaItem.Builder().setUri(stream.url.toUri()).setMediaId(channel.id.toString())
         if (asHls) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
         return builder.build()
     }
@@ -892,8 +1046,20 @@ class PlaybackManager internal constructor(
         /** How long after a release an open still counts as the first open after a switch. */
         const val SWITCH_WINDOW_MS = 10_000L
         val SWITCH_RETRY_DELAYS_MS = listOf(500L, 1_000L, 2_000L, 4_000L)
-        val SWITCH_RETRY_HTTP_CODES = setOf(403, 429, 503, 509)
         const val ARCHIVE_ERROR = "Couldn't play this programme back."
+        const val CAST_ERROR = "Can't play this stream."
+        const val CAST_READ_TIMEOUT_S = 8L
+
+        /**
+         * A plain client for the relay. It never follows a redirect and refuses any host but a TV on
+         * the home network, so a peer (or a playlist it serves) can't send the player elsewhere.
+         */
+        fun defaultCastClient(): OkHttpClient = OkHttpClient.Builder()
+            .addInterceptor(LocalPeersOnly())
+            .readTimeout(CAST_READ_TIMEOUT_S, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
 
         fun versionName(context: Context): String = try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "dev"
@@ -902,31 +1068,3 @@ class PlaybackManager internal constructor(
         }
     }
 }
-
-private val HLS_QUERY_HINTS = mapOf("output" to setOf("m3u8", "hls"), "extension" to setOf("m3u8"))
-
-/**
- * HLS by URL shape: the path ends in `.m3u8`, has a `/hls/` segment, or the query says
- * `output=m3u8|hls` / `extension=m3u8` (Xtream style). All case-insensitive.
- */
-internal fun isHlsUrl(uri: Uri): Boolean {
-    val path = uri.path.orEmpty().lowercase()
-    if (path.endsWith(".m3u8") || "/hls/" in path) return true
-    if (!uri.isHierarchical) return false
-    return uri.queryParameterNames.any { name ->
-        val accepted = HLS_QUERY_HINTS[name.lowercase()] ?: return@any false
-        uri.getQueryParameters(name).any { it.lowercase() in accepted }
-    }
-}
-
-private fun PlaybackException.httpCode(): Int? =
-    generateSequence<Throwable>(this) { it.cause }.take(16)
-        .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
-
-@OptIn(UnstableApi::class)
-private fun PlaybackException.isAudioRendererError(): Boolean =
-    this is ExoPlaybackException && type == ExoPlaybackException.TYPE_RENDERER &&
-        MimeTypes.isAudio(rendererFormat?.sampleMimeType)
-
-private inline fun <reified T : Throwable> Throwable.hasCause(): Boolean =
-    generateSequence(this) { it.cause }.take(16).any { it is T }

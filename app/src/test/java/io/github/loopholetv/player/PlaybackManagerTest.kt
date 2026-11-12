@@ -24,7 +24,16 @@ import io.github.loopholetv.data.stalker.StalkerClient
 import io.github.loopholetv.data.stalker.StalkerLinkException
 import io.github.loopholetv.data.stalker.StalkerSessions
 import io.github.loopholetv.data.stalker.testHttp
+import io.github.loopholetv.cast.CastHost
+import io.github.loopholetv.cast.CastHostTest
+import io.github.loopholetv.cast.CastingResolver
+import io.github.loopholetv.cast.StopReason
+import io.github.loopholetv.cast.net.LocalHttpServer
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
@@ -54,6 +63,7 @@ import androidx.media3.datasource.HttpDataSource
 import org.robolectric.Shadows.shadowOf
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -326,6 +336,26 @@ class PlaybackManagerTest {
 
         assertTrue(exo.playWhenReady)
         assertEquals(1, prepareCount)
+    }
+
+    @Test
+    fun pausedFollowsPlayWhenReady() {
+        val ch = channel(1, "/live/1.ts")
+        manager.play(ch)
+        assertFalse(manager.paused.value)
+
+        manager.pause()
+        assertTrue(manager.paused.value)
+        manager.resume()
+        assertFalse(manager.paused.value)
+
+        exo.playWhenReady = false // e.g. audio focus loss
+        assertTrue(manager.paused.value)
+        // A reopen keeps it paused; a new play plays.
+        manager.reopen()
+        assertTrue(manager.paused.value)
+        manager.play(channel(2, "/live/2.ts"))
+        assertFalse(manager.paused.value)
     }
 
     @Test
@@ -2022,5 +2052,520 @@ class PlaybackManagerTest {
         idleMain(1_000)
         assertEquals(0, prepareCount)
         assertEquals(PlaybackState.Idle, manager.state.value)
+    }
+
+    // ---- Following another TV's cast ----
+
+    private fun castUrl(path: String = "/c/token/1.ts") = server.url(path).toString()
+
+    /** Awaits the cast's load, then reports READY. */
+    private fun castReady() {
+        RobolectricUtil.runMainLooperUntil { exo.mediaItemCount == 1 }
+        reportReady()
+    }
+
+    @Test
+    fun playCastLoadsUrlWithMime() {
+        engineManager()
+        manager.playCast(castUrl(), hls = false)
+        awaitPrepares(1)
+        val ts = exo.currentMediaItem!!.localConfiguration!!
+        assertEquals(Uri.parse(castUrl()), ts.uri)
+        assertEquals(MimeTypes.VIDEO_MP2T, ts.mimeType)
+        assertEquals(PlayMode.Cast, manager.mode.value)
+
+        manager.playCast(castUrl("/c/token/live.m3u8"), hls = true)
+        awaitPrepares(2)
+        val hls = exo.currentMediaItem!!.localConfiguration!!
+        assertEquals(Uri.parse(castUrl("/c/token/live.m3u8")), hls.uri)
+        assertEquals(MimeTypes.APPLICATION_M3U8, hls.mimeType)
+        assertEquals(1, exo.mediaItemCount)
+    }
+
+    @Test
+    fun playCastReleasesPreviousFirst() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        assertEquals(1, fake.activeKeepAlives)
+        seam.events.clear()
+
+        manager.playCast(castUrl(), hls = false)
+        assertEquals(PlaybackState.Buffering(CAST_CHANNEL_ID), manager.state.value)
+        awaitPrepares(2)
+
+        // The old stream is stopped and its idle connections closed before the cast opens.
+        assertEquals(listOf("stop", "evict", "prepare"), seam.events)
+        idleMain()
+        assertEquals(0, fake.activeKeepAlives)
+        assertEquals(1, exo.mediaItemCount)
+    }
+
+    @Test
+    fun playCastStateUsesCastChannelId() {
+        engineManager()
+        manager.playCast(castUrl(), hls = false)
+        assertEquals(PlaybackState.Buffering(CAST_CHANNEL_ID), manager.state.value)
+        castReady()
+        assertEquals(CAST_CHANNEL_ID, (manager.state.value as PlaybackState.Playing).channelId)
+
+        seam.fakeState = Player.STATE_BUFFERING
+        seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_BUFFERING) }
+        assertEquals(PlaybackState.Buffering(CAST_CHANNEL_ID), manager.state.value)
+
+        failWith(httpError(500))
+        assertEquals(PlaybackState.Error(CAST_CHANNEL_ID, "Can't play this stream."), manager.state.value)
+    }
+
+    @Test
+    fun castErrorsNeverRetryOrResolve() {
+        val fake = engineManager()
+        fake.remint = true
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        // Opened right after a release, where live playback would retry a refusal.
+        manager.playCast(castUrl(), hls = false)
+        castReady()
+        val prepares = prepareCount
+
+        failWith(httpError(503))
+        assertEquals(PlaybackState.Error(CAST_CHANNEL_ID, "Can't play this stream."), manager.state.value)
+        failWith(httpError(403))
+        failWith(resetError())
+        idleMain(10_000)
+
+        assertEquals(prepares, prepareCount)
+        assertTrue(retryDelays.isEmpty())
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(PlaybackState.Error(CAST_CHANNEL_ID, "Can't play this stream."), manager.state.value)
+    }
+
+    @Test
+    fun castEndedIsBufferingNotError() {
+        engineManager()
+        manager.playCast(castUrl(), hls = false)
+        castReady()
+
+        reportEnded()
+
+        assertEquals(PlaybackState.Buffering(CAST_CHANNEL_ID), manager.state.value)
+        assertEquals(PlayMode.Cast, manager.mode.value)
+    }
+
+    @Test
+    fun castBehindLiveWindowReloadsSameUrl() {
+        val fake = engineManager()
+        val url = castUrl("/c/token/live.m3u8")
+        manager.playCast(url, hls = true)
+        castReady()
+
+        behindLiveWindow()
+
+        assertEquals(1, seam.seekToDefaultCount)
+        assertEquals(2, prepareCount)
+        assertEquals(PlaybackState.Buffering(CAST_CHANNEL_ID), manager.state.value)
+        assertEquals(Uri.parse(url), exo.currentMediaItem!!.localConfiguration!!.uri)
+        assertTrue(fake.resolved.isEmpty())
+    }
+
+    @Test
+    fun playCastNeverCallsResolver() {
+        val fake = engineManager()
+        manager.playCast(castUrl(), hls = false)
+        castReady()
+        idleMain(1_000)
+
+        assertTrue(fake.resolved.isEmpty())
+        assertTrue(fake.archiveCalls.isEmpty())
+        assertEquals(0, fake.keepAlives)
+    }
+
+    @Test
+    fun playCastAppliesOwnEngineAndTrackSettings() {
+        settingsFlow.value = PlaybackSettings(
+            videoDecoder = DecoderChoice.SOFTWARE, audioDelayMs = 200, audioLanguage = "de", bufferPreset = BufferPreset.LARGE,
+        )
+        engineManager()
+        var atPrepare: Triple<DecoderChoice, Int, BufferPreset?>? = null
+        seam.onPrepare = { atPrepare = Triple(engine.codecPolicy.video, engine.audioDelay.delayMs, engine.loadControl.pendingPreset) }
+
+        manager.playCast(castUrl(), hls = false)
+        awaitPrepares(1)
+
+        assertEquals(Triple(DecoderChoice.SOFTWARE, 200, BufferPreset.LARGE), atPrepare)
+        assertEquals(listOf("de"), params.preferredAudioLanguages)
+        assertTrue(seam.lastSource is AudioDelayMediaSource)
+    }
+
+    @Test
+    fun settingsChangeInCastNeverResolves() {
+        val fake = engineManager()
+        val url = castUrl()
+        manager.playCast(url, hls = false)
+        castReady()
+
+        settingsFlow.value = PlaybackSettings(videoDecoder = DecoderChoice.SOFTWARE)
+        awaitPrepares(2)
+
+        assertEquals(DecoderChoice.SOFTWARE, engine.codecPolicy.video)
+        assertEquals(Uri.parse(url), exo.currentMediaItem!!.localConfiguration!!.uri)
+        assertEquals(MimeTypes.VIDEO_MP2T, exo.currentMediaItem!!.localConfiguration!!.mimeType)
+        assertEquals(PlayMode.Cast, manager.mode.value)
+        assertTrue(fake.resolved.isEmpty())
+        assertTrue(fake.archiveCalls.isEmpty())
+    }
+
+    @Test
+    fun castSoftwareAudioFailureReloadsOnHardware() {
+        settingsFlow.value = PlaybackSettings(audioDecoder = DecoderChoice.SOFTWARE)
+        val fake = engineManager()
+        manager.playCast(castUrl(), hls = false)
+        castReady()
+
+        softwareAudioFailure()
+        awaitPrepares(2)
+
+        assertEquals(DecoderChoice.HARDWARE, engine.codecPolicy.audio)
+        assertEquals(PlaybackState.Buffering(CAST_CHANNEL_ID), manager.state.value)
+        assertTrue(fake.resolved.isEmpty())
+    }
+
+    @Test
+    fun castOpensThroughItsOwnClient() {
+        val shared = AtomicInteger()
+        val own = AtomicInteger()
+        manager.release()
+        exo = TestExoPlayerBuilder(context).build()
+        seam = SeamPlayer(exo)
+        manager = PlaybackManager(
+            context,
+            OkHttpClient.Builder().addInterceptor { shared.incrementAndGet(); it.proceed(it.request()) }.build(),
+            seam,
+            clock = { nowMs },
+            castHttp = { OkHttpClient.Builder().addInterceptor { own.incrementAndGet(); it.proceed(it.request()) }.build() },
+        )
+
+        manager.playCast(castUrl(), hls = false)
+        RobolectricUtil.runMainLooperUntil { own.get() > 0 }
+
+        assertEquals(0, shared.get())
+        val request = server.takeRequest()
+        assertEquals("/c/token/1.ts", request.path)
+        assertTrue(request.getHeader("User-Agent")!!.startsWith("Loophole/"))
+    }
+
+    @Test
+    fun castPlaylistCannotSendThePlayerOffTheHomeNetwork() {
+        val paths = java.util.concurrent.CopyOnWriteArrayList<String>()
+        lateinit var peer: MockWebServer
+        peer = serve { request ->
+            paths += request.path!!
+            if (request.path == "/c/token/1/index.m3u8") {
+                // A name that would resolve to this very peer, then a public address.
+                MockResponse().setBody(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+                        "#EXTINF:4.0,\nhttp://localhost:${peer.port}/c/token/1/s-0\n" +
+                        "#EXTINF:4.0,\nhttp://203.0.113.9/c/token/1/s-1\n",
+                )
+            } else {
+                MockResponse().setBody(Buffer().write(ByteArray(188 * 10)))
+            }
+        }
+        try {
+            val url = peer.url("/c/token/1/index.m3u8").newBuilder().host("127.0.0.1").build().toString()
+            manager.playCast(url, hls = true)
+            RobolectricUtil.runMainLooperUntil { manager.state.value is PlaybackState.Error }
+
+            assertEquals(PlaybackState.Error(CAST_CHANNEL_ID, "Can't play this stream."), manager.state.value)
+            assertTrue(paths.isNotEmpty())
+            assertTrue(paths.toString(), paths.all { it == "/c/token/1/index.m3u8" })
+        } finally {
+            peer.shutdown()
+        }
+    }
+
+    @Test
+    fun castNeverFollowsARedirect() {
+        val paths = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val peer = serve { request ->
+            paths += request.path!!
+            if (request.path == "/c/token/1.ts") {
+                MockResponse().setResponseCode(302).setHeader("Location", "/elsewhere.ts")
+            } else {
+                MockResponse().setBody(Buffer().write(ByteArray(188 * 10)))
+            }
+        }
+        try {
+            manager.playCast(peer.url("/c/token/1.ts").newBuilder().host("127.0.0.1").build().toString(), hls = false)
+            RobolectricUtil.runMainLooperUntil { manager.state.value is PlaybackState.Error }
+
+            assertEquals(PlaybackState.Error(CAST_CHANNEL_ID, "Can't play this stream."), manager.state.value)
+            assertTrue(paths.isNotEmpty())
+            assertTrue(paths.all { it == "/c/token/1.ts" })
+        } finally {
+            peer.shutdown()
+        }
+    }
+
+    @Test
+    fun playAfterCastReturnsToLive() {
+        val fake = engineManager()
+        manager.playCast(castUrl(), hls = false)
+        castReady()
+        val ch = channel(1, "/live/1.ts")
+
+        manager.play(ch)
+        assertEquals(PlayMode.Live, manager.mode.value)
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        awaitPrepares(2)
+        assertEquals(listOf(1L), fake.resolved)
+        assertEquals(Uri.parse(ch.streamUrl), exo.currentMediaItem!!.localConfiguration!!.uri)
+        assertNull(exo.currentMediaItem!!.localConfiguration!!.mimeType)
+        idleMain()
+        assertEquals(1, fake.activeKeepAlives)
+
+        // An archive and a stop leave the cast the same way.
+        manager.playCast(castUrl(), hls = false)
+        awaitPrepares(3)
+        manager.playArchive(ch, programme)
+        assertEquals(PlayMode.Archive(1, programme), manager.mode.value)
+        awaitPrepares(4)
+        assertEquals(listOf(1L to programme), fake.archiveCalls)
+
+        manager.playCast(castUrl(), hls = false)
+        awaitPrepares(5)
+        manager.stop()
+        assertEquals(PlayMode.Live, manager.mode.value)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+        assertEquals(0, exo.mediaItemCount)
+    }
+
+    @Test
+    fun lateCastEventsAfterStopAreIgnored() {
+        engineManager()
+        manager.playCast(castUrl(), hls = false)
+        castReady()
+        manager.stop()
+
+        reportEnded()
+        seam.fakeState = Player.STATE_READY
+        seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_READY) }
+
+        assertEquals(PlaybackState.Idle, manager.state.value)
+        assertEquals(PlayerTracks.NONE, manager.tracks.value)
+    }
+
+    @Test
+    fun reopenLiveReResolves() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.play(ch)
+        idleMain()
+        reportReady()
+        seam.events.clear()
+        fake.onResolve = { seam.events += "resolve" }
+        val seen = mutableListOf<PlaybackState>()
+        seam.onStop = { seen += manager.state.value }
+
+        manager.reopen()
+
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        awaitPrepares(2)
+        // Released first, then a fresh link through the resolver; never Idle on the way.
+        assertEquals(listOf("stop", "evict", "resolve", "prepare"), seam.events)
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertTrue(seen.none { it == PlaybackState.Idle })
+        assertEquals(PlayMode.Live, manager.mode.value)
+        assertTrue(exo.playWhenReady)
+        idleMain()
+        assertEquals(1, fake.activeKeepAlives)
+    }
+
+    @Test
+    fun reopenKeepsPauseState() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.playArchive(ch, programme)
+        awaitPrepares(1)
+        reportReady()
+        seam.fakePosition = 30_000
+        manager.pause()
+
+        manager.reopen()
+        assertFalse(exo.playWhenReady)
+        awaitPrepares(2)
+
+        assertFalse(exo.playWhenReady)
+        assertEquals(programme.copy(from = programme.from.plusSeconds(30)), fake.archiveCalls.last().second)
+
+        // A paused live stream stays paused too.
+        seam.fakePosition = null
+        manager.play(ch)
+        awaitPrepares(3)
+        reportReady()
+        manager.pause()
+
+        manager.reopen()
+        awaitPrepares(4)
+
+        assertFalse(exo.playWhenReady)
+        assertEquals(listOf(1L, 1L), fake.resolved)
+    }
+
+    @Test
+    fun reopenKeepsTrackPicks() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        seam.fakeTracks = Tracks(listOf(audioGroup("a", "de", "en")))
+        manager.selectTrack(TrackType.AUDIO, TrackChoice.Pick(TrackId("a", 1)))
+        val picked = params.overrides
+
+        manager.reopen()
+        idleMain()
+
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        assertEquals(2, prepareCount)
+        assertEquals(picked, params.overrides)
+    }
+
+    @Test
+    fun reopenDuringPendingZapResolvesOnceAndStartsFresh() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        seam.fakeTracks = Tracks(listOf(audioGroup("a", "de", "en")))
+        manager.selectTrack(TrackType.AUDIO, TrackChoice.Pick(TrackId("a", 1)))
+        assertTrue(params.overrides.isNotEmpty())
+        seam.fakeTracks = null
+        val gate = CompletableDeferred<Unit>()
+        fake.gate = gate
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+        assertEquals(listOf(1L, 2L), fake.resolved)
+
+        // Channel 2 hasn't loaded: the player still holds channel 1's picks, which must not carry over.
+        manager.reopen()
+        gate.complete(Unit)
+        idleMain()
+        idleMain(1_000)
+
+        assertEquals(listOf(1L, 2L, 2L), fake.resolved)
+        assertEquals(2, prepareCount)
+        assertEquals("2", exo.currentMediaItem!!.mediaId)
+        assertEquals(PlaybackState.Buffering(2), manager.state.value)
+        assertTrue(params.overrides.isEmpty())
+    }
+
+    @Test
+    fun busyProviderWhenACastStartsReResolvesThroughTheRelay() {
+        val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val relayServer = LocalHttpServer(io)
+        val requests = AtomicInteger()
+        val provider = serve {
+            // The direct stream, then busy for the relay's open and its one retry, then the stream again.
+            when (requests.incrementAndGet()) {
+                2, 3 -> MockResponse().setResponseCode(503)
+                else -> MockResponse().setBody(Buffer().write(CastHostTest.ts(20_000)))
+                    .throttleBody(188 * 100L, 10, TimeUnit.MILLISECONDS)
+            }
+        }
+        val host = CastHost(io, relayServer, OkHttpClient(), clock = { 0L }, heartbeatMs = 3_600_000, userAgent = "Loophole/test")
+        try {
+            relayServer.start(listOf(java.net.InetAddress.getByName("127.0.0.1")))
+            val fake = FakeResolver { provider.url("/live/${it.id}.ts").toString() }
+            manager.release()
+            exo = TestExoPlayerBuilder(context).build()
+            seam = SeamPlayer(exo)
+            manager = PlaybackManager(
+                context, OkHttpClient(), seam, clock = { nowMs }, resolver = CastingResolver(fake, host),
+                retryDelay = { ms -> retryDelays += ms },
+            )
+            manager.play(channel(1, "/live/1.ts"))
+            RobolectricUtil.runMainLooperUntil { requests.get() >= 1 }
+
+            // Casting starts: the stream re-opens through the relay, which the provider still refuses.
+            val session = host.start()
+            manager.reopen()
+            RobolectricUtil.runMainLooperUntil {
+                host.active.value?.epoch == 2 && exo.currentMediaItem?.localConfiguration?.uri?.path == "/c/${session.token}/2.ts"
+            }
+
+            assertEquals("direct, through the relay, then the player's switch retry", listOf(1L, 1L, 1L), fake.resolved)
+            assertEquals(listOf(500L), retryDelays)
+            assertEquals(4, requests.get())
+            assertFalse(manager.state.value is PlaybackState.Error)
+        } finally {
+            runBlocking { host.stop(StopReason.STOPPED) }
+            relayServer.stop()
+            provider.shutdown()
+            io.cancel()
+        }
+    }
+
+    @Test
+    fun reopenDuringSwitchRetryBackoffOpensOnce() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+        val base = prepareCount
+        failWith(httpError(509))
+        idleMain(100)
+        assertEquals(listOf(500L), retryDelays)
+        assertEquals(PlaybackState.Buffering(2), manager.state.value)
+
+        // The backoff is replaced by the reopen, never followed by a second open.
+        manager.reopen()
+        awaitPrepares(base + 1)
+        idleMain(10_000)
+
+        assertEquals(base + 1, prepareCount)
+        assertEquals(listOf(500L), retryDelays)
+        assertEquals(listOf(1L, 2L, 2L), fake.resolved)
+        assertEquals(1, exo.mediaItemCount)
+        assertEquals(PlaybackState.Buffering(2), manager.state.value)
+        assertEquals(1, fake.activeKeepAlives)
+    }
+
+    @Test
+    fun reopenArchiveKeepsPosition() {
+        val fake = engineManager()
+        val ch = channel(1, "/live/1.ts")
+        manager.playArchive(ch, programme)
+        awaitPrepares(1)
+        reportReady()
+        seam.fakePosition = 90_000
+
+        manager.reopen()
+        awaitPrepares(2)
+
+        val shifted = programme.copy(from = programme.from.plusSeconds(90))
+        assertEquals(listOf(1L to programme, 1L to shifted), fake.archiveCalls)
+        assertEquals(shifted, (manager.mode.value as PlayMode.Archive).request)
+        assertTrue(fake.resolved.isEmpty())
+    }
+
+    @Test
+    fun reopenIdleDoesNothing() {
+        val fake = engineManager()
+        manager.reopen()
+        idleMain(1_000)
+        assertEquals(0, prepareCount)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+
+        // Nor while following a cast: there is nothing to resolve.
+        manager.playCast(castUrl(), hls = false)
+        castReady()
+        manager.reopen()
+        idleMain(1_000)
+        assertEquals(1, prepareCount)
+        assertEquals(PlayMode.Cast, manager.mode.value)
+        assertTrue(fake.resolved.isEmpty())
+        assertTrue(fake.archiveCalls.isEmpty())
     }
 }

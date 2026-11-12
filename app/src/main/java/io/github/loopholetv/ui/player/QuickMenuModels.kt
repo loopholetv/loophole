@@ -47,9 +47,22 @@ enum class QuickItem(val label: String) {
     ASPECT("Aspect ratio"),
     SLEEP("Sleep timer"),
     FAVOURITE("Add to favourites"),
+
+    /** Labelled [CAST_STOP_LABEL] while this TV casts. */
+    CAST("Cast to all TVs"),
     OPTIONS("Channel options"),
     PIP("Picture-in-picture"),
     SETTINGS("Settings"),
+}
+
+/** The cast tile's label while this TV casts. */
+const val CAST_STOP_LABEL = "Stop casting"
+
+/** The small label over the video while this TV casts to [followers] other TVs. */
+fun castingLabel(followers: Int): String = when {
+    followers <= 0 -> "Casting"
+    followers == 1 -> "Casting to 1 TV"
+    else -> "Casting to $followers TVs"
 }
 
 /**
@@ -94,6 +107,8 @@ data class QuickValues(
     val aspect: AspectMode = AspectMode.FIT,
     val sleep: SleepState = SleepState.Off,
     val favourite: Boolean = false,
+    /** This TV is casting (the cast tile offers to stop). */
+    val casting: Boolean = false,
 )
 
 private const val KEY_AUTO = "auto"
@@ -119,10 +134,10 @@ internal fun distinctLabels(options: List<TrackOption>): List<TrackOption> {
 private fun PlayerTracks.subtitlesOff() = textOff || text.none { it.selected }
 
 fun quickEntries(items: List<QuickItem>, v: QuickValues): List<QuickEntry> = items.map { item ->
-    if (item == QuickItem.FAVOURITE) {
-        QuickEntry(item, if (v.favourite) OPTION_REMOVE_FAVOURITE else OPTION_ADD_FAVOURITE, null)
-    } else {
-        QuickEntry(item, item.label, quickValue(item, v))
+    when (item) {
+        QuickItem.FAVOURITE -> QuickEntry(item, if (v.favourite) OPTION_REMOVE_FAVOURITE else OPTION_ADD_FAVOURITE, null)
+        QuickItem.CAST -> QuickEntry(item, if (v.casting) CAST_STOP_LABEL else item.label, null)
+        else -> QuickEntry(item, item.label, quickValue(item, v))
     }
 }
 
@@ -186,6 +201,9 @@ internal interface QuickMenuHost {
     fun showChannels()
     fun watchFromStart()
     fun toggleFavourite()
+
+    /** Starts casting to the other TVs, or stops the cast running. */
+    fun toggleCasting()
     fun openOptions()
     fun saveAspect(mode: AspectMode)
     fun send(event: PlayerEvent)
@@ -267,6 +285,12 @@ internal class QuickMenuController(
             QuickItem.FAVOURITE -> {
                 open = o.copy(focus = item, panel = null)
                 host.toggleFavourite()
+                refresh()
+            }
+            // Stays open: the tile's label follows the cast as it starts or stops.
+            QuickItem.CAST -> {
+                open = o.copy(focus = item, panel = null)
+                host.toggleCasting()
                 refresh()
             }
             else -> {

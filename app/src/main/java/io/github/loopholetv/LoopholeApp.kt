@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.repo.StartupRefresher
+import io.github.loopholetv.player.CAST_CHANNEL_ID
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.work.RefreshRunnerProvider
 import kotlinx.coroutines.CancellationException
@@ -148,9 +149,10 @@ private suspend fun lookUp(playlistOf: suspend (Long) -> Long?, channelId: Long)
     null
 }
 
+/** The playing channel of this TV's own playlists; null for another TV's cast, which has none. */
 private fun PlaybackState.channelId(): Long? = when (this) {
     PlaybackState.Idle -> null
     is PlaybackState.Buffering -> channelId
     is PlaybackState.Playing -> channelId
     is PlaybackState.Error -> channelId
-}
+}?.takeIf { it != CAST_CHANNEL_ID }

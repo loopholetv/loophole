@@ -43,6 +43,7 @@ internal fun playerViewModelFactory(channelId: Long, scope: ChannelScope, archiv
                 remote = c.settingsStore.settings.map { it.remote },
                 archiveFrom = archiveFrom,
                 format = format,
+                cast = c.castController,
             )
         }
     }

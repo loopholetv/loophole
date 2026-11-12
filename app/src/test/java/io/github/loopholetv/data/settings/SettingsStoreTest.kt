@@ -281,4 +281,80 @@ class SettingsStoreTest {
         assertEquals(null, store.current().userAgent)
         assertEquals(null, store.current().udpProxy)
     }
+
+    @Test
+    fun castDefaults() = runTest {
+        val s = SettingsStore(dataStore(backgroundScope)).current()
+        assertEquals(true, s.castAllowJoin)
+        assertEquals(null, s.castTvName)
+    }
+
+    @Test
+    fun castRoundTrip() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        store.update { it.copy(castAllowJoin = false, castTvName = "Lounge") }
+        assertEquals(false, store.current().castAllowJoin)
+        assertEquals("Lounge", store.current().castTvName)
+        store.update { it.copy(castTvName = null) }
+        assertEquals(null, store.current().castTvName)
+    }
+
+    @Test
+    fun tvNameTrimsAndBlankIsNull() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        store.update { it.copy(castTvName = "  Den  ") }
+        assertEquals("Den", store.current().castTvName)
+        store.update { it.copy(castTvName = "   ") }
+        assertEquals(null, store.current().castTvName)
+    }
+
+    @Test
+    fun tvNameCappedAt40() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        store.update { it.copy(castTvName = "x".repeat(60)) }
+        assertEquals("x".repeat(40), store.current().castTvName)
+    }
+
+    @Test
+    fun tvNameHasNoTrailingSpaceAfterCap() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        store.update { it.copy(castTvName = "x".repeat(39) + "   y") }
+        assertEquals("x".repeat(39), store.current().castTvName)
+    }
+
+    @Test
+    fun rawLongStoredTvNameReadsBackCapped() = runTest {
+        val ds = dataStore(backgroundScope)
+        ds.edit { it[stringPreferencesKey("cast_tv_name")] = "z".repeat(60) }
+        assertEquals("z".repeat(40), SettingsStore(ds).current().castTvName)
+    }
+
+    @Test
+    fun tvNameCapNeverSplitsAnEmoji() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        val tv = "\ud83d\udcfa"
+        store.update { it.copy(castTvName = "x".repeat(39) + tv + tv) }
+        assertEquals("x".repeat(39) + tv, store.current().castTvName)
+        store.update { it.copy(castTvName = tv.repeat(50)) }
+        assertEquals(tv.repeat(40), store.current().castTvName)
+    }
+
+    @Test
+    fun castSelfIdIsStable() = runTest {
+        val ds = dataStore(backgroundScope)
+        val store = SettingsStore(ds)
+        val first = store.castSelfId()
+        assertEquals(first, java.util.UUID.fromString(first).toString())
+        assertEquals(first, store.castSelfId())
+        assertEquals(first, ds.data.first()[stringPreferencesKey("cast_self_id")])
+        store.update { it.copy(confirmExit = !it.confirmExit) }
+        assertEquals(first, SettingsStore(ds).castSelfId())
+    }
+
+    @Test
+    fun concurrentFirstCastSelfIdCallsAgree() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        val ids = List(8) { async { store.castSelfId() } }.awaitAll()
+        assertEquals(1, ids.toSet().size)
+    }
 }

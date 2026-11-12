@@ -5,6 +5,10 @@ import io.github.loopholetv.ui.splash.StartGate
 import android.view.KeyEvent
 import androidx.lifecycle.SavedStateHandle
 import androidx.media3.common.Player
+import io.github.loopholetv.cast.CastControls
+import io.github.loopholetv.cast.CastState
+import io.github.loopholetv.cast.NoCast
+import io.github.loopholetv.cast.StopReason
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.ChannelScope
@@ -200,6 +204,7 @@ class PlayerViewModelTest {
         remote: RemoteSettings = RemoteSettings(),
         archiveFrom: Instant? = null,
         elapsedMs: () -> Long = { 0L },
+        cast: CastControls = NoCast,
     ): PlayerViewModel {
         source = FakeChannels(channels, favourites).also { it.labels = labels }
         return PlayerViewModel(
@@ -240,6 +245,7 @@ class PlayerViewModelTest {
             archiveFrom = archiveFrom,
             elapsedMs = elapsedMs,
             format = GuideFormat(true, ZoneOffset.UTC),
+            cast = cast,
         )
     }
 
@@ -1535,6 +1541,93 @@ class PlayerViewModelTest {
         runCurrent()
         assertEquals(listOf(4L, 6L), playback.played)
         assertEquals(3, events.size)
+    }
+
+    /** Casting as the player sees it: starting casts to nobody yet; [onStop] runs as it stops. */
+    private class FakeCast(initial: CastState = CastState.Off) : CastControls {
+        val current = MutableStateFlow(initial)
+        override val state: StateFlow<CastState> = current
+        var starts = 0
+        val stops = mutableListOf<StopReason>()
+        var onStop: (StopReason) -> Unit = {}
+        override fun startCasting() {
+            starts++
+            current.value = CastState.Casting(0)
+        }
+        override fun stopCasting(reason: StopReason) {
+            stops += reason
+            onStop(reason)
+            current.value = CastState.Off
+        }
+    }
+
+    @Test fun castTileStartsAndStops() = runTest {
+        val cast = FakeCast()
+        val vm = vm(FakePlayback(), start = 3, cast = cast)
+        runCurrent()
+        assertNull("no label while not casting", vm.castingLabel.value)
+        vm.onLongOk()
+        assertEquals("Cast to all TVs", vm.entry(QuickItem.CAST).label)
+        vm.pickQuickItem(QuickItem.CAST)
+        runCurrent()
+        assertEquals(1, cast.starts)
+        assertEquals("the menu stays open on the tile", QuickItem.CAST, vm.menu().focus)
+        assertEquals("Stop casting", vm.entry(QuickItem.CAST).label)
+        assertEquals("Casting", vm.castingLabel.value)
+        cast.current.value = CastState.Casting(1)
+        runCurrent()
+        assertEquals("Casting to 1 TV", vm.castingLabel.value)
+        cast.current.value = CastState.Casting(3)
+        runCurrent()
+        assertEquals("Casting to 3 TVs", vm.castingLabel.value)
+
+        vm.pickQuickItem(QuickItem.CAST)
+        runCurrent()
+        assertEquals(listOf(StopReason.STOPPED), cast.stops)
+        assertEquals(1, cast.starts)
+        assertEquals("Cast to all TVs", vm.entry(QuickItem.CAST).label)
+        assertNull(vm.castingLabel.value)
+    }
+
+    @Test fun castTileLabelFollowsState() = runTest {
+        val cast = FakeCast()
+        val vm = vm(FakePlayback(), start = 3, cast = cast)
+        runCurrent()
+        vm.onLongOk()
+        assertEquals("Cast to all TVs", vm.entry(QuickItem.CAST).label)
+        // Started or stopped elsewhere (the TVs list, the guide): the open menu follows.
+        cast.current.value = CastState.Casting(2)
+        runCurrent()
+        assertEquals("Stop casting", vm.entry(QuickItem.CAST).label)
+        cast.current.value = CastState.Off
+        runCurrent()
+        assertEquals("Cast to all TVs", vm.entry(QuickItem.CAST).label)
+    }
+
+    @Test fun externalChannelStopsCastBeforeHandOff() = runTest {
+        prefs.value = mapOf(3L to ChannelPlaybackPrefs(externalPlayer = "org.videolan.vlc"))
+        val playback = FakePlayback()
+        val cast = FakeCast(CastState.Casting(2))
+        var handOffsAtStop = -1
+        cast.onStop = { handOffsAtStop = playback.handOffs.size }
+        val vm = vm(playback, start = 3, cast = cast)
+        val events = events(vm)
+        runCurrent()
+        assertEquals(listOf(StopReason.EXTERNAL_PLAYER), cast.stops)
+        assertEquals("the cast ends before the hand-off", 0, handOffsAtStop)
+        assertEquals(listOf(3L), playback.handOffs)
+        assertTrue(events.single() is PlayerEvent.LaunchExternal)
+
+        // Not casting: a hand-off stops nothing.
+        val idle = FakeCast()
+        vm(FakePlayback(), start = 3, cast = idle)
+        runCurrent()
+        assertEquals(emptyList<StopReason>(), idle.stops)
+        // A channel that plays here never stops the cast.
+        val casting = FakeCast(CastState.Casting(0))
+        vm(FakePlayback(), start = 4, cast = casting)
+        runCurrent()
+        assertEquals(emptyList<StopReason>(), casting.stops)
     }
 
     @Test fun externalResolveFailureShowsMessage() = runTest {

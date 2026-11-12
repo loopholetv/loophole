@@ -129,6 +129,7 @@ class SettingsViewModelTest {
             playingPlaylistId = playing,
             pipSupported = pipSupported,
             maxCatchupDays = { maxCatchupDays },
+            defaultTvName = "Default TV",
         )
     }
 
@@ -850,5 +851,27 @@ class SettingsViewModelTest {
         assertEquals(7, f.vm().state.value.automaticPastDays)
         f.maxCatchupDays = null
         assertEquals(0, f.vm().state.value.automaticPastDays)
+    }
+
+    @Test fun setTvNameUpdatesUi() = runTest {
+        val f = Fakes(emptyList())
+        val vm = f.vm()
+        vm.setTvName("  Lounge ")
+        assertEquals("Lounge", f.settings.value.castTvName)
+        assertEquals("Lounge", vm.state.value.tvName)
+        vm.setTvName("  ")
+        assertNull(f.settings.value.castTvName)
+    }
+
+    @Test fun tvNameFallsBackToDefault() = runTest {
+        val f = Fakes(emptyList())
+        val vm = f.vm()
+        assertEquals("Default TV", vm.state.value.tvName)
+    }
+
+    @Test fun storedTvNameSurvivesColdStart() = runTest {
+        val f = Fakes(emptyList())
+        f.settings.value = AppSettings(castTvName = "Den")
+        assertEquals("Den", f.vm().state.value.tvName)
     }
 }

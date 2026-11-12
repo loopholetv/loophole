@@ -92,10 +92,11 @@ Enter the portal address and the MAC address your provider registered (usually s
 - **Catch-up TV:** on channels your provider records, a rewind icon marks them in the guide and Left walks back into finished programmes, as far as the channel's archive goes. OK on one plays it from the start in full screen; when it ends, the next one starts. Works with Xtream Codes accounts (`tv_archive`) and with M3U playlists that declare catch-up (`catchup="default"`, `"append"`, `"shift"`, `"flussonic"` or `"xc"`, with `catchup-source` and `catchup-days`). MAC (Stalker) portals have no catch-up yet.
 - **Seek bar:** while a programme plays back, Rewind and Fast-forward jump 10 and 30 seconds (hold them to go faster; the picture moves once you let go), Play/Pause pauses, and the bar shows the title, times, elapsed and total time. *Live* (or fast-forwarding to the end) returns to the live channel. *Watch from start* in the quick menu restarts the current programme.
 - **Rewind and pause live TV:** on a catch-up channel, Rewind goes back from live and Pause holds the picture; Play carries on from where you paused. On a channel without catch-up, Loophole says so.
-- **Quick menu:** press ≡ or hold OK while watching for Search, Channels, Video quality, Audio track, Audio delay, Subtitles, Aspect ratio, Sleep timer, Add to favourites, Channel options, Picture-in-picture (where the TV supports it) and Settings.
+- **Quick menu:** press ≡ or hold OK while watching for Search, Channels, Video quality, Audio track, Audio delay, Subtitles, Aspect ratio, Sleep timer, Add to favourites, Cast to all TVs, Channel options, Picture-in-picture (where the TV supports it) and Settings.
 - **History:** channels you watched for 10 seconds or more, newest first, from the History tile in the full-screen overlay.
 - **Sleep timer:** 15 minutes to 2 hours, with a warning before it stops.
 - **Picture-in-picture:** on TVs that support it, from the quick menu or (if you turn it on) the Home button. Closing the small window stops the stream. Fire TV devices usually don't offer it, and then it isn't shown.
+- **Cast to other TVs:** one TV shares what it's playing with the other Loophole TVs on your home network, using a single connection to your provider. Choose *Cast to all TVs* in the quick menu: TVs with nothing playing join by themselves, and a TV that is playing something gets a short prompt. Back on a following TV leaves the cast, and *TVs* in the side menu lists the other TVs and lets it join again. Each TV takes part only while Loophole is open on it. To stop a TV joining by itself, turn off Settings → General → *Allow other TVs to cast to this TV*.
 - **External players:** a channel can open in MX Player, VLC, Kodi or Just Player when they're installed, or ask each time. Loophole stops its own stream first, so a one-connection account isn't used twice.
 - **Start and exit:** optionally reopen the last channel on start, and optionally confirm before Back leaves the app.
 
@@ -123,7 +124,7 @@ Enter the portal address and the MAC address your provider registered (usually s
 ### Private by design
 
 - No analytics, crash reporting or ads.
-- Network requests go only to the playlist, guide, logo and stream addresses you supply.
+- Network requests go only to the playlist, guide, logo and stream addresses you supply, and, for casting, to other Loophole TVs on your home network.
 
 ## Install
 
@@ -180,7 +181,7 @@ Release signing reads a `keystore.properties` file (`storeFile`, `storePassword`
 
 ## Privacy
 
-Loophole has no analytics, crash reporting or ads, and no account of its own. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply. Playlist URLs and credentials are redacted from logs and error messages.
+Loophole has no analytics, crash reporting or ads, and no account of its own. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply. When casting, Loophole talks to other Loophole TVs on your home network and never sends them playlist links or logins. Playlist URLs and credentials are redacted from logs and error messages.
 
 ## Licence & third-party notices
 

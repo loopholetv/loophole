@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import io.github.loopholetv.util.takeCodePoints
+import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
@@ -37,6 +39,19 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             prefs.applyPastDaysMigration()
             prefs.write(transform(prefs.toSettings()))
         }
+    }
+
+    /**
+     * This TV's id for casting: a random UUID made on first use and kept from then on. Created
+     * inside one edit, so concurrent first calls agree. Not part of [AppSettings].
+     */
+    suspend fun castSelfId(): String {
+        var id = ""
+        store.edit { prefs ->
+            val stored = prefs[CAST_SELF_ID]?.takeIf { it.isNotBlank() }
+            id = stored ?: UUID.randomUUID().toString().also { prefs[CAST_SELF_ID] = it }
+        }
+        return id
     }
 
     /** One-off upgrade step, run before the first read. */
@@ -72,6 +87,8 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             lastGuideScope = this[LAST_GUIDE_SCOPE],
             userAgent = this[USER_AGENT]?.trim()?.takeIf { it.isNotEmpty() },
             udpProxy = this[UDP_PROXY]?.trim()?.takeIf { it.isNotEmpty() },
+            castAllowJoin = this[CAST_ALLOW_JOIN] ?: d.castAllowJoin,
+            castTvName = this[CAST_TV_NAME].cleanTvName(),
             playback = readPlayback(),
             remote = readRemote(),
         )
@@ -128,6 +145,8 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         if (scope == null) remove(LAST_GUIDE_SCOPE) else this[LAST_GUIDE_SCOPE] = scope
         putOrRemove(USER_AGENT, s.userAgent)
         putOrRemove(UDP_PROXY, s.udpProxy)
+        this[CAST_ALLOW_JOIN] = s.castAllowJoin
+        putOrRemove(CAST_TV_NAME, s.castTvName.cleanTvName())
         writePlayback(s.playback)
         writeRemote(s.remote)
     }
@@ -168,6 +187,10 @@ class SettingsStore(private val store: DataStore<Preferences>) {
     private fun Int?.validOr(allowed: List<Int>, default: Int): Int =
         if (this != null && this in allowed) this else default
 
+    /** Trimmed and capped at [MAX_TV_NAME_LENGTH] code points; blank is null. */
+    private fun String?.cleanTvName(): String? =
+        this?.trim()?.takeCodePoints(MAX_TV_NAME_LENGTH)?.trim()?.takeIf { it.isNotEmpty() }
+
     /** A stored enum name; unknown or missing names give [default]. */
     private inline fun <reified E : Enum<E>> String?.validOr(default: E): E =
         enumValues<E>().firstOrNull { it.name == this } ?: default
@@ -192,6 +215,9 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         val LAST_GUIDE_SCOPE = stringPreferencesKey("last_guide_scope")
         val USER_AGENT = stringPreferencesKey("user_agent")
         val UDP_PROXY = stringPreferencesKey("udp_proxy")
+        val CAST_ALLOW_JOIN = booleanPreferencesKey("cast_allow_join")
+        val CAST_TV_NAME = stringPreferencesKey("cast_tv_name")
+        val CAST_SELF_ID = stringPreferencesKey("cast_self_id")
         val BUFFER_PRESET = stringPreferencesKey("buffer_preset")
         val VIDEO_DECODER = stringPreferencesKey("video_decoder")
         val AUDIO_DECODER = stringPreferencesKey("audio_decoder")

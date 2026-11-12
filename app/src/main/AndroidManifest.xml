@@ -3,6 +3,8 @@
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <!-- The Wi-Fi permissions below must not keep Loophole off TVs that are on Ethernet only. -->
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -13,6 +15,14 @@
         android:maxSdkVersion="32" />
     <!-- In-app updates: the signed release APK from GitHub, through the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Casting between TVs on the home network: finding the other TVs (Wi-Fi state and a
+         multicast lock for service discovery and the broadcast beacon), and a Wi-Fi lock while
+         casting so power saving doesn't slow the stream. Local network access is its own
+         permission on newer Android versions. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <!-- Package visibility: lets Search detect a speech recogniser for voice input, and the local
          file source detect a system document picker (else it shows its own file browser). -->

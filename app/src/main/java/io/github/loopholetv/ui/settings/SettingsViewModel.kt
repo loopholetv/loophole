@@ -19,6 +19,7 @@ import io.github.loopholetv.data.settings.GuideAction
 import io.github.loopholetv.data.settings.KeyBindings
 import io.github.loopholetv.data.settings.PlayerAction
 import io.github.loopholetv.data.settings.RemoteSettings
+import io.github.loopholetv.data.settings.defaultTvName
 import io.github.loopholetv.data.settings.effectivePastDays
 import io.github.loopholetv.data.settings.isRemappable
 import io.github.loopholetv.data.settings.PlaybackSettings
@@ -92,6 +93,8 @@ data class SettingsUi(
     val automaticPastDays: Int = 0,
     /** False only before the first database read (a restored playlist page must not bounce back). */
     val loaded: Boolean = false,
+    /** This TV's name for casting: the stored name, or the device default. */
+    val tvName: String = "",
 )
 
 private data class UpdateAll(val playlistId: Long? = null, val count: Int = 0)
@@ -145,6 +148,8 @@ class SettingsViewModel(
     val pipSupported: Boolean = false,
     /** The longest archive any channel offers, in days; null when none does. */
     private val maxCatchupDays: suspend () -> Int? = { null },
+    /** The name used when none is set. */
+    private val defaultTvName: String = "Loophole TV",
 ) : ViewModel() {
     private val work: CoroutineScope get() = workScope ?: viewModelScope
     private val ops = MutableStateFlow(Ops())
@@ -176,6 +181,7 @@ class SettingsViewModel(
             confirmRemoveSource = o.confirmRemoveSource?.let { sid -> epgUi.flatMap { it.sources }.firstOrNull { it.id == sid } },
             automaticPastDays = effectivePastDays(AUTO_PAST_DAYS, o.maxCatchupDays),
             loaded = true,
+            tvName = opts.castTvName ?: defaultTvName,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUi())
 
@@ -281,6 +287,9 @@ class SettingsViewModel(
         val value = ua.trim().takeIf { it.isNotEmpty() }
         setOption { it.copy(userAgent = value) }
     }
+
+    /** Blank goes back to the device name. */
+    fun setTvName(name: String) = setOption { it.copy(castTvName = name.trim().takeIf { n -> n.isNotEmpty() }) }
 
     /** Blank clears; anything [parseUdpProxy] rejects shows [UDP_PROXY_INVALID] and saves nothing. */
     fun setUdpProxy(input: String) {
@@ -466,6 +475,7 @@ class SettingsViewModel(
                         .map { id -> id?.let { playlistOfChannel(it) { cid -> c.db.channelDao().byId(cid)?.playlistId } } },
                     pipSupported = c.pipSupported,
                     maxCatchupDays = { c.db.channelDao().maxCatchupDays() },
+                    defaultTvName = defaultTvName(app),
                 ) as T
             }
         }

@@ -1,5 +1,6 @@
 package io.github.loopholetv
 
+import io.github.loopholetv.player.CAST_CHANNEL_ID
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.StreamTags
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -60,6 +61,19 @@ class HiddenChannelPlaybackStopTest {
         visible.getValue(20).value = false
         testScheduler.runCurrent()
         assertEquals(1, stops)
+    }
+
+    @Test fun aFollowedCastIsNeverStopped() = runTest(UnconfinedTestDispatcher()) {
+        // Another TV's stream has no channel row here, whatever a lookup of its id says.
+        val state = MutableStateFlow<PlaybackState>(PlaybackState.Idle)
+        var stops = 0
+        stopPlaybackWhenChannelHidden(
+            state, { flowOf(false) }, { stops++; state.value = PlaybackState.Idle },
+            backgroundScope, main = UnconfinedTestDispatcher(testScheduler),
+        )
+        state.value = PlaybackState.Buffering(CAST_CHANNEL_ID)
+        state.value = PlaybackState.Playing(CAST_CHANNEL_ID, StreamTags.NONE)
+        assertEquals(0, stops)
     }
 
     private fun PlaybackState.idOrNull(): Long? = when (this) {

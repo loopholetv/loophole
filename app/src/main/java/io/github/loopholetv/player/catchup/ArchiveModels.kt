@@ -19,6 +19,9 @@ sealed interface PlayMode {
         /** True when the loaded archive is an HLS stream, which seeks freely; otherwise it is progressive. */
         val hls: Boolean = false,
     ) : PlayMode
+
+    /** Following another TV's cast on the home network: no channel, and nothing goes through the resolver. */
+    data object Cast : PlayMode
 }
 
 /** A guide programme in shown times; a null [title] means "No information". */

@@ -110,6 +110,8 @@ fun GuideScreen(
     vm: GuideViewModel = viewModel(factory = GuideViewModel.Factory),
     /** OK on a finished programme: its archive is playing from [from]; open it full screen. */
     onPlayArchive: (channelId: Long, scope: ChannelScope, from: Instant) -> Unit = { _, _, _ -> },
+    /** The side menu's TVs: the other TVs on the home network. */
+    onTvs: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as LoopholeApp).container }
@@ -469,6 +471,19 @@ fun GuideScreen(
         leaveCard()
     }
 
+    // The cast banner beside the update card while this TV casts; Up from the first row reaches it.
+    val casting by vm.casting.collectAsStateWithLifecycle()
+    val castFocus = remember { FocusRequester() }
+    var castHasFocus by remember { mutableStateOf(false) }
+    // The cast ended (here or from another screen) while the banner had focus: back where it was.
+    LaunchedEffect(casting) {
+        if (!casting && castHasFocus) {
+            castHasFocus = false
+            leaveCard()
+        }
+    }
+    BackHandler(enabled = castHasFocus && casting) { leaveCard() }
+
     // The edit dialog open after an option was picked (rename, logo, TV guide, time shift, sort...).
     var channelEdit by remember { mutableStateOf<PendingChannelEdit?>(null) }
     var groupOptions by remember { mutableStateOf<GroupItem?>(null) }
@@ -581,22 +596,43 @@ fun GuideScreen(
                         onOk = ::openPreview,
                         onLongPress = { channel -> options = OptionsTarget(channel, fromPreview = true) },
                         subtitleStyle = subtitleStyle,
-                        rightTo = cardFocus.takeIf { updateCard?.buttons?.isNotEmpty() == true },
+                        rightTo = castFocus.takeIf { casting } ?: cardFocus.takeIf { updateCard?.buttons?.isNotEmpty() == true },
                         onDown = { if (channels.itemCount > 0) focusGrid() else focusSelectedGroup() },
                         modifier = Modifier.fillMaxHeight().onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Preview) },
                     )
-                    Box(Modifier.weight(1f).fillMaxHeight()) {
-                        ProgrammeInfo(focused, now, format, Modifier.fillMaxSize().padding(top = 4.dp), moving = moveTitle)
-                        updateCard?.let { card ->
-                            UpdateCard(
-                                card = card,
-                                progress = (updateStatus as? UpdateStatus.Downloading)?.percent,
-                                primaryFocus = cardFocus,
-                                onAction = ::onCardAction,
-                                onLeave = ::leaveCard,
-                                onFocusChange = { cardHasFocus = it },
-                                modifier = Modifier.align(Alignment.TopEnd),
-                            )
+                    // The cast banner and the update card stack at the top end, inside the details
+                    // (not a row of their own: the grid keeps its 8 rows); the title ends before them.
+                    Row(Modifier.weight(1f).fillMaxHeight(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        ProgrammeInfo(focused, now, format, Modifier.weight(1f).fillMaxHeight().padding(top = 4.dp), moving = moveTitle)
+                        if (casting || updateCard != null) {
+                            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (casting) {
+                                    CastBanner(
+                                        focus = castFocus,
+                                        onStop = {
+                                            castHasFocus = false
+                                            vm.stopCasting()
+                                            leaveCard()
+                                        },
+                                        onDown = {
+                                            if (updateCard?.buttons?.isNotEmpty() != true || !cardFocus.tryFocus()) leaveCard()
+                                        },
+                                        onLeft = { if (!previewFocus.tryFocus()) leaveCard() },
+                                        onFocusChange = { castHasFocus = it },
+                                    )
+                                }
+                                updateCard?.let { card ->
+                                    UpdateCard(
+                                        card = card,
+                                        progress = (updateStatus as? UpdateStatus.Downloading)?.percent,
+                                        primaryFocus = cardFocus,
+                                        onAction = ::onCardAction,
+                                        onLeave = ::leaveCard,
+                                        onFocusChange = { cardHasFocus = it },
+                                        banner = castFocus.takeIf { casting },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -652,7 +688,7 @@ fun GuideScreen(
                             focusTargetId = focusTarget,
                             focusPending = gridFocusPending,
                             anchor = timeAnchor,
-                            upFromTop = previewFocus,
+                            upFromTop = if (casting) castFocus else previewFocus,
                             actions = actions,
                             favourites = favourites,
                             movingId = movingId,
@@ -681,6 +717,7 @@ fun GuideScreen(
                     RailItem.TV -> if (channels.itemCount > 0) focusGrid() else focusSelectedGroup()
                     RailItem.SETTINGS -> onSettings()
                     RailItem.SEARCH -> onSearch()
+                    RailItem.TVS -> onTvs()
                     else -> Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
                 }
             },

@@ -7,6 +7,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import io.github.loopholetv.cast.CastControls
+import io.github.loopholetv.cast.CastState
+import io.github.loopholetv.cast.NoCast
 import io.github.loopholetv.data.catchup.catchup
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
@@ -106,6 +109,8 @@ class PlayerViewModel(
     elapsedMs: () -> Long = SystemClock::elapsedRealtime,
     /** Times on the catch-up bar. */
     format: GuideFormat = GuideFormat(true, ZoneId.systemDefault()),
+    /** Casting what plays here to the other TVs (the quick menu's cast tile). */
+    private val cast: CastControls = NoCast,
 ) : ViewModel() {
 
     private val toggle = toggleFavourite
@@ -186,10 +191,14 @@ class PlayerViewModel(
                 aspect = _aspect.value,
                 sleep = sleep.value,
                 favourite = _ui.value?.favourite == true,
+                casting = cast.state.value is CastState.Casting,
             )
             override fun showChannels() = showOverlay()
             override fun watchFromStart() = this@PlayerViewModel.watchFromStart()
             override fun toggleFavourite() = this@PlayerViewModel.toggleFavourite()
+            override fun toggleCasting() {
+                if (cast.state.value is CastState.Casting) cast.stopCasting() else cast.startCasting()
+            }
             override fun openOptions() { _ui.value?.channel?.let(::openOptions) }
             override fun saveAspect(mode: AspectMode) {
                 val c = _ui.value?.channel ?: return
@@ -216,7 +225,11 @@ class PlayerViewModel(
     /** The open quick menu; null when closed. */
     val quickMenu: StateFlow<QuickMenuUi?> = menu.ui
 
-    private val opener = ChannelOpener(playback, channelPlayback)
+    /** "Casting", "Casting to 1 TV"... over the video while this TV casts; null otherwise. */
+    val castingLabel: StateFlow<String?> =
+        cast.state.map { it.label() }.stateIn(viewModelScope, SharingStarted.Eagerly, cast.state.value.label())
+
+    private val opener = ChannelOpener(playback, channelPlayback, cast)
 
     private val catchup = PlayerCatchup(
         playback, programmeLookup ?: airingLookup(nowAndNext), clock, elapsedMs, format, viewModelScope,
@@ -271,7 +284,10 @@ class PlayerViewModel(
             }
         }
         viewModelScope.launch {
-            merge(playback.tracks, _aspect, sleep, catchupBar.map { it == null }.distinctUntilChanged()).collect { menu.refresh() }
+            merge(
+                playback.tracks, _aspect, sleep, catchupBar.map { it == null }.distinctUntilChanged(),
+                cast.state.map { it is CastState.Casting }.distinctUntilChanged(),
+            ).collect { menu.refresh() }
         }
         viewModelScope.launch { remote.catch { }.collect { remoteSettings = it } }
         // Not lifecycle-bound: the expiry is not replayed, and the exit must not be missed.
@@ -876,3 +892,6 @@ class PlayerViewModel(
             playerViewModelFactory(channelId, scope, archiveFrom)
     }
 }
+
+/** The label over the video for this state; null while not casting. */
+private fun CastState.label(): String? = (this as? CastState.Casting)?.let { castingLabel(it.followers) }

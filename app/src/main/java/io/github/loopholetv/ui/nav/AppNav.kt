@@ -18,6 +18,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.loopholetv.cast.CastState
+import io.github.loopholetv.ui.cast.CastFollowScreen
+import io.github.loopholetv.ui.cast.CastInviteCard
+import io.github.loopholetv.ui.cast.InviteKeys
+import io.github.loopholetv.ui.cast.TvsPanel
+import kotlinx.coroutines.flow.combine
 import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.player.rememberInPictureInPicture
 import io.github.loopholetv.shouldCloseAbovePlayerForPip
@@ -55,6 +69,10 @@ object Routes {
     const val PLAYER = "player/{channelId}?scope={scope}&archiveFrom={archiveFrom}"
     /** The full-screen add/edit playlist form opened from Settings; `edit` is a playlist id. */
     const val PLAYLIST_FORM = "playlist-form?edit={edit}"
+    /** The other TVs on the home network: a right-side panel like Settings. */
+    const val TVS = "tvs"
+    /** Full-screen video of another TV's cast. */
+    const val CAST_FOLLOW = "cast/follow"
 
     const val ARG_CHANNEL_ID = "channelId"
     const val ARG_SCOPE = "scope"
@@ -104,6 +122,35 @@ fun searchFromPlayerOptions(): NavOptions = navOptions {
 }
 
 /**
+ * Into the follow screen: everything above the guide goes first, so a player left underneath
+ * can't play a channel over the cast.
+ */
+fun castFollowOptions(): NavOptions = navOptions {
+    popUpTo(Routes.GUIDE) { inclusive = false }
+    launchSingleTop = true
+}
+
+/** Whether the follow screen opens ([ENTER]) or closes ([LEAVE]) for the cast state. */
+enum class FollowNav { NONE, ENTER, LEAVE }
+
+/**
+ * Following a cast always shows the follow screen, and the follow screen shows only while
+ * following. [currentRoute] null means no destination yet, which never navigates.
+ */
+fun followNavFor(following: Boolean, currentRoute: String?): FollowNav = when {
+    currentRoute == null -> FollowNav.NONE
+    following && currentRoute != Routes.CAST_FOLLOW -> FollowNav.ENTER
+    !following && currentRoute == Routes.CAST_FOLLOW -> FollowNav.LEAVE
+    else -> FollowNav.NONE
+}
+
+/** From the follow screen back to the guide (or whatever is under it when there is no guide). */
+private fun NavHostController.leaveFollow() {
+    if (currentDestination?.route != Routes.CAST_FOLLOW) return
+    if (!popBackStack(Routes.GUIDE, inclusive = false)) popBackStack()
+}
+
+/**
  * Every playlist counts, turned on or off: with all of them off the guide stays and says so,
  * so [hasPlaylist] comes from all playlists, never only the enabled ones.
  */
@@ -143,90 +190,151 @@ fun AppNav(
             navController.popBackStack(Routes.PLAYER, inclusive = false)
         }
     }
-    NavHost(
-        navController = navController,
-        startDestination = startDestination,
-        modifier = Modifier.fillMaxSize().background(Tokens.Background),
-    ) {
-        composable(Routes.ONBOARDING) {
-            AddPlaylistScreen(onDone = {
-                navController.navigate(Routes.GUIDE) { popUpTo(Routes.ONBOARDING) { inclusive = true } }
-            })
-        }
-        composable(Routes.GUIDE) {
-            // Last channel on start: at most once per process start (the slot empties on the
-            // first look, wherever the app is); the guide stays underneath for Back.
-            LaunchedEffect(startPlayback) {
-                val start = startPlayback.take(navController.currentDestination?.route) ?: return@LaunchedEffect
-                navController.navigate(Routes.player(start.channelId, start.scope)) { launchSingleTop = true }
-            }
-            // Composed before GuideScreen so the guide's own Back handlers (shifted window, move
-            // mode) win while enabled (guide only).
-            val context = LocalContext.current
-            val exit = remember { ExitConfirm(clock = SystemClock::uptimeMillis) }
-            BackHandler(enabled = confirmExit) {
-                when (exit.onBack()) {
-                    ExitDecision.SHOW_HINT ->
-                        Toast.makeText(context, "Press Back again to exit", Toast.LENGTH_SHORT).show()
-                    ExitDecision.EXIT -> context.findActivity()?.finish()
+    val cast = container.castController
+    val toastContext = LocalContext.current
+    // Messages about casts (ended, lost, can't play...), wherever the app is.
+    LaunchedEffect(cast, toastContext) {
+        cast.messages.collect { Toast.makeText(toastContext, it, Toast.LENGTH_SHORT).show() }
+    }
+    // Following a cast shows the follow screen; when the cast ends the guide comes back, with
+    // nothing replaying in its preview.
+    LaunchedEffect(navController, cast) {
+        combine(
+            cast.state.map { it is CastState.Following }.distinctUntilChanged(),
+            navController.currentBackStackEntryFlow.map { it.destination.route },
+            ::followNavFor,
+        ).collect { nav ->
+            when (nav) {
+                FollowNav.ENTER -> navController.navigate(Routes.CAST_FOLLOW, castFollowOptions())
+                FollowNav.LEAVE -> {
+                    container.previewHold.hold()
+                    navController.leaveFollow()
                 }
+                FollowNav.NONE -> Unit
             }
-            GuideScreen(
-                onPlay = { id, scope -> navController.navigate(Routes.player(id, scope)) },
-                onPlayArchive = { id, scope, from -> navController.navigate(Routes.player(id, scope, from)) },
-                onSettings = { navController.navigate(Routes.SETTINGS) },
-                onSearch = { navController.navigate(Routes.SEARCH) { launchSingleTop = true } },
-            )
         }
-        // Full screen (not a dialog): the player opened from a result pops back here.
-        composable(Routes.SEARCH) {
-            SearchScreen(
-                onPlayChannel = { navController.navigate(Routes.player(it, ChannelScope.All)) },
-                onBack = dropUnlessResumed { navController.popBackStack() },
-            )
-        }
-        composable(Routes.PLAYER, arguments = Routes.playerArguments) { entry ->
-            val args = entry.arguments
-            PlayerScreen(
-                channelId = args?.getLong(Routes.ARG_CHANNEL_ID) ?: 0L,
-                scope = channelScopeFromArg(args?.getString(Routes.ARG_SCOPE)),
-                archiveFrom = archiveFromArg(args?.getLong(Routes.ARG_ARCHIVE_FROM, NO_ARCHIVE)),
-                // Only while this entry is resumed: a second Back during the exit fade must not
-                // pop the guide too.
-                onExit = dropUnlessResumed { navController.popBackStack() },
-                onSearch = dropUnlessResumed { navController.navigate(Routes.SEARCH, searchFromPlayerOptions()) },
-                // A dialog destination: the video keeps playing underneath.
-                onSettings = dropUnlessResumed { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
-            )
-        }
-        // A dialog destination keeps the previous screen composed underneath; Back pops it.
-        dialog(
-            Routes.SETTINGS,
-            dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    }
+    // Not in picture-in-picture, which shows the video alone.
+    val invite = cast.invite.collectAsStateWithLifecycle().value?.takeIf { !inPip }
+    // While the invitation shows it has the remote; the screen underneath keeps its focus.
+    val inviteKeys = remember(cast) {
+        InviteKeys(onWatch = { cast.invite.value?.let { cast.join(it.peer.id) } }, onIgnore = cast::ignoreInvite)
+    }
+    LaunchedEffect(invite?.peer?.castId) { inviteKeys.reset() }
+    val inviteShowing by rememberUpdatedState(invite != null)
+    Box(
+        Modifier.fillMaxSize().onPreviewKeyEvent { e ->
+            val down = e.type == KeyEventType.KeyDown
+            if (!down && e.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+            inviteKeys.onKey(e.nativeKeyEvent.keyCode, down, e.nativeKeyEvent.repeatCount, inviteShowing)
+        },
+    ) {
+        NavHost(
+            navController = navController,
+            startDestination = startDestination,
+            modifier = Modifier.fillMaxSize().background(Tokens.Background),
         ) {
-            SettingsPanelHost {
-                // The same full-screen form as first start; Done and Back return to Settings.
-                SettingsPanel(
-                    onAddPlaylist = { navController.navigate(Routes.playlistForm()) { launchSingleTop = true } },
-                    onEditPlaylist = { navController.navigate(Routes.playlistForm(it)) { launchSingleTop = true } },
+            composable(Routes.ONBOARDING) {
+                AddPlaylistScreen(onDone = {
+                    navController.navigate(Routes.GUIDE) { popUpTo(Routes.ONBOARDING) { inclusive = true } }
+                })
+            }
+            composable(Routes.GUIDE) {
+                // Last channel on start: at most once per process start (the slot empties on the
+                // first look, wherever the app is); the guide stays underneath for Back.
+                LaunchedEffect(startPlayback) {
+                    val start = startPlayback.take(navController.currentDestination?.route) ?: return@LaunchedEffect
+                    navController.navigate(Routes.player(start.channelId, start.scope)) { launchSingleTop = true }
+                }
+                // Composed before GuideScreen so the guide's own Back handlers (shifted window, move
+                // mode) win while enabled (guide only).
+                val context = LocalContext.current
+                val exit = remember { ExitConfirm(clock = SystemClock::uptimeMillis) }
+                BackHandler(enabled = confirmExit) {
+                    when (exit.onBack()) {
+                        ExitDecision.SHOW_HINT ->
+                            Toast.makeText(context, "Press Back again to exit", Toast.LENGTH_SHORT).show()
+                        ExitDecision.EXIT -> context.findActivity()?.finish()
+                    }
+                }
+                GuideScreen(
+                    onPlay = { id, scope -> navController.navigate(Routes.player(id, scope)) },
+                    onPlayArchive = { id, scope, from -> navController.navigate(Routes.player(id, scope, from)) },
+                    onSettings = { navController.navigate(Routes.SETTINGS) },
+                    onSearch = { navController.navigate(Routes.SEARCH) { launchSingleTop = true } },
+                    onTvs = { navController.navigate(Routes.TVS) { launchSingleTop = true } },
                 )
             }
-        }
-        // A full-screen dialog over Settings (not a composable: navigating to one pops every dialog),
-        // so Settings stays open underneath, on the page it was on.
-        dialog(
-            Routes.PLAYLIST_FORM,
-            arguments = listOf(navArgument(Routes.ARG_EDIT) { type = NavType.LongType; defaultValue = NO_EDIT }),
-            dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) { entry ->
-            val editId = playlistFormEditId(entry.arguments?.getLong(Routes.ARG_EDIT, NO_EDIT))
-            Box(Modifier.fillMaxSize().background(Tokens.Background)) {
-                AddPlaylistScreen(
-                    editId = editId,
-                    onDone = dropUnlessResumed { navController.popBackStack() },
+            // Only Back does anything here; the cast plays through the shared player.
+            composable(Routes.CAST_FOLLOW) {
+                CastFollowScreen(onExit = { navController.leaveFollow() })
+            }
+            // Full screen (not a dialog): the player opened from a result pops back here.
+            composable(Routes.SEARCH) {
+                SearchScreen(
+                    onPlayChannel = { navController.navigate(Routes.player(it, ChannelScope.All)) },
                     onBack = dropUnlessResumed { navController.popBackStack() },
                 )
             }
+            composable(Routes.PLAYER, arguments = Routes.playerArguments) { entry ->
+                val args = entry.arguments
+                PlayerScreen(
+                    channelId = args?.getLong(Routes.ARG_CHANNEL_ID) ?: 0L,
+                    scope = channelScopeFromArg(args?.getString(Routes.ARG_SCOPE)),
+                    archiveFrom = archiveFromArg(args?.getLong(Routes.ARG_ARCHIVE_FROM, NO_ARCHIVE)),
+                    // Only while this entry is resumed: a second Back during the exit fade must not
+                    // pop the guide too.
+                    onExit = dropUnlessResumed { navController.popBackStack() },
+                    onSearch = dropUnlessResumed { navController.navigate(Routes.SEARCH, searchFromPlayerOptions()) },
+                    // A dialog destination: the video keeps playing underneath.
+                    onSettings = dropUnlessResumed { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
+                )
+            }
+            // A dialog destination keeps the previous screen composed underneath; Back pops it.
+            dialog(
+                Routes.SETTINGS,
+                dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            ) {
+                SettingsPanelHost {
+                    // The same full-screen form as first start; Done and Back return to Settings.
+                    SettingsPanel(
+                        onAddPlaylist = { navController.navigate(Routes.playlistForm()) { launchSingleTop = true } },
+                        onEditPlaylist = { navController.navigate(Routes.playlistForm(it)) { launchSingleTop = true } },
+                    )
+                }
+            }
+            dialog(
+                Routes.TVS,
+                dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            ) {
+                SettingsPanelHost {
+                    TvsPanel(onClose = dropUnlessResumed { navController.popBackStack() })
+                }
+            }
+            // A full-screen dialog over Settings (not a composable: navigating to one pops every dialog),
+            // so Settings stays open underneath, on the page it was on.
+            dialog(
+                Routes.PLAYLIST_FORM,
+                arguments = listOf(navArgument(Routes.ARG_EDIT) { type = NavType.LongType; defaultValue = NO_EDIT }),
+                dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            ) { entry ->
+                val editId = playlistFormEditId(entry.arguments?.getLong(Routes.ARG_EDIT, NO_EDIT))
+                Box(Modifier.fillMaxSize().background(Tokens.Background)) {
+                    AddPlaylistScreen(
+                        editId = editId,
+                        onDone = dropUnlessResumed { navController.popBackStack() },
+                        onBack = dropUnlessResumed { navController.popBackStack() },
+                    )
+                }
+            }
+        }
+        // Over every screen, top-right: another TV started casting while this one plays something.
+        invite?.let { offer ->
+            CastInviteCard(
+                name = offer.peer.name,
+                selected = inviteKeys.selected,
+                modifier = Modifier.align(Alignment.TopEnd).padding(24.dp),
+            )
         }
     }
 }

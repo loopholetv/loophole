@@ -15,11 +15,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import io.github.loopholetv.BuildConfig
+import io.github.loopholetv.data.settings.MAX_TV_NAME_LENGTH
 import io.github.loopholetv.ui.manage.TextEntryDialog
 
 private const val LAST_CHANNEL_KEY = "lastChannel"
 private const val UA_KEY = "userAgent"
 private const val PROXY_KEY = "udpProxy"
+private const val TV_NAME_KEY = "tvName"
 
 /** Longest user agent or proxy address typed (both are short in practice). */
 private const val MAX_VALUE_LENGTH = 300
@@ -48,6 +50,18 @@ fun GeneralPage(ui: SettingsUi, vm: SettingsViewModel, focusKey: String?, onFocu
             Modifier.focusRequester(host.requester(LAST_CHANNEL_KEY)),
         )
         ToggleRow("Confirm exit", o.confirmExit, { vm.setOption { it.copy(confirmExit = !it.confirmExit) } })
+        ValueRow(
+            "TV name",
+            ui.tvName,
+            onClick = { dialog = TV_NAME_KEY },
+            modifier = Modifier.focusRequester(host.requester(TV_NAME_KEY)),
+        )
+        ToggleRow(
+            "Allow other TVs to cast to this TV",
+            o.castAllowJoin,
+            { vm.setOption { it.copy(castAllowJoin = !it.castAllowJoin) } },
+            supporting = "Join a cast automatically when nothing is playing",
+        )
         ToggleRow(
             "Check for updates",
             o.checkForUpdates,
@@ -70,6 +84,15 @@ fun GeneralPage(ui: SettingsUi, vm: SettingsViewModel, focusKey: String?, onFocu
         )
     }
     when (dialog) {
+        TV_NAME_KEY -> TextEntryDialog(
+            title = "TV name",
+            label = "TV name",
+            initial = ui.tvName,
+            keyboardType = KeyboardType.Text,
+            onSave = { vm.setTvName(it); close() },
+            onDismiss = close,
+            maxLength = MAX_TV_NAME_LENGTH,
+        )
         UA_KEY -> TextEntryDialog(
             title = "User agent",
             label = "User agent",

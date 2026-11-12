@@ -18,6 +18,7 @@ import io.github.loopholetv.data.repo.PlaylistRepository
 import io.github.loopholetv.data.repo.ScopedChannels
 import io.github.loopholetv.data.repo.RefreshCoordinator
 import io.github.loopholetv.data.settings.SettingsStore
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import io.github.loopholetv.data.xtream.XtreamClient
@@ -112,6 +113,19 @@ class AppContainer(context: Context) {
     /** Holds back the first playback while the start-up splash shows. */
     val startGate = io.github.loopholetv.ui.splash.StartGate()
 
+    /** Stream addresses for the player: through this TV's relay while it casts, else straight. */
+    internal val playbackResolver: io.github.loopholetv.player.StreamResolver by lazy {
+        io.github.loopholetv.cast.CastingResolver(
+            io.github.loopholetv.player.PlaylistStreamResolver(
+                db.playlistDao()::byId, { settingsSnapshot.await() },
+                io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME), stalkerSessions, stalkerClient,
+                xtream = xtream,
+                storeArchiveInfo = db.playlistDao()::setArchiveInfo,
+            ),
+            castHost,
+        )
+    }
+
     /** The one player for the app lifetime (never released). */
     val playback: Playback by lazy {
         // Start collecting settings now, not at the first play.
@@ -119,18 +133,18 @@ class AppContainer(context: Context) {
         PlaybackManager(
             appContext, http,
             exoPlayer = io.github.loopholetv.player.engine.buildEnginePlayer(appContext, engineParts),
-            resolver = io.github.loopholetv.player.PlaylistStreamResolver(
-                db.playlistDao()::byId, { settings.await() },
-                io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME), stalkerSessions, stalkerClient,
-                xtream = xtream,
-                storeArchiveInfo = db.playlistDao()::setArchiveInfo,
-            ),
+            resolver = playbackResolver,
             engine = engineParts,
             // A read error ends the live updates and keeps what is applied; it never resets to defaults.
             settings = settingsStore.settings.map { it.playback }.catch { },
             awaitSettings = { settings.await().playback },
             channelPrefs = { channelPlayback.get(io.github.loopholetv.data.db.ChannelRef(it.playlistId, it.key)) },
             observeChannelPrefs = { channelPlayback.observe(io.github.loopholetv.data.db.ChannelRef(it.playlistId, it.key)) },
+            // The relay's provider connections are released with the player's own.
+            evictConnections = {
+                http.connectionPool.evictAll()
+                castUpstreamHttp.connectionPool.evictAll()
+            },
         )
     }
 
@@ -216,13 +230,110 @@ class AppContainer(context: Context) {
     /** Lets the guide keep its current preview after the player closes. */
     val previewHold: io.github.loopholetv.player.PreviewHold by lazy { io.github.loopholetv.player.PreviewHold() }
 
+    /** This device's app heap in MB; buffers and caches are sized to it. */
+    private val memoryClass: Int by lazy {
+        (appContext.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).memoryClass
+    }
+
     /** The player's switchable engine parts; the large buffer is capped on devices with a small heap. */
     val engineParts: io.github.loopholetv.player.engine.EngineParts by lazy {
-        val memoryClass = (appContext.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).memoryClass
         io.github.loopholetv.player.engine.EngineParts(
             loadControl = io.github.loopholetv.player.engine.SwitchableLoadControl(
                 io.github.loopholetv.data.settings.BufferPreset.NORMAL, memoryClass,
             ),
         )
     }
+
+    // --- Casting between TVs -------------------------------------------------------------------
+    // Built on first use; MainActivity starts and stops it with the app's visibility.
+
+    /** Service discovery for casting; tests replace it before first use, so no real one starts. */
+    internal var castNsd: () -> io.github.loopholetv.cast.NsdPort = { io.github.loopholetv.cast.AndroidNsd(appContext) }
+
+    /** The beacon's UDP port; tests set 0 (a free port, no beacons sent) before first use. */
+    internal var castBeaconPort: Int = io.github.loopholetv.cast.CastDiscovery.DEFAULT_BEACON_PORT
+
+    /** Relay jobs, the local server and discovery; lives for the process. */
+    private val castScope: kotlinx.coroutines.CoroutineScope by lazy {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+    }
+
+    /** This TV's casting id once loaded; null until then. */
+    @Volatile private var castSelfIdLoaded: String? = null
+
+    /** This TV's casting id: made once and stored, loaded off the main thread on first use. */
+    private val castSelfId: kotlinx.coroutines.Deferred<String> by lazy {
+        castScope.async(kotlinx.coroutines.Dispatchers.IO) { settingsStore.castSelfId().also { castSelfIdLoaded = it } }
+    }
+
+    /**
+     * The relay's client for provider requests, with a pool of its own so the relay can drop its
+     * idle provider connections without touching anything else; the player evicts it with [http]'s.
+     */
+    private val castUpstreamHttp: OkHttpClient by lazy {
+        http.newBuilder().connectionPool(okhttp3.ConnectionPool()).build()
+    }
+
+    /** For other TVs' event streams only: a silent casting TV counts as lost after 8 s. */
+    private val castHttp: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
+
+    val castServer: io.github.loopholetv.cast.net.LocalHttpServer by lazy {
+        io.github.loopholetv.cast.net.LocalHttpServer(castScope)
+    }
+
+    val peerTable: io.github.loopholetv.cast.PeerTable by lazy {
+        io.github.loopholetv.cast.PeerTable({ castSelfIdLoaded }, android.os.SystemClock::elapsedRealtime)
+    }
+
+    val castHost: io.github.loopholetv.cast.CastHost by lazy {
+        io.github.loopholetv.cast.CastHost(
+            castScope, castServer, castUpstreamHttp, android.os.SystemClock::elapsedRealtime,
+            // Called on the main thread, where the player may be read.
+            positionMs = {
+                val archive = playback.mode.value as? io.github.loopholetv.player.catchup.PlayMode.Archive
+                if (archive?.seekable == true) playback.positionMs() else null
+            },
+            hlsCacheBytes = io.github.loopholetv.cast.relay.hlsCacheBytes(memoryClass),
+        )
+    }
+
+    val castDiscovery: io.github.loopholetv.cast.CastDiscovery by lazy {
+        io.github.loopholetv.cast.CastDiscovery.forDevice(
+            appContext, castScope, peerTable, android.os.SystemClock::elapsedRealtime,
+            nsd = castNsd(), beaconPort = castBeaconPort,
+        )
+    }
+
+    val castClient: io.github.loopholetv.cast.CastClient by lazy { io.github.loopholetv.cast.CastClient(castHttp) }
+
+    /** Casting and following on this TV; call it on the main thread. */
+    val castController: io.github.loopholetv.cast.CastController by lazy {
+        io.github.loopholetv.cast.CastController(
+            scope = mainScope,
+            selfId = { castSelfId.await() },
+            playback = playback,
+            host = castHost,
+            discovery = castDiscovery,
+            table = peerTable,
+            client = castClient,
+            server = castServer,
+            // The home network for other TVs, and loopback for this TV's own player.
+            binds = {
+                listOfNotNull(io.github.loopholetv.cast.net.lanAddress(appContext), java.net.InetAddress.getByName("127.0.0.1"))
+            },
+            settings = settingsStore.settings.catch { },
+            tvName = { io.github.loopholetv.data.settings.defaultTvName(appContext) },
+            clock = System::currentTimeMillis,
+            holdWifi = io.github.loopholetv.cast.castWifiHold(appContext),
+            watchNetwork = io.github.loopholetv.cast.defaultNetworkChanges(appContext),
+        )
+    }
+    // --- End of casting between TVs ------------------------------------------------------------
 }

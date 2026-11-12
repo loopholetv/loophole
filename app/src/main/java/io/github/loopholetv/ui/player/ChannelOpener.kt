@@ -1,5 +1,9 @@
 package io.github.loopholetv.ui.player
 
+import io.github.loopholetv.cast.CastControls
+import io.github.loopholetv.cast.CastState
+import io.github.loopholetv.cast.NoCast
+import io.github.loopholetv.cast.StopReason
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
 import io.github.loopholetv.player.Handoff
@@ -29,11 +33,13 @@ internal sealed interface Opened {
 
 /**
  * Starts channels for the full-screen player, honouring each channel's playback overrides: a
- * channel set to an external player is handed off instead of played.
+ * channel set to an external player is handed off instead of played. Handing off ends a cast this
+ * TV is running first (the other TVs can't follow another app).
  */
 internal class ChannelOpener(
     private val playback: Playback,
     private val channelPlayback: (ChannelEntity) -> Flow<ChannelPlaybackPrefs>,
+    private val cast: CastControls = NoCast,
 ) {
     /** Opens [channel] unless [wanted] turns false while its overrides or link are read. */
     suspend fun open(channel: ChannelEntity, wanted: () -> Boolean): Opened {
@@ -43,6 +49,7 @@ internal class ChannelOpener(
             playback.play(channel)
             return Opened.Here
         }
+        if (cast.state.value is CastState.Casting) cast.stopCasting(StopReason.EXTERNAL_PLAYER)
         val handoff = guard { playback.handOff(channel) }
         return when {
             !wanted() -> Opened.Dropped

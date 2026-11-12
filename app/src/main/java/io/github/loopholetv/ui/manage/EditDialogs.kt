@@ -32,6 +32,7 @@ import io.github.loopholetv.ui.common.TypingField
 import io.github.loopholetv.ui.common.rememberTypingState
 import io.github.loopholetv.ui.onboarding.PillButton
 import io.github.loopholetv.ui.theme.Tokens
+import io.github.loopholetv.util.takeCodePoints
 
 /** Rows shown before a [ChoiceDialog] or picker list scrolls (keeps the card on a 1080p screen). */
 private val LIST_MAX_HEIGHT = 420.dp
@@ -42,8 +43,9 @@ const val MAX_NAME_LENGTH = 200
 /**
  * One text value in its own dialog window: the field (read-only until OK opens the keyboard), then
  * "Save" and "Cancel". IME Done also saves. Back or "Cancel" calls [onDismiss]. Typing stops at
- * [maxLength]; while [accept] rejects the text, "Save" is disabled and Done only closes the
- * keyboard. [onSave] runs once (a second OK during the write is ignored).
+ * [maxLength] code points (an emoji is never cut in half); while [accept] rejects the text,
+ * "Save" is disabled and Done only closes the keyboard. [onSave] runs once (a second OK during the
+ * write is ignored).
  */
 @Composable
 fun TextEntryDialog(
@@ -56,7 +58,7 @@ fun TextEntryDialog(
     accept: (String) -> Boolean = { true },
     maxLength: Int = MAX_NAME_LENGTH,
 ) {
-    var value by rememberSaveable { mutableStateOf(initial.take(maxLength)) }
+    var value by rememberSaveable { mutableStateOf(initial.takeCodePoints(maxLength)) }
     var saving by remember { mutableStateOf(false) }
     val typing = rememberTypingState()
     val field = remember { FocusRequester() }
@@ -74,7 +76,7 @@ fun TextEntryDialog(
             state = typing,
             label = label,
             value = value,
-            onChange = { value = it.take(maxLength) },
+            onChange = { value = it.takeCodePoints(maxLength) },
             // Down from the field goes to "Save" (focus search would pick the nearer "Cancel").
             modifier = Modifier
                 .focusRequester(field)

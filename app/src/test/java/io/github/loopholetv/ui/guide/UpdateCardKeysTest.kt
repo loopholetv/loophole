@@ -24,6 +24,15 @@ class UpdateCardKeysTest {
     }
 
     @Test
+    fun upAndLeftFromTheFirstButtonReachTheCastBanner() {
+        assertEquals(CardKey.BANNER, cardKeyFor(Key.DirectionUp, 1, 2, bannerAbove = true))
+        assertEquals(CardKey.BANNER, cardKeyFor(Key.DirectionLeft, 0, 2, bannerAbove = true))
+        assertEquals(CardKey.PASS, cardKeyFor(Key.DirectionLeft, 1, 2, bannerAbove = true))
+        assertEquals(CardKey.STAY, cardKeyFor(Key.DirectionRight, 1, 2, bannerAbove = true))
+        assertEquals(CardKey.LEAVE, cardKeyFor(Key.DirectionDown, 0, 2, bannerAbove = true))
+    }
+
+    @Test
     fun aSingleButtonTrapsLeftAndRight() {
         assertEquals(CardKey.STAY, cardKeyFor(Key.DirectionLeft, 0, 1))
         assertEquals(CardKey.STAY, cardKeyFor(Key.DirectionRight, 0, 1))

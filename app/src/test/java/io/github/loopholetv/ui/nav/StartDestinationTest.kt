@@ -154,4 +154,40 @@ class StartDestinationTest {
         assertFalse(shouldGoToOnboarding(3, Routes.SETTINGS))
         assertFalse(shouldGoToOnboarding(1, Routes.ONBOARDING))
     }
+
+    @Test
+    fun castFollowRouteParses() {
+        assertEquals("cast/follow", Routes.CAST_FOLLOW)
+        assertEquals("tvs", Routes.TVS)
+        val nav = NavHostController(ApplicationProvider.getApplicationContext())
+        nav.navigatorProvider.addNavigator(ComposeNavigator())
+        nav.graph = nav.createGraph(startDestination = Routes.GUIDE) {
+            composable(Routes.GUIDE) {}
+            composable(Routes.PLAYER, arguments = Routes.playerArguments) {}
+            composable(Routes.CAST_FOLLOW) {}
+        }
+        nav.navigate(Routes.player(42, ChannelScope.All))
+
+        nav.navigate(Routes.CAST_FOLLOW, castFollowOptions())
+
+        // The player under it is gone, so nothing left behind can play over the cast.
+        assertEquals(Routes.CAST_FOLLOW, nav.currentDestination?.route)
+        assertEquals(Routes.GUIDE, nav.previousBackStackEntry?.destination?.route)
+        val options = castFollowOptions()
+        assertEquals(Routes.GUIDE, options.popUpToRoute)
+        assertFalse(options.isPopUpToInclusive())
+        assertTrue(options.shouldLaunchSingleTop())
+    }
+
+    @Test
+    fun followingOpensAndLeavesTheFollowScreen() {
+        assertEquals(FollowNav.ENTER, followNavFor(following = true, currentRoute = Routes.GUIDE))
+        assertEquals(FollowNav.ENTER, followNavFor(following = true, currentRoute = Routes.PLAYER))
+        assertEquals(FollowNav.ENTER, followNavFor(following = true, currentRoute = Routes.TVS))
+        assertEquals(FollowNav.NONE, followNavFor(following = true, currentRoute = Routes.CAST_FOLLOW))
+        assertEquals(FollowNav.LEAVE, followNavFor(following = false, currentRoute = Routes.CAST_FOLLOW))
+        assertEquals(FollowNav.NONE, followNavFor(following = false, currentRoute = Routes.GUIDE))
+        // No destination yet: nothing to navigate from.
+        assertEquals(FollowNav.NONE, followNavFor(following = true, currentRoute = null))
+    }
 }

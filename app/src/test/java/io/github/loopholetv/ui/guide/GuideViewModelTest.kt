@@ -3,6 +3,10 @@ package io.github.loopholetv.ui.guide
 import androidx.media3.common.Player
 import androidx.paging.testing.asPagingSourceFactory
 import androidx.paging.testing.asSnapshot
+import io.github.loopholetv.cast.CastControls
+import io.github.loopholetv.cast.CastState
+import io.github.loopholetv.cast.NoCast
+import io.github.loopholetv.cast.StopReason
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.GroupRow
@@ -125,7 +129,7 @@ class GuideViewModelTest {
     private fun shiftedRows(keys: Collection<GuideKey>): Map<GuideKey, List<ProgrammeEntity>> =
         keys.associateWith { k -> programmeRows.filter { it.epgChannelId == k.epgId }.map { it.shiftedBy(k.shiftMinutes) } }
 
-    private fun vm() = GuideViewModel(
+    private fun vm(cast: CastControls = NoCast) = GuideViewModel(
         groupRows = groupRows,
         channelPages = { scope ->
             when (scope) {
@@ -156,7 +160,35 @@ class GuideViewModelTest {
         previewHold = previewHold,
         sleepExpired = sleepExpired,
         keyBindings = bindings,
+        cast = cast,
     )
+
+    /** Casting as the quick menu and the guide see it: starting casts to nobody yet. */
+    private class FakeCast(initial: CastState = CastState.Off) : CastControls {
+        val current = MutableStateFlow(initial)
+        override val state: StateFlow<CastState> = current
+        val stops = mutableListOf<StopReason>()
+        override fun startCasting() { current.value = CastState.Casting(0) }
+        override fun stopCasting(reason: StopReason) {
+            stops += reason
+            current.value = CastState.Off
+        }
+    }
+
+    @Test fun guideStopCastingCallsStop() = runTest {
+        val cast = FakeCast(CastState.Casting(2))
+        val vm = vm(cast)
+        runCurrent()
+        assertTrue("the banner shows while casting", vm.casting.value)
+        vm.stopCasting()
+        runCurrent()
+        assertEquals(listOf(StopReason.STOPPED), cast.stops)
+        assertFalse("the banner goes once the cast ends", vm.casting.value)
+        cast.startCasting()
+        runCurrent()
+        assertTrue(vm.casting.value)
+        assertFalse("nothing casts without a controller", vm().casting.value)
+    }
 
     @Test fun groupsListStartsWithFavouritesThenAllChannels() = runTest {
         val vm = vm()

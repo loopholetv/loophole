@@ -1,0 +1,69 @@
+package io.github.loopholetv.ui.cast
+
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import io.github.loopholetv.cast.CastInvite
+import io.github.loopholetv.cast.CastPeer
+import io.github.loopholetv.cast.CastState
+import io.github.loopholetv.cast.CastStatus
+import io.github.loopholetv.cast.CastView
+import io.github.loopholetv.cast.StopReason
+import io.github.loopholetv.ui.theme.LoopholeTheme
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.Assert.assertEquals
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+@OptIn(ExperimentalTestApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(qualifiers = "w960dp-h540dp-mdpi")
+class TvsPanelFocusTest {
+    @get:Rule val compose = createComposeRule()
+
+    private class FakeCast : CastView {
+        override val state = MutableStateFlow<CastState>(CastState.Off)
+        override val peers = MutableStateFlow<List<CastPeer>>(emptyList())
+        override val invite = MutableStateFlow<CastInvite?>(null)
+        override val messages = MutableSharedFlow<String>()
+        val joined = mutableListOf<String>()
+        override fun startCasting() {}
+        override fun stopCasting(reason: StopReason) {}
+        override fun join(peerId: String) { joined += peerId }
+        override fun leave() {}
+        override fun ignoreInvite() {}
+    }
+
+    private fun peer(id: String, name: String) = CastPeer(
+        id = id, name = name, host = "10.0.0.20", port = 8000, status = CastStatus.CASTING, accepts = true,
+        castId = "c-$id", token = "t-$id", castStartedAtMs = 1L, lastSeenMs = 0,
+    )
+
+    @Test
+    fun aTvAppearingAboveKeepsFocusOnTheSameTv() {
+        val cast = FakeCast()
+        cast.peers.value = listOf(peer("b", "Bedroom"), peer("k", "Kitchen"))
+        val vm = TvsViewModel(cast)
+        compose.setContent { LoopholeTheme { TvsPanel(onClose = {}, vm = vm) } }
+        compose.waitForIdle()
+        compose.onNodeWithText("This TV").assertIsFocused()
+        compose.onNodeWithText("This TV").performKeyInput { pressKey(Key.DirectionDown) }
+        compose.onNodeWithText("Bedroom").assertIsFocused()
+
+        // A TV sorting before Bedroom appears.
+        cast.peers.value = listOf(peer("a", "Attic"), peer("b", "Bedroom"), peer("k", "Kitchen"))
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Bedroom").assertIsFocused()
+        compose.onNodeWithText("Bedroom").performKeyInput { pressKey(Key.DirectionCenter) }
+        assertEquals("OK acts on the TV the user focused", listOf("b"), cast.joined)
+    }
+}

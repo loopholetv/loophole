@@ -10,6 +10,9 @@ import androidx.paging.PagingData
 import androidx.paging.PagingSource
 import androidx.paging.cachedIn
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.cast.CastControls
+import io.github.loopholetv.cast.CastState
+import io.github.loopholetv.cast.NoCast
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.ChannelScope
@@ -238,7 +241,16 @@ class GuideViewModel(
     sleepExpired: Flow<Unit> = emptyFlow(),
     /** Remote button bindings; the guide's table decides what a non-arrow button does here. */
     keyBindings: Flow<KeyBindings> = flowOf(KeyBindings.DEFAULT),
+    /** This TV's cast, if one runs: the info area offers to stop it. */
+    private val cast: CastControls = NoCast,
 ) : ViewModel() {
+
+    /** True while this TV casts to the other TVs (the "Casting" banner shows). */
+    val casting: StateFlow<Boolean> = cast.state.map { it is CastState.Casting }.distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, cast.state.value is CastState.Casting)
+
+    /** The banner's Stop casting. */
+    fun stopCasting() = cast.stopCasting()
 
     private val bindings: StateFlow<KeyBindings> = keyBindings
         .catch { emit(KeyBindings.DEFAULT) }
@@ -958,6 +970,7 @@ class GuideViewModel(
                     previewHold = c.previewHold,
                     sleepExpired = c.sleepTimer.expired,
                     keyBindings = c.settingsStore.settings.map { it.remote.bindings }.distinctUntilChanged(),
+                    cast = c.castController,
                 ) as T
             }
         }

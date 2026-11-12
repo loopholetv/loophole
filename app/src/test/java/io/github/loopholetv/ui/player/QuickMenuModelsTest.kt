@@ -19,8 +19,8 @@ class QuickMenuModelsTest {
     @Test fun quickItemsInOrder() {
         val base = listOf(
             QuickItem.SEARCH, QuickItem.CHANNELS, QuickItem.VIDEO, QuickItem.AUDIO, QuickItem.AUDIO_DELAY,
-            QuickItem.SUBTITLES, QuickItem.ASPECT, QuickItem.SLEEP, QuickItem.FAVOURITE, QuickItem.OPTIONS,
-            QuickItem.SETTINGS,
+            QuickItem.SUBTITLES, QuickItem.ASPECT, QuickItem.SLEEP, QuickItem.FAVOURITE, QuickItem.CAST,
+            QuickItem.OPTIONS, QuickItem.SETTINGS,
         )
         assertEquals(base, quickItems(pipSupported = false))
         assertEquals(base.dropLast(1) + QuickItem.PIP + QuickItem.SETTINGS, quickItems(pipSupported = true))
@@ -114,5 +114,19 @@ class QuickMenuModelsTest {
         assertEquals("Watch from start", QuickItem.START_OVER.label)
         assertEquals(items - QuickItem.START_OVER, quickItems(pipSupported = false))
         assertFalse(QuickItem.START_OVER in quickItems(pipSupported = true))
+    }
+
+    @Test fun castTileLabelFollowsState() {
+        fun cast(v: QuickValues) = quickEntries(quickItems(false), v).first { it.item == QuickItem.CAST }
+        assertEquals("Cast to all TVs", cast(QuickValues()).label)
+        assertEquals("Stop casting", cast(QuickValues(casting = true)).label)
+        assertEquals(null, cast(QuickValues(casting = true)).value)
+        assertEquals("Cast to all TVs", QuickItem.CAST.label)
+    }
+
+    @Test fun castLabelText() {
+        assertEquals("Casting", castingLabel(0))
+        assertEquals("Casting to 1 TV", castingLabel(1))
+        assertEquals("Casting to 3 TVs", castingLabel(3))
     }
 }

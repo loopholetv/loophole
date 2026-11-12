@@ -39,16 +39,21 @@ import io.github.loopholetv.update.UpdateCardUi
 import kotlinx.coroutines.delay
 
 /** What a D-pad key does on the update card. */
-internal enum class CardKey { PASS, STAY, LEAVE }
+internal enum class CardKey { PASS, STAY, LEAVE, BANNER }
 
 /**
  * Up stays on the card, Down leaves it (back to where focus was in the guide), Left on the first
- * and Right on the last button stay; Left/Right between buttons move as usual.
+ * and Right on the last button stay; Left/Right between buttons move as usual. With the cast
+ * banner above the card ([bannerAbove]), Up and Left from the first button go to it instead.
  */
-internal fun cardKeyFor(key: Key, buttonIndex: Int, buttonCount: Int): CardKey = when (key) {
-    Key.DirectionUp -> CardKey.STAY
+internal fun cardKeyFor(key: Key, buttonIndex: Int, buttonCount: Int, bannerAbove: Boolean = false): CardKey = when (key) {
+    Key.DirectionUp -> if (bannerAbove) CardKey.BANNER else CardKey.STAY
     Key.DirectionDown -> CardKey.LEAVE
-    Key.DirectionLeft -> if (buttonIndex <= 0) CardKey.STAY else CardKey.PASS
+    Key.DirectionLeft -> when {
+        buttonIndex > 0 -> CardKey.PASS
+        bannerAbove -> CardKey.BANNER
+        else -> CardKey.STAY
+    }
     Key.DirectionRight -> if (buttonIndex >= buttonCount - 1) CardKey.STAY else CardKey.PASS
     else -> CardKey.PASS
 }
@@ -67,6 +72,8 @@ internal fun UpdateCard(
     onLeave: () -> Unit,
     onFocusChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** The cast banner's button above the card, when it shows. */
+    banner: FocusRequester? = null,
 ) {
     var hasFocus by remember { mutableStateOf(false) }
     var focusedIndex by remember { mutableIntStateOf(0) }
@@ -94,10 +101,11 @@ internal fun UpdateCard(
             }
             .onPreviewKeyEvent { e ->
                 if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when (cardKeyFor(e.key, focusedIndex, card.buttons.size)) {
+                when (cardKeyFor(e.key, focusedIndex, card.buttons.size, bannerAbove = banner != null)) {
                     CardKey.PASS -> false
                     CardKey.STAY -> true
                     CardKey.LEAVE -> { onLeave(); true }
+                    CardKey.BANNER -> { banner?.tryFocus(); true }
                 }
             },
     ) {
