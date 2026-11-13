@@ -20,6 +20,9 @@ enum class BufferPreset(
 /** Which decoders a stream may use. Software falls back to hardware when it can't decode. */
 enum class DecoderChoice { HARDWARE, SOFTWARE }
 
+/** AUTO passes the stream's colour tags (range, colour space, HDR) to the decoder; STANDARD always uses SDR BT.709 limited range. */
+enum class ColourMode { AUTO, STANDARD }
+
 /** AUTO sends compressed surround audio to the TV or receiver when it supports it; OFF decodes it here. */
 enum class Passthrough { AUTO, OFF }
 
@@ -68,6 +71,7 @@ data class SubtitleStyle(
 data class PlaybackSettings(
     val bufferPreset: BufferPreset = BufferPreset.NORMAL,
     val videoDecoder: DecoderChoice = DecoderChoice.HARDWARE,
+    val colourMode: ColourMode = ColourMode.AUTO,
     val audioDecoder: DecoderChoice = DecoderChoice.HARDWARE,
     val autoFrameRate: Boolean = false,
     val preferSurround: Boolean = true,

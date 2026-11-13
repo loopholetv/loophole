@@ -95,7 +95,8 @@ private val CASTING_DOT_SPACE = 40.dp
  * open the full overlay, holding OK (or Menu) opens the quick menu, Back hides the banner /
  * returns to the guide. Full overlay: group and clock on top, info bar and channel row at the
  * bottom; the D-pad moves along the row, OK on a tile changes channel (held: its options), Back
- * hides it. Channel keys and digits work everywhere. In picture-in-picture only the video shows.
+ * hides it. Channel keys and digits work everywhere. The quick menu's Stream info shows a card
+ * over the video until Back. In picture-in-picture only the video shows.
  */
 @Composable
 fun PlayerScreen(
@@ -132,6 +133,7 @@ fun PlayerScreen(
     val barVisible by vm.barVisible.collectAsStateWithLifecycle()
     val archiveFailed by vm.archiveFailed.collectAsStateWithLifecycle()
     val castingFollowers by vm.castingFollowers.collectAsStateWithLifecycle()
+    val streamInfoShown by vm.streamInfoShown.collectAsStateWithLifecycle()
     var castingMarkerExpanded by remember { mutableStateOf(true) }
     val inPip = rememberInPictureInPicture()
     LaunchedEffect(inPip) { vm.onPipChanged(inPip) }
@@ -284,6 +286,11 @@ fun PlayerScreen(
                 strokeWidth = 3.dp,
                 modifier = Modifier.align(Alignment.Center).size(40.dp),
             )
+        }
+        // Under the overlay; below the top bar while it shows. It takes no focus: keys work as usual.
+        if (streamInfoShown) {
+            val top = if (u.overlayVisible || u.bannerVisible) 72.dp else 24.dp
+            StreamInfoCard(playback, Modifier.align(Alignment.TopStart).padding(start = 48.dp, top = top))
         }
         val showBar = barVisible && replaying
         if (u.overlayVisible || u.bannerVisible || showBar) {

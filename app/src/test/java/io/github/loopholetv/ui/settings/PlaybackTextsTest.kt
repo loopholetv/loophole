@@ -1,6 +1,7 @@
 package io.github.loopholetv.ui.settings
 
 import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.ColourMode
 import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.data.settings.PLAYBACK_LANGUAGES
 import io.github.loopholetv.data.settings.Passthrough
@@ -13,6 +14,7 @@ class PlaybackTextsTest {
     private val withoutPip = listOf(
         "Buffer size",
         "Video decoder",
+        "Picture colour",
         "Audio decoder",
         "Auto frame rate",
         "Surround sound by default",
@@ -61,6 +63,7 @@ class PlaybackTextsTest {
             BufferPreset.entries.map(::bufferPresetText),
         )
         assertEquals(listOf("Hardware", "Software"), DecoderChoice.entries.map(::decoderText))
+        assertEquals(listOf("Auto", "Standard (ignore stream colour tags)"), ColourMode.entries.map(::colourModeText))
         assertEquals(listOf("Auto", "Off"), Passthrough.entries.map(::passthroughText))
     }
 

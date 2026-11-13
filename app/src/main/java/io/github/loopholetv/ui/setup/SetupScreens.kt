@@ -1,6 +1,7 @@
 package io.github.loopholetv.ui.setup
 
 import android.os.SystemClock
+import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -27,15 +28,20 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,10 +55,14 @@ import io.github.loopholetv.setup.SetupView
 import io.github.loopholetv.ui.settings.focusSoon
 import io.github.loopholetv.ui.theme.Tokens
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 internal fun showCodeText(name: String) = "Enter this code on $name to copy its setup here."
 /** The setup screens' window, for tests. */
 internal const val SETUP_OVERLAY_TAG = "setup-overlay"
+/** A pad key's test tag, by its pad index. */
+internal fun padKeyTag(index: Int) = "pad-key-$index"
 internal const val REPLACES_WARNING = "This replaces this TV's playlists, guide, favourites and settings."
 internal fun enterCodeText(name: String) = "Enter the code shown on $name"
 internal fun askedCodeText(name: String) = "$name wants to copy your setup. Enter the code shown on $name."
@@ -62,19 +72,25 @@ internal fun askedCodeText(name: String) = "$name wants to copy your setup. Ente
  * copy under way and its result. They are a window of their own above every screen and panel,
  * with the remote to themselves while they show; nothing underneath pauses or loses its place.
  * Hidden while [hidden] (picture-in-picture). [now] is the clock of the codes' expiry times.
+ *
+ * However a copy ends, the remote goes back to the screen underneath once the screens close
+ * (see [handFocusBack]); [screenHasFocus] says whether something on that screen has focus.
  */
 @Composable
 fun SetupOverlay(
     setup: SetupView,
     hidden: Boolean,
     onReturnToGuide: () -> Unit,
+    screenHasFocus: () -> Boolean = { true },
     now: () -> Long = SystemClock::elapsedRealtime,
 ) {
     val toGuide by rememberUpdatedState(onReturnToGuide)
     val model = remember(setup) { SetupScreenModel(setup, onReturnToGuide = { toGuide() }) }
     LaunchedEffect(model) { model.run() }
     val shown = model.shown.collectAsState().value
-    if (shown == null || hidden) return
+    val showing = shown != null && !hidden
+    FocusBackOnClose(showing, screenHasFocus)
+    if (!showing) return
     Dialog(
         onDismissRequest = {},
         properties = DialogProperties(
@@ -102,6 +118,51 @@ fun SetupOverlay(
         }
     }
 }
+
+/** Runs [handFocusBack] each time the screens close, on this (the app's) window. */
+@Composable
+private fun FocusBackOnClose(showing: Boolean, screenHasFocus: () -> Boolean) {
+    val view = LocalView.current
+    val window = LocalWindowInfo.current
+    val focusManager = LocalFocusManager.current
+    val hasFocus by rememberUpdatedState(screenHasFocus)
+    val opened = remember { booleanArrayOf(false) }
+    LaunchedEffect(showing) {
+        if (showing) {
+            opened[0] = true
+            return@LaunchedEffect
+        }
+        if (!opened[0]) return@LaunchedEffect
+        opened[0] = false
+        handFocusBack(
+            windowFocused = { window.isWindowFocused },
+            view = view,
+            screenHasFocus = { hasFocus() },
+            moveIn = { focusManager.moveFocus(FocusDirection.Next) },
+        )
+    }
+}
+
+/**
+ * Gives the remote back to the app's window once the setup screens' window has gone: the
+ * window first (waiting up to [WINDOW_FOCUS_WAIT_MS] for it to have window focus), then its
+ * view, then a control on the screen. The control focused before the screens came keeps focus;
+ * only when nothing on the screen has focus any more does focus move in ([moveIn]). With a panel
+ * still open over the screen the window never gets focus back here, and nothing moves.
+ */
+internal suspend fun handFocusBack(
+    windowFocused: () -> Boolean,
+    view: View,
+    screenHasFocus: () -> Boolean,
+    moveIn: () -> Boolean,
+) {
+    withTimeoutOrNull(WINDOW_FOCUS_WAIT_MS) { snapshotFlow(windowFocused).first { it } } ?: return
+    if (!view.hasFocus()) view.requestFocus()
+    if (!screenHasFocus()) moveIn()
+}
+
+/** How long the app's window may take to get focus back after the screens close. */
+internal const val WINDOW_FOCUS_WAIT_MS = 2_000L
 
 /** One setup screen for [state], full screen. */
 @Composable
@@ -171,9 +232,13 @@ private fun ShowCode(state: SetupState.ShowingCode, now: () -> Long) {
 
 @Composable
 private fun EnterCode(state: SetupState.EnterCode, pad: CodePad) {
-    // The title and boxes sit level with the digit keys (Cancel hangs below them).
+    // The title and boxes sit level with the digit keys (Cancel hangs below them). The weight has
+    // the pad measured first, so a long title wraps sooner rather than squeezing the last column.
     Row(horizontalArrangement = Arrangement.spacedBy(64.dp), verticalAlignment = Alignment.Top) {
-        Column(Modifier.widthIn(max = 520.dp).height(PAD_GRID_HEIGHT), verticalArrangement = Arrangement.Center) {
+        Column(
+            Modifier.weight(1f, fill = false).widthIn(max = 520.dp).height(PAD_GRID_HEIGHT),
+            verticalArrangement = Arrangement.Center,
+        ) {
             Title(if (state.asked) askedCodeText(state.peerName) else enterCodeText(state.peerName), TextAlign.Start)
             Spacer(Modifier.height(24.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -207,11 +272,11 @@ private fun EnterCode(state: SetupState.EnterCode, pad: CodePad) {
                 Row(horizontalArrangement = Arrangement.spacedBy(PAD_GAP)) {
                     for (col in 0 until PAD_COLUMNS) {
                         val index = row * PAD_COLUMNS + col
-                        PadButton(padLabel(index), highlighted = pad.focused == index, width = PAD_KEY_WIDTH)
+                        PadButton(padLabel(index), highlighted = pad.focused == index, width = PAD_KEY_WIDTH, tag = padKeyTag(index))
                     }
                 }
             }
-            PadButton(CANCEL_LABEL, highlighted = pad.focused == PAD_CANCEL, width = PAD_KEY_WIDTH)
+            PadButton(CANCEL_LABEL, highlighted = pad.focused == PAD_CANCEL, width = PAD_KEY_WIDTH, tag = padKeyTag(PAD_CANCEL))
         }
     }
 }
@@ -250,9 +315,10 @@ private fun Title(text: String, align: TextAlign = TextAlign.Center) {
 
 /** Drawn like a focused or unfocused pill button; the screens move the highlight themselves. */
 @Composable
-private fun PadButton(label: String, highlighted: Boolean, width: androidx.compose.ui.unit.Dp? = null) {
+private fun PadButton(label: String, highlighted: Boolean, width: androidx.compose.ui.unit.Dp? = null, tag: String? = null) {
     Box(
         Modifier
+            .then(if (tag != null) Modifier.testTag(tag) else Modifier)
             .scale(if (highlighted) 1.08f else 1f)
             .then(if (width != null) Modifier.width(width) else Modifier.widthIn(min = 120.dp))
             .height(PAD_KEY_HEIGHT)

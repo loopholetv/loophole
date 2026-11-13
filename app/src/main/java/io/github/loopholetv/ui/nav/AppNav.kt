@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -261,8 +263,10 @@ fun AppNav(
     }
     LaunchedEffect(invite?.peer?.castId) { inviteKeys.reset() }
     val inviteShowing by rememberUpdatedState(invite != null)
+    // Whether a control on the screens below has focus, for the setup screens' hand-back.
+    val screenFocused = remember { mutableStateOf(false) }
     Box(
-        Modifier.fillMaxSize().onPreviewKeyEvent { e ->
+        Modifier.fillMaxSize().onFocusChanged { screenFocused.value = it.hasFocus }.onPreviewKeyEvent { e ->
             val down = e.type == KeyEventType.KeyDown
             if (!down && e.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
             inviteKeys.onKey(e.nativeKeyEvent.keyCode, down, e.nativeKeyEvent.repeatCount, inviteShowing)
@@ -392,7 +396,12 @@ fun AppNav(
         }
     }
     // Copying a setup between TVs: a window of its own above every screen, panel and the card.
-    SetupOverlay(setup = container.setup, hidden = inPip, onReturnToGuide = { navController.returnToGuide() })
+    SetupOverlay(
+        setup = container.setup,
+        hidden = inPip,
+        onReturnToGuide = { navController.returnToGuide() },
+        screenHasFocus = { screenFocused.value },
+    )
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {

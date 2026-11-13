@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.ColourMode
 import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.data.settings.Passthrough
 import io.github.loopholetv.data.settings.PlaybackSettings
@@ -66,6 +67,9 @@ private fun PlaybackRow(
         PB_VIDEO_DECODER -> host.Row(
             label, DecoderChoice.entries, p.videoDecoder, ::decoderText, key, supporting = PB_VIDEO_DECODER_HINT,
         ) { v -> set { it.copy(videoDecoder = v) } }
+        PB_COLOUR -> host.Row(
+            label, ColourMode.entries, p.colourMode, ::colourModeText, key, supporting = PB_COLOUR_HINT,
+        ) { v -> set { it.copy(colourMode = v) } }
         PB_AUDIO_DECODER -> host.Row(label, DecoderChoice.entries, p.audioDecoder, ::decoderText, key) { v ->
             set { it.copy(audioDecoder = v) }
         }

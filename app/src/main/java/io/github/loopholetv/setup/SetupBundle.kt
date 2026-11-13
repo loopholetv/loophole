@@ -248,7 +248,7 @@ internal object SetupFields {
 
     /** Hardware-specific. */
     val PLAYBACK_NOT_COPIED = setOf(
-        "videoDecoder", "audioDecoder", "autoFrameRate", "preferSurround", "passthrough", "decodeDtsToPcm",
+        "videoDecoder", "colourMode", "audioDecoder", "autoFrameRate", "preferSurround", "passthrough", "decodeDtsToPcm",
         "tunneling", "audioDelayMs",
     )
 

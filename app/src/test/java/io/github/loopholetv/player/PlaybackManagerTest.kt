@@ -29,8 +29,13 @@ import io.github.loopholetv.cast.CastHostTest
 import io.github.loopholetv.cast.CastingResolver
 import io.github.loopholetv.cast.StopReason
 import io.github.loopholetv.cast.net.LocalHttpServer
+import androidx.media3.common.ParserException
+import java.io.EOFException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import okhttp3.mockwebserver.SocketPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -410,17 +415,18 @@ class PlaybackManagerTest {
     }
 
     @Test
-    fun failedHlsRetrySurfacesErrorAndRetriesOnlyOnce() {
+    fun failedHlsRetrySurfacesErrorAfterStartRetries() {
         val junk = serve { MockResponse().setBody("not a stream at all, just text") }
         try {
             val ch = channel(8, "/unused").copy(streamUrl = junk.url("/stream/8").toString())
             manager.play(ch)
 
-            RobolectricUtil.runMainLooperUntil { manager.state.value is PlaybackState.Error }
+            awaitMain { manager.state.value is PlaybackState.Error }
 
+            // Each of the three opens (the first and two start retries) tries HLS once.
             assertEquals(PlaybackState.Error(8, "Channel 8: can't play this stream"), manager.state.value)
-            assertEquals(2, prepareCount)
-            assertEquals(2, junk.requestCount)
+            assertEquals(6, prepareCount)
+            assertEquals(6, junk.requestCount)
         } finally {
             junk.shutdown()
         }
@@ -444,6 +450,9 @@ class PlaybackManagerTest {
     fun endedLiveStreamBecomesErrorAndSameChannelRetries() {
         val ch = channel(1, "/live/1.ts")
         manager.play(ch)
+        reportReady()
+        // Well after it started playing: a drop, not a failed start.
+        nowMs += 60_000
         seam.fakeState = Player.STATE_ENDED
         seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_ENDED) }
 
@@ -519,6 +528,16 @@ class PlaybackManagerTest {
     }
 
     private fun idleMain(ms: Long = 0) = shadowOf(Looper.getMainLooper()).idleFor(ms, TimeUnit.MILLISECONDS)
+
+    /** Runs the main looper, letting its clock advance, until [done]; for real loads that wait between retries. */
+    private fun awaitMain(done: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (!done()) {
+            check(System.currentTimeMillis() < deadline) { "timed out" }
+            idleMain(50)
+            Thread.sleep(5)
+        }
+    }
 
     private fun portalResolver(portal: FakePortal, portalServer: MockWebServer, delays: MutableList<Long>): PlaylistStreamResolver {
         val client = StalkerClient(testHttp(), timeZone = { "Europe/London" })
@@ -1233,6 +1252,8 @@ class PlaybackManagerTest {
         val fake = engineManager()
         manager.play(channel(1, "/live/1.ts"))
         idleMain()
+        reportReady()
+        nowMs += 60_000
         seam.fakeState = Player.STATE_ENDED
         seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_ENDED) }
         assertTrue(manager.state.value is PlaybackState.Error)
@@ -1591,9 +1612,11 @@ class PlaybackManagerTest {
         assertTrue((manager.mode.value as PlayMode.Archive).ended)
         assertEquals(PlaybackState.Buffering(1), manager.state.value)
 
-        // A live stream that ends is still an error.
+        // A live stream that ends once it has played is still an error.
         manager.play(channel(2, "/live/2.ts"))
         awaitPrepares(2)
+        reportReady()
+        nowMs += 60_000
         reportEnded()
         assertEquals(PlayMode.Live, manager.mode.value)
         assertEquals(PlaybackState.Error(2, "Channel 2: can't play this stream"), manager.state.value)
@@ -1736,6 +1759,296 @@ class PlaybackManagerTest {
         failWith(httpError(403))
         assertEquals(PlaybackState.Error(2, "Channel 2: access denied by provider"), manager.state.value)
         assertTrue(retryDelays.isEmpty())
+    }
+
+    // ---- Start retries: a live open that fails as it starts ----
+
+    private fun malformedError(): ExoPlaybackException = ExoPlaybackException.createForSource(
+        ParserException.createForMalformedContainer("cut off", null),
+        PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+    )
+
+    private fun eofError(): ExoPlaybackException = ExoPlaybackException.createForSource(
+        EOFException(), PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+    )
+
+    /** The states [manager] publishes from now on. */
+    private fun recordStates(): List<PlaybackState> {
+        val seen = mutableListOf<PlaybackState>()
+        stateJobs += CoroutineScope(Dispatchers.Main).launch(start = CoroutineStart.UNDISPATCHED) {
+            manager.state.collect { seen += it }
+        }
+        return seen
+    }
+
+    private val stateJobs = mutableListOf<Job>()
+
+    @After
+    fun cancelStateJobs() = stateJobs.forEach { it.cancel() }
+
+    @Test
+    fun liveOpenThatEndsAsItStartsReopensSilently() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        val states = recordStates()
+
+        seam.events.clear()
+        reportEnded()
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        idleMain()
+        assertEquals(listOf(1_000L), retryDelays)
+        idleMain(998)
+        assertEquals(listOf(1L), fake.resolved)
+        idleMain(1)
+        awaitPrepares(2)
+        reportReady()
+
+        assertEquals(listOf(1L, 1L), fake.resolved)
+        // The failed open is released and idle connections closed before the new one opens.
+        assertEquals(listOf("stop", "evict", "prepare"), seam.events)
+        assertTrue(states.none { it is PlaybackState.Error })
+        assertEquals(1, exo.mediaItemCount)
+        idleMain()
+        assertEquals(1, fake.activeKeepAlives)
+    }
+
+    @Test
+    fun twoFailedStartsThenSuccess() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        val states = recordStates()
+
+        failWith(malformedError())
+        idleMain(1_000)
+        awaitPrepares(2)
+        failWith(eofError())
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        idleMain(2_500)
+        awaitPrepares(3)
+        reportReady()
+
+        assertEquals(listOf(1_000L, 2_500L), retryDelays)
+        assertEquals(listOf(1L, 1L, 1L), fake.resolved)
+        assertTrue(states.none { it is PlaybackState.Error })
+    }
+
+    @Test
+    fun thirdFailedStartShowsTheError() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+
+        failWith(eofError())
+        idleMain(1_000)
+        awaitPrepares(2)
+        reportEnded()
+        idleMain(2_500)
+        awaitPrepares(3)
+        failWith(malformedError())
+
+        assertEquals(PlaybackState.Error(1, "Channel 1: can't play this stream"), manager.state.value)
+        idleMain(20_000)
+        assertEquals(listOf(1L, 1L, 1L), fake.resolved)
+        assertEquals(3, prepareCount)
+        assertEquals(listOf(1_000L, 2_500L), retryDelays)
+
+        // Try again starts a new open with a fresh budget.
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportEnded()
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        idleMain()
+        assertEquals(listOf(1_000L, 2_500L, 1_000L), retryDelays)
+    }
+
+    @Test
+    fun dropSoonAfterFirstPlayingStillCountsAsAFailedStart() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        nowMs += 3_000
+
+        reportEnded()
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        idleMain(1_000)
+        awaitPrepares(2)
+        assertEquals(listOf(1L, 1L), fake.resolved)
+    }
+
+    @Test
+    fun streamThatPlayedThenDroppedKeepsTheError() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportReady()
+        nowMs += 60_000
+
+        reportEnded()
+        assertEquals(PlaybackState.Error(1, "Channel 1: can't play this stream"), manager.state.value)
+
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+        reportReady()
+        nowMs += 60_000
+        failWith(eofError())
+        assertEquals(PlaybackState.Error(2, "Channel 2: can't play this stream"), manager.state.value)
+
+        idleMain(10_000)
+        assertTrue(retryDelays.isEmpty())
+        assertEquals(listOf(1L, 2L), fake.resolved)
+    }
+
+    @Test
+    fun zapDuringPendingStartRetryCancelsIt() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        reportEnded()
+        idleMain(100)
+        assertEquals(listOf(1_000L), retryDelays)
+
+        manager.play(channel(2, "/live/2.ts"))
+        awaitPrepares(2)
+        idleMain(10_000)
+
+        assertEquals(listOf(1L, 2L), fake.resolved)
+        assertEquals(2, prepareCount)
+        assertEquals("2", exo.currentMediaItem!!.mediaId)
+        assertEquals(PlaybackState.Buffering(2), manager.state.value)
+
+        // Nor does a stop leave one behind.
+        reportEnded()
+        manager.stop()
+        idleMain(10_000)
+        assertEquals(listOf(1L, 2L), fake.resolved)
+        assertEquals(PlaybackState.Idle, manager.state.value)
+    }
+
+    @Test
+    fun refusalsAndUnsupportedStreamsNeverStartRetry() {
+        val fake = engineManager()
+        val cases = listOf(
+            httpError(403) to "Channel 1: access denied by provider",
+            httpError(404) to "Channel 1: stream not found",
+            httpError(509) to "Channel 1: provider connection limit reached (another device may be watching)",
+            ExoPlaybackException.createForSource(
+                ParserException.createForUnsupportedContainerFeature("unsupported"),
+                PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+            ) to "Channel 1: can't play this stream",
+        )
+        cases.forEach { (error, message) ->
+            nowMs += 60_000 // never right after a switch
+            manager.play(channel(1, "/live/1.ts"))
+            idleMain()
+            failWith(error)
+            assertEquals(PlaybackState.Error(1, message), manager.state.value)
+        }
+        idleMain(10_000)
+        assertTrue(retryDelays.isEmpty())
+        assertEquals(List(cases.size) { 1L }, fake.resolved)
+    }
+
+    @Test
+    fun serverErrorOnFirstOpenStartRetries() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        failWith(httpError(502))
+        assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        idleMain(1_000)
+        awaitPrepares(2)
+        assertEquals(listOf(1L, 1L), fake.resolved)
+    }
+
+    @Test
+    fun forbiddenAfterSwitchStillTakesTheSwitchBackoff() {
+        val fake = engineManager()
+        manager.play(channel(1, "/live/1.ts"))
+        idleMain()
+        manager.play(channel(2, "/live/2.ts"))
+        idleMain()
+        failWith(httpError(403))
+        idleMain(100)
+        assertEquals(listOf(500L), retryDelays)
+        idleMain(400)
+        awaitPrepares(3)
+        assertEquals(listOf(1L, 2L, 2L), fake.resolved)
+    }
+
+    @Test
+    fun archiveFailureNeverStartRetries() {
+        val fake = engineManager()
+        manager.playArchive(channel(1, "/live/1.ts"), programme)
+        awaitPrepares(1)
+        failWith(eofError())
+        assertEquals(PlaybackState.Error(1, "Couldn't play this programme back."), manager.state.value)
+        idleMain(20_000)
+        assertTrue(retryDelays.isEmpty())
+        assertEquals(1, fake.archiveCalls.size)
+    }
+
+    /** A provider that accepts the request and never answers. */
+    private fun silentServer(): MockWebServer = MockWebServer().apply {
+        repeat(5) { enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)) }
+        start()
+    }
+
+    @Test
+    fun liveOpenWithNoDataReconnectsOnceAfterFifteenSeconds() {
+        val silent = silentServer()
+        try {
+            val fake = engineManager(FakeResolver { silent.url("/live/${it.id}.ts").toString() })
+            manager.play(channel(1, "/live/1.ts"))
+            idleMain()
+            // The player's own clock may move the looper on a little: well short of the timeout, nothing.
+            idleMain(12_000)
+            assertTrue(retryDelays.isEmpty())
+            idleMain(3_000)
+            idleMain()
+            assertEquals(listOf(1_000L), retryDelays)
+            assertEquals(PlaybackState.Buffering(1), manager.state.value)
+            idleMain(1_000)
+            awaitPrepares(2)
+            assertEquals(listOf(1L, 1L), fake.resolved)
+
+            // Only once per open: after that it keeps waiting, as before.
+            idleMain(40_000)
+            assertEquals(listOf(1L, 1L), fake.resolved)
+            assertEquals(PlaybackState.Buffering(1), manager.state.value)
+        } finally {
+            manager.stop()
+            silent.shutdown()
+        }
+    }
+
+    @Test
+    fun liveOpenWithDataOrPlayingIsNeverTreatedAsStalled() {
+        val silent = silentServer()
+        try {
+            val fake = engineManager(FakeResolver { silent.url("/live/${it.id}.ts").toString() })
+            manager.play(channel(1, "/live/1.ts"))
+            idleMain()
+            // Tracks known: data has arrived, it is only slow to start.
+            seam.fakeTracks = Tracks(listOf(audioGroup("a", "en")))
+            idleMain(30_000)
+            assertEquals(listOf(1L), fake.resolved)
+
+            seam.fakeTracks = null
+            manager.play(channel(2, "/live/2.ts"))
+            idleMain()
+            reportReady()
+            seam.fakeState = Player.STATE_BUFFERING
+            seam.listeners.forEach { it.onPlaybackStateChanged(Player.STATE_BUFFERING) }
+            idleMain(30_000)
+            assertEquals(listOf(1L, 2L), fake.resolved)
+            assertTrue(retryDelays.isEmpty())
+        } finally {
+            manager.stop()
+            silent.shutdown()
+        }
     }
 
     @Test

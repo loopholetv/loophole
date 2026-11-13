@@ -9,6 +9,7 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlaybackException
 import io.github.loopholetv.data.repo.ChannelPlaybackPrefs
 import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.ColourMode
 import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.data.settings.Passthrough
 import io.github.loopholetv.data.settings.PlaybackSettings
@@ -20,6 +21,7 @@ internal data class EngineConfig(
     val audio: DecoderChoice,
     val passthrough: Passthrough,
     val decodeDtsToPcm: Boolean,
+    val colour: ColourMode,
 )
 
 internal fun engineConfig(s: PlaybackSettings, p: ChannelPlaybackPrefs) = EngineConfig(
@@ -28,6 +30,7 @@ internal fun engineConfig(s: PlaybackSettings, p: ChannelPlaybackPrefs) = Engine
     audio = p.audio ?: s.audioDecoder,
     passthrough = s.passthrough,
     decodeDtsToPcm = s.decodeDtsToPcm,
+    colour = s.colourMode,
 )
 
 /** The track preferences that apply live, without a restart. */

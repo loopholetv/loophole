@@ -52,6 +52,9 @@ enum class QuickItem(val label: String) {
     FAVOURITE("Add to favourites"),
     OPTIONS("Channel options"),
     PIP("Picture-in-picture"),
+
+    /** Shows the decoded stream's details over the video. */
+    STREAM_INFO("Stream info"),
     SETTINGS("Settings"),
 }
 
@@ -205,6 +208,9 @@ internal interface QuickMenuHost {
     /** Starts casting to the other TVs, or stops the cast running. */
     fun toggleCasting()
     fun openOptions()
+
+    /** Shows the stream info card over the video. */
+    fun showStreamInfo()
     fun saveAspect(mode: AspectMode)
     fun send(event: PlayerEvent)
 
@@ -282,6 +288,7 @@ internal class QuickMenuController(
             QuickItem.CHANNELS -> close(host::showChannels)
             QuickItem.START_OVER -> close(host::watchFromStart)
             QuickItem.OPTIONS -> close(host::openOptions)
+            QuickItem.STREAM_INFO -> close(host::showStreamInfo)
             QuickItem.FAVOURITE -> {
                 open = o.copy(focus = item, panel = null)
                 host.toggleFavourite()

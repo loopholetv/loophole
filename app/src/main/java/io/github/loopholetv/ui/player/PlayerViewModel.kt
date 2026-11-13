@@ -179,6 +179,11 @@ class PlayerViewModel(
     private val _events = Channel<PlayerEvent>(Channel.BUFFERED)
     val events: Flow<PlayerEvent> = _events.receiveAsFlow()
 
+    private val _streamInfoShown = MutableStateFlow(false)
+
+    /** Whether the stream info card shows over the video (the quick menu's Stream info; Back hides it). */
+    val streamInfoShown: StateFlow<Boolean> = _streamInfoShown.asStateFlow()
+
     private val menu = QuickMenuController(
         scope = viewModelScope,
         playback = playback,
@@ -200,6 +205,7 @@ class PlayerViewModel(
                 if (cast.state.value is CastState.Casting) cast.stopCasting() else cast.startCasting()
             }
             override fun openOptions() { _ui.value?.channel?.let(::openOptions) }
+            override fun showStreamInfo() { _streamInfoShown.value = true }
             override fun saveAspect(mode: AspectMode) {
                 val c = _ui.value?.channel ?: return
                 _aspect.value = mode
@@ -492,6 +498,7 @@ class PlayerViewModel(
     fun leave(toLive: Boolean = true) {
         pipGate?.playerShowing = false
         menu.flushDelay()
+        _streamInfoShown.value = false
         val live = _ui.value?.channel?.takeIf { toLive && settleJob == null && isRecording(it) }
         catchup.clear()
         if (exited) return
@@ -598,6 +605,7 @@ class PlayerViewModel(
         catchup.hideBar()
         numbers.cancel()
         menu.dismiss()
+        _streamInfoShown.value = false
         dialogs.closeAll()
     }
 
@@ -741,8 +749,8 @@ class PlayerViewModel(
     }
 
     /**
-     * Back: cancels a number entry, else hides the banner/overlay; from bare video it [leave]s and
-     * returns false (not consumed) so the screen goes back to the guide.
+     * Back: cancels a number entry, else hides the banner/overlay, else the stream info card; from
+     * bare video it [leave]s and returns false (not consumed) so the screen goes back to the guide.
      */
     fun onBack(): Boolean {
         val ui = _ui.value ?: return false
@@ -754,6 +762,10 @@ class PlayerViewModel(
             ui.overlayVisible || ui.bannerVisible || barVisible.value -> {
                 hideOverlay()
                 catchup.hideBar()
+                true
+            }
+            _streamInfoShown.value -> {
+                _streamInfoShown.value = false
                 true
             }
             else -> {

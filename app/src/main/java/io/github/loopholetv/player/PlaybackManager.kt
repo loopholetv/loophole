@@ -17,6 +17,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.UnrecognizedInputFormatException
@@ -140,6 +141,9 @@ interface Playback {
      * archive from the current position. Nothing happens when idle or following a cast. Main thread only.
      */
     fun reopen() {}
+
+    /** What the player is decoding right now (the stream info card); null when not known. Main thread only. */
+    fun streamSnapshot(): StreamSnapshot? = null
 }
 
 /** The channel id [PlaybackState] carries while following another TV's cast. */
@@ -181,6 +185,11 @@ private val NOT_PAUSED: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow
  * [SWITCH_WINDOW_MS]) that is refused with a busy-style HTTP status or a dropped connection is
  * retried after each of [SWITCH_RETRY_DELAYS_MS], staying Buffering, before it becomes an error.
  *
+ * A live open that fails in a way a fresh connection can fix (an empty or cut-off body, a dropped
+ * connection, a server error), or ends, before it has played for [START_GRACE_MS], is released and
+ * resolved again after each of [START_RETRY_DELAYS_MS], staying Buffering, before it becomes an error.
+ * So is one that has delivered no data at all after [STALL_TIMEOUT_MS], once per open.
+ *
  * [playCast] follows another TV's cast through its own [castHttp] client, with this TV's engine and
  * track settings but no resolver, keep-alive, re-mint, switch retry or HLS fallback. A cast stream that
  * ends stays Buffering (the casting TV switched or paused its stream), and falling behind the live
@@ -205,7 +214,7 @@ class PlaybackManager internal constructor(
     private val evictIdleConnections: suspend () -> Unit = { withContext(Dispatchers.IO) { evictConnections() } },
     /** Wall-clock time, passed to the resolver to build archive requests; [clock] times retries. */
     private val wallClock: () -> Instant = Instant::now,
-    /** Waits between retries of an open refused right after a switch. */
+    /** Waits between retries of an open refused right after a switch, or failed as it started. */
     private val retryDelay: suspend (Long) -> Unit = { delay(it) },
     /** The client for another TV's relay; separate from [http], whose pool holds provider connections. Built on first use. */
     castHttp: () -> OkHttpClient = ::defaultCastClient,
@@ -280,6 +289,12 @@ class PlaybackManager internal constructor(
     private var openAfterSwitch = false
     private var switchRetries = 0
 
+    /** When ([clock] ms) this open first became ready, the start retries spent on it, and whether a stall used one. */
+    private var firstReadyAtMs: Long? = null
+    private var startRetries = 0
+    private var stallRetried = false
+    private var stallJob: Job? = null
+
     /** Set when an archive was released; cleared only once an eviction has completed, so the next open evicts. */
     private var pendingEvict = false
 
@@ -310,9 +325,13 @@ class PlaybackManager internal constructor(
         }
     }
 
+    /** The decoders in use, for [streamSnapshot]. */
+    private val decoderNames = DecoderNames()
+
     init {
         Log.setLogLevel(if (BuildConfig.DEBUG) Log.LOG_LEVEL_ERROR else Log.LOG_LEVEL_OFF)
         exoPlayer.addListener(listener)
+        exoPlayer.addAnalyticsListener(decoderNames)
         scope.launch {
             settings.distinctUntilChanged()
                 .onCompletion { settingsLive = false }
@@ -421,6 +440,9 @@ class PlaybackManager internal constructor(
         exoPlayer.playWhenReady = true
         openAfterSwitch = lastReleaseAtMs?.let { clock() - it < SWITCH_WINDOW_MS } == true
         switchRetries = 0
+        firstReadyAtMs = null
+        startRetries = 0
+        stallRetried = false
         return generation
     }
 
@@ -573,6 +595,7 @@ class PlaybackManager internal constructor(
     private fun applyEngine(s: PlaybackSettings, p: ChannelPlaybackPrefs, generation: Long) {
         val config = engineConfig(s, p)
         engine.codecPolicy.video = config.video
+        engine.colourPolicy.mode = config.colour
         engine.codecPolicy.audio = if (audioFallbackActive) DecoderChoice.HARDWARE else config.audio
         engine.sinkPolicy.passthrough = config.passthrough
         engine.sinkPolicy.decodeDtsToPcm = config.decodeDtsToPcm
@@ -776,6 +799,8 @@ class PlaybackManager internal constructor(
         resolveJob = null
         keepAliveJob?.cancel()
         keepAliveJob = null
+        stallJob?.cancel()
+        stallJob = null
     }
 
     private fun load(channel: ChannelEntity, stream: ResolvedStream, asHls: Boolean) {
@@ -786,6 +811,28 @@ class PlaybackManager internal constructor(
         exoPlayer.setMediaSource(source)
         exoPlayer.prepare()
         _state.value = PlaybackState.Buffering(channel.id)
+        watchForStall(channel)
+    }
+
+    /**
+     * A live open that has neither tracks nor buffered media after [STALL_TIMEOUT_MS] got no data at
+     * all (the provider holds the connection open without sending): reconnect it, once per open.
+     */
+    private fun watchForStall(channel: ChannelEntity) {
+        stallJob?.cancel()
+        stallJob = null
+        if (_mode.value !is PlayMode.Live || stallRetried || firstReadyAtMs != null) return
+        val generation = playGeneration
+        stallJob = scope.launch {
+            delay(STALL_TIMEOUT_MS)
+            if (generation != playGeneration || resolved == null || firstReadyAtMs != null) return@launch
+            val stalled = _state.value == PlaybackState.Buffering(channel.id) &&
+                exoPlayer.currentTracks.isEmpty && exoPlayer.totalBufferedDuration <= 0L
+            if (stalled && startRetries < START_RETRY_DELAYS_MS.size) {
+                stallRetried = true
+                retryStart(channel, keepHls = currentIsHls)
+            }
+        }
     }
 
     /** Loads (or reloads) the cast through [castClient]; the mime type says TS or HLS, never the URL shape. */
@@ -805,6 +852,18 @@ class PlaybackManager internal constructor(
         exoPlayer.prepare()
         _state.value = PlaybackState.Buffering(CAST_CHANNEL_ID)
     }
+
+    override fun streamSnapshot(): StreamSnapshot = StreamSnapshot(
+        video = exoPlayer.videoFormat,
+        audio = exoPlayer.audioFormat,
+        videoDecoder = decoderNames.video,
+        audioDecoder = decoderNames.audio,
+        droppedFrames = exoPlayer.videoDecoderCounters?.run {
+            ensureUpdated()
+            droppedBufferCount
+        },
+        bufferedMs = exoPlayer.totalBufferedDuration.takeIf { exoPlayer.currentMediaItem != null },
+    )
 
     override fun stop() {
         noteRelease()
@@ -851,7 +910,15 @@ class PlaybackManager internal constructor(
         if (error != null && recover(channel, stream, error)) return
         val ready = exoPlayer.isPlaying || exoPlayer.playbackState == Player.STATE_READY
         // The open succeeded: a later failure is no longer a refused switch.
-        if (error == null && ready) openAfterSwitch = false
+        if (error == null && ready) {
+            openAfterSwitch = false
+            if (firstReadyAtMs == null) firstReadyAtMs = clock()
+        }
+        // A live stream that ends as it starts was most likely cut off by the provider: open it again.
+        if (error == null && archive == null && exoPlayer.playbackState == Player.STATE_ENDED && shouldRetryStart(null)) {
+            retryStart(channel, keepHls = currentIsHls)
+            return
+        }
         _state.value = when {
             error != null -> PlaybackState.Error(
                 channel.id, if (archive != null) ARCHIVE_ERROR else errorMessage(channel.displayName, error),
@@ -951,7 +1018,59 @@ class PlaybackManager internal constructor(
             retrySwitch(channel)
             true
         }
+        // A live open that failed as it started: a fresh connection usually works.
+        shouldRetryStart(error) -> {
+            // A fallback playlist that wasn't one says nothing about the stream: sniff it afresh.
+            retryStart(channel, keepHls = currentIsHls && error.errorCode != PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED)
+            true
+        }
         else -> false
+    }
+
+    /**
+     * Whether a live open that failed with [error] (null: it ended) is worth opening again: it has not
+     * played for [START_GRACE_MS] yet, start retries remain, the switch backoff has not already given up
+     * on it, and the failure is one a new connection can fix.
+     */
+    private fun shouldRetryStart(error: PlaybackException?): Boolean {
+        if (_mode.value !is PlayMode.Live || startRetries >= START_RETRY_DELAYS_MS.size) return false
+        if (switchRetries >= SWITCH_RETRY_DELAYS_MS.size) return false
+        val readyAt = firstReadyAtMs
+        if (readyAt != null && clock() - readyAt >= START_GRACE_MS) return false
+        return error == null || error.mayHealOnReconnect()
+    }
+
+    /**
+     * Failures a fresh connection may fix: an empty, cut-off or garbled body, a dropped or timed-out
+     * connection, or a server error shown with the generic message. Refusals with their own message
+     * (401/403/404/429/458/509), unsupported formats and decoder failures are left as they are.
+     */
+    private fun PlaybackException.mayHealOnReconnect(): Boolean {
+        val code = httpCode()
+        if (code != null) return code in 500..599 && code != 509
+        if (this is ExoPlaybackException && type == ExoPlaybackException.TYPE_RENDERER) return false
+        return errorCode in HEALABLE_ERROR_CODES
+    }
+
+    /**
+     * Releases the failed live open, stays Buffering, and after the next start backoff resolves and
+     * loads the channel again, as Try again would. A newer play or stop cancels the wait.
+     */
+    private fun retryStart(channel: ChannelEntity, keepHls: Boolean) {
+        val wait = START_RETRY_DELAYS_MS[startRetries++]
+        val generation = ++playGeneration
+        resolved = null
+        cancelJobs()
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+        firstReadyAtMs = null
+        hlsFallbackTried = keepHls
+        _state.value = PlaybackState.Buffering(channel.id)
+        resolveJob = scope.launch {
+            retryDelay(wait)
+            if (generation != playGeneration) return@launch
+            startResolve(channel, generation, forceHls = keepHls, newChannel = false, evictFirst = true)
+        }
     }
 
     /**
@@ -1046,6 +1165,26 @@ class PlaybackManager internal constructor(
         /** How long after a release an open still counts as the first open after a switch. */
         const val SWITCH_WINDOW_MS = 10_000L
         val SWITCH_RETRY_DELAYS_MS = listOf(500L, 1_000L, 2_000L, 4_000L)
+
+        /** Waits before each reopen of a live open that failed as it started; one per entry. */
+        val START_RETRY_DELAYS_MS = listOf(1_000L, 2_500L)
+
+        /** How long after it first played a live stream's failure still counts as a failed start. */
+        const val START_GRACE_MS = 5_000L
+
+        /** How long a live open may go without any data before it is reconnected. */
+        const val STALL_TIMEOUT_MS = 15_000L
+
+        /** Player error codes (no HTTP status) that a fresh connection may fix. */
+        val HEALABLE_ERROR_CODES = setOf(
+            PlaybackException.ERROR_CODE_UNSPECIFIED,
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+            PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+            PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+        )
         const val ARCHIVE_ERROR = "Couldn't play this programme back."
         const val CAST_ERROR = "Can't play this stream."
         const val CAST_READ_TIMEOUT_S = 8L

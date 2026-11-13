@@ -112,6 +112,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         return PlaybackSettings(
             bufferPreset = this[BUFFER_PRESET].validOr(d.bufferPreset),
             videoDecoder = this[VIDEO_DECODER].validOr(d.videoDecoder),
+            colourMode = this[COLOUR_MODE].validOr(d.colourMode),
             audioDecoder = this[AUDIO_DECODER].validOr(d.audioDecoder),
             autoFrameRate = this[AUTO_FRAME_RATE] ?: d.autoFrameRate,
             preferSurround = this[PREFER_SURROUND] ?: d.preferSurround,
@@ -165,6 +166,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
     private fun MutablePreferences.writePlayback(p: PlaybackSettings) {
         this[BUFFER_PRESET] = p.bufferPreset.name
         this[VIDEO_DECODER] = p.videoDecoder.name
+        this[COLOUR_MODE] = p.colourMode.name
         this[AUDIO_DECODER] = p.audioDecoder.name
         this[AUTO_FRAME_RATE] = p.autoFrameRate
         this[PREFER_SURROUND] = p.preferSurround
@@ -223,6 +225,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         val CAST_SELF_ID = stringPreferencesKey("cast_self_id")
         val BUFFER_PRESET = stringPreferencesKey("buffer_preset")
         val VIDEO_DECODER = stringPreferencesKey("video_decoder")
+        val COLOUR_MODE = stringPreferencesKey("colour_mode")
         val AUDIO_DECODER = stringPreferencesKey("audio_decoder")
         val AUTO_FRAME_RATE = booleanPreferencesKey("auto_frame_rate")
         val PREFER_SURROUND = booleanPreferencesKey("prefer_surround")

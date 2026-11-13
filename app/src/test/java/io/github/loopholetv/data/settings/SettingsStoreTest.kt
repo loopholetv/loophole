@@ -212,6 +212,7 @@ class SettingsStoreTest {
         val playback = PlaybackSettings(
             bufferPreset = BufferPreset.LARGE,
             videoDecoder = DecoderChoice.SOFTWARE,
+            colourMode = ColourMode.STANDARD,
             audioDecoder = DecoderChoice.SOFTWARE,
             autoFrameRate = true,
             preferSurround = false,

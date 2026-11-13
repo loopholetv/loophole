@@ -162,6 +162,38 @@ class SetupScreenModelTest {
     }
 
     @Test
+    fun everyEndingClosesTheScreens() = runTest(UnconfinedTestDispatcher()) {
+        // Sent, cancelled here or on the other TV, out of tries, timed out, the other TV gone,
+        // a failure: each result closes on OK, on Back, or by itself.
+        val endings = listOf(
+            SetupController.copiedTo("Bedroom", 0),
+            SetupController.CANCELLED,
+            SetupController.TIMED_OUT,
+            SetupController.unreachable("Bedroom"),
+            SetupController.FAILED,
+        )
+        val closers = listOf<(Harness) -> Unit>(
+            { it.press(KeyEvent.KEYCODE_DPAD_CENTER) },
+            { it.press(KeyEvent.KEYCODE_BACK) },
+            {
+                advanceTimeBy(DONE_SHOWS_MS + 1)
+                runCurrent()
+            },
+        )
+        for (message in endings) {
+            for (close in closers) {
+                val h = harness()
+                h.setup.state.value = asking
+                h.setup.state.value = SetupState.Done(message, copied = message.startsWith("Setup copied"))
+                close(h)
+                assertNull("closed after \"$message\"", h.model.shown.value)
+                assertEquals(SetupState.Idle, h.setup.state.value)
+                assertFalse("nothing taken once closed", h.model.onKey(KeyEvent.KEYCODE_DPAD_DOWN, down = true, repeatCount = 0))
+            }
+        }
+    }
+
+    @Test
     fun sendingTvStaysWhereItIs() = runTest(UnconfinedTestDispatcher()) {
         val h = harness()
         h.setup.state.value = SetupState.Done(SetupController.copiedTo("Bedroom", 0), copied = true)

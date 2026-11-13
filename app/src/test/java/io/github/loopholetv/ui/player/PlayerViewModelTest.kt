@@ -1766,6 +1766,48 @@ class PlayerViewModelTest {
         assertTrue("Channels opens the channel bar", vm.state().overlayVisible)
     }
 
+    @Test fun streamInfoShowsUntilBack() = runTest {
+        val vm = vm(FakePlayback(), start = 3)
+        runCurrent()
+        assertFalse(vm.streamInfoShown.value)
+        vm.onLongOk()
+        assertNull(vm.entry(QuickItem.STREAM_INFO).value)
+        vm.pickQuickItem(QuickItem.STREAM_INFO)
+        assertNull("the menu closes", vm.quickMenu.value)
+        assertTrue(vm.streamInfoShown.value)
+        assertFalse("the card is no dialog: keys work as usual", vm.dialogOpen())
+
+        // The banner a zap shows goes first, then the card; only then does Back leave.
+        key(vm, KeyEvent.KEYCODE_CHANNEL_UP)
+        runCurrent()
+        assertTrue(vm.state().bannerVisible)
+        assertTrue(vm.onBack())
+        assertTrue(vm.streamInfoShown.value)
+        assertTrue(vm.onBack())
+        assertFalse(vm.streamInfoShown.value)
+        assertFalse(vm.onBack())
+    }
+
+    @Test fun leavingHidesStreamInfo() = runTest {
+        val vm = vm(FakePlayback(), start = 3)
+        runCurrent()
+        vm.onLongOk()
+        vm.pickQuickItem(QuickItem.STREAM_INFO)
+        assertTrue(vm.streamInfoShown.value)
+        vm.leave()
+        assertFalse(vm.streamInfoShown.value)
+    }
+
+    @Test fun pipHidesStreamInfo() = runTest {
+        val vm = vm(FakePlayback())
+        runCurrent()
+        vm.onLongOk()
+        vm.pickQuickItem(QuickItem.STREAM_INFO)
+        assertTrue(vm.streamInfoShown.value)
+        vm.onPipChanged(true)
+        assertFalse(vm.streamInfoShown.value)
+    }
+
     @Test fun pipHidesOverlayAndMenus() = runTest {
         val vm = vm(FakePlayback(), start = 3)
         runCurrent()

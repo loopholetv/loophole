@@ -6,6 +6,7 @@ import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
 import io.github.loopholetv.data.settings.AUDIO_DELAY_STEP_MS
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.ColourMode
 import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.data.settings.GuideAction
 import io.github.loopholetv.data.settings.PlayerAction
@@ -72,6 +73,7 @@ fun <T> choiceText(choices: List<Pair<T, String>>, value: T, fallback: (T) -> St
 
 internal const val PB_BUFFER = "Buffer size"
 internal const val PB_VIDEO_DECODER = "Video decoder"
+internal const val PB_COLOUR = "Picture colour"
 internal const val PB_AUDIO_DECODER = "Audio decoder"
 internal const val PB_AUTO_FRAME_RATE = "Auto frame rate"
 internal const val PB_SURROUND = "Surround sound by default"
@@ -88,6 +90,7 @@ internal const val PB_PIP_ON_HOME = "Home button opens picture-in-picture"
 internal const val PB_TUNNELING = "Tunneled playback (advanced)"
 
 internal const val PB_VIDEO_DECODER_HINT = "Software can help a channel that won't play. It is slower."
+internal const val PB_COLOUR_HINT = "Try Standard if the picture looks pale or washed out on this TV. Standard turns HDR off."
 internal const val PB_AUTO_FRAME_RATE_HINT =
     "Switches the TV to the channel's frame rate in full screen. The screen goes black for 1–5 seconds each time it switches."
 internal const val PB_SURROUND_HINT = "Picks a 5.1 sound track when the channel has one."
@@ -100,6 +103,7 @@ internal const val PB_TUNNELING_HINT = "Can make 4K smoother on some TVs. May do
 internal fun playbackRowLabels(pipSupported: Boolean): List<String> = listOfNotNull(
     PB_BUFFER,
     PB_VIDEO_DECODER,
+    PB_COLOUR,
     PB_AUDIO_DECODER,
     PB_AUTO_FRAME_RATE,
     PB_SURROUND,
@@ -120,6 +124,11 @@ fun bufferPresetText(p: BufferPreset): String = when (p) {
     BufferPreset.SMALL -> "Small (fastest channel change)"
     BufferPreset.NORMAL -> "Normal"
     BufferPreset.LARGE -> "Large (for unsteady Wi-Fi)"
+}
+
+fun colourModeText(m: ColourMode): String = when (m) {
+    ColourMode.AUTO -> "Auto"
+    ColourMode.STANDARD -> "Standard (ignore stream colour tags)"
 }
 
 fun decoderText(d: DecoderChoice): String = when (d) {

@@ -3,17 +3,24 @@ package io.github.loopholetv.ui.setup
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.unit.width
 import io.github.loopholetv.setup.SetupState
 import io.github.loopholetv.ui.theme.LoopholeTheme
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(qualifiers = "w960dp-h540dp-mdpi")
+// Real text measurement, so long titles take their true width beside the pad.
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class SetupContentTest {
     @get:Rule val compose = createComposeRule()
 
@@ -53,6 +60,15 @@ class SetupContentTest {
     fun askedTvExplainsTheRequest() {
         show(SetupState.EnterCode("Bedroom", asked = true, triesLeft = null, error = null))
         compose.onNodeWithText("Bedroom wants to copy your setup. Enter the code shown on Bedroom.").assertIsDisplayed()
+    }
+
+    @Test
+    fun padKeysKeepTheirWidthBesideALongTitle() {
+        // The longest title wraps to its widest; the pad beside it must keep its last column.
+        show(SetupState.EnterCode("Upstairs living room television", asked = true, triesLeft = null, error = null))
+        val widths = (0..PAD_CANCEL).map { compose.onNodeWithTag(padKeyTag(it)).getUnclippedBoundsInRoot().width.value }
+        for ((index, width) in widths.withIndex()) assertEquals("key ${padLabel(index)}", widths[0], width, 0.5f)
+        assertEquals(104f, widths[0], 0.5f)
     }
 
     @Test
