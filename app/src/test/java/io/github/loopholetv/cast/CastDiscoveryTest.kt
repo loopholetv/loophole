@@ -296,6 +296,18 @@ class CastDiscoveryTest {
     }
 
     @Test
+    fun nsdRecordCarriesTheSetupVersion() {
+        val nsd = FakeNsd()
+        val me = node("me", { 9 }, nsd)
+        val txt = ann("n1").copy(setup = 1).toTxt()
+        assertEquals("1", txt["setup"])
+        assertEquals("1", txt["v"])
+        nsd.found("192.168.1.20", txt)
+        nsd.found("192.168.1.21", ann("n2").toTxt() - "setup") // an older TV
+        assertEquals(mapOf("n1" to 1, "n2" to 0), me.table.peers.value.associate { it.id to it.setup })
+    }
+
+    @Test
     fun nsdLossDoesNotRemoveAPeer() {
         val nsd = FakeNsd()
         val me = node("me", { 9 }, nsd)

@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -31,8 +33,12 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import io.github.loopholetv.ui.nav.holdAutoJoin
+import io.github.loopholetv.setup.SetupState
+import io.github.loopholetv.ui.nav.Routes
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CastControllerTest {
@@ -142,6 +148,9 @@ class CastControllerTest {
     private val client = FakeClient()
     private val settings = MutableStateFlow(AppSettings())
     private var autoJoin = true
+
+    /** What the controller asks before joining on its own; [autoJoin] unless a test wires a hold. */
+    private var canAutoJoin: () -> Boolean = { autoJoin }
     private var homeNetwork = true
     private var position: Long? = null
     private val seeks = mutableListOf<Long>()
@@ -164,7 +173,7 @@ class CastControllerTest {
     private fun TestScope.controller(selfId: suspend () -> String = { "self" }, foreground: Boolean = true): CastController {
         val c = CastController(
             backgroundScope, selfId, playback, host, discovery, table, client, server, { addresses },
-            settings, { "This TV" }, clock = { 5_000L }, canAutoJoin = { autoJoin },
+            settings, { "This TV" }, clock = { 5_000L }, canAutoJoin = { canAutoJoin() },
             castPosition = { position }, seekCast = { seeks += it },
             // The tests' server is on loopback only; whether other TVs could reach it is up to the test.
             reachable = { homeNetwork },
@@ -275,6 +284,7 @@ class CastControllerTest {
         assertNull(idle.castId)
         assertTrue("seeded from the wall clock", idle.seq > 5_000L)
         assertEquals("unchanged keeps its number", idle.seq, c.selfAnnounce().seq)
+        assertEquals(CastAnnounce.SETUP_VERSION, idle.setup)
 
         playback.watching()
         val watching = c.selfAnnounce()
@@ -752,6 +762,27 @@ class CastControllerTest {
         assertTrue(c.state.value is CastState.Following)
     }
 
+    @Test fun followingEpochTracksThePlayingEvents() = runTest {
+        val c = controller()
+        announce()
+        runCurrent()
+        assertNull((c.state.value as CastState.Following).epoch)
+
+        client.send(playing(1))
+        runCurrent()
+        assertEquals(1, (c.state.value as CastState.Following).epoch)
+
+        client.send(playing(2, hls = true))
+        runCurrent()
+        assertEquals(2, (c.state.value as CastState.Following).epoch)
+
+        // The same epoch again (a resume) leaves the state as it was.
+        val before = c.state.value
+        client.send(playing(2, hls = true))
+        runCurrent()
+        assertSame(before, c.state.value)
+    }
+
     @Test fun stoppedShowsMessageAndReturnsOff() = runTest {
         val c = controller()
         val expected = mapOf(
@@ -1120,5 +1151,84 @@ class CastControllerTest {
 
         foreground(c)
         assertNotNull("not declined: offered again on the next sighting", c.invite.value)
+    }
+
+    @Test fun castSeenWhileAutoJoinIsHeldIsJoinedOnceReleased() = runTest {
+        autoJoin = false
+        val c = controller()
+        announce()
+        runCurrent()
+        assertEquals(CastState.Off, c.state.value)
+        assertNull(c.invite.value)
+
+        // Released (for example, the first-start screen closed): the cast seen meanwhile is joined.
+        autoJoin = true
+        c.recheckAutoJoin()
+        runCurrent()
+        assertTrue(c.state.value is CastState.Following)
+    }
+
+    @Test fun noJoinWhileTheFirstStartScreensShowAndAJoinOnceTheyClose() = runTest {
+        lateinit var c: CastController
+        val hold = AutoJoinHold { c.recheckAutoJoin() }
+        canAutoJoin = hold::allows
+        val route = MutableStateFlow<String?>(null)
+        backgroundScope.launch { holdAutoJoin(route, flowOf(false)) { hold.set(it) } }
+        c = controller()
+
+        // The first-start screen is up and another TV is casting: nothing is joined.
+        route.value = Routes.ONBOARDING
+        announce()
+        runCurrent()
+        assertEquals(CastState.Off, c.state.value)
+        route.value = Routes.SETUP_COPY_FROM
+        runCurrent()
+        assertEquals(CastState.Off, c.state.value)
+        assertTrue(client.joins.isEmpty())
+
+        // First start is over (a playlist was added or copied): the cast already running is joined.
+        route.value = Routes.GUIDE
+        runCurrent()
+        assertTrue(c.state.value is CastState.Following)
+    }
+
+    @Test fun noJoinWhileASetupCopyIsUnderWayOnATvAlreadySetUp() = runTest {
+        lateinit var c: CastController
+        val hold = AutoJoinHold { c.recheckAutoJoin() }
+        canAutoJoin = hold::allows
+        val route = MutableStateFlow<String?>(Routes.GUIDE)
+        val setup = MutableStateFlow<SetupState>(SetupState.Idle)
+        c = controller()
+        backgroundScope.launch { holdAutoJoin(route, setup.map { it !is SetupState.Idle }) { hold.set(it) } }
+        runCurrent()
+
+        // This TV shows a code for another TV's setup when a cast starts: nothing is joined.
+        setup.value = SetupState.ShowingCode("1234", "Living room", 0)
+        runCurrent()
+        announce()
+        runCurrent()
+        assertEquals(CastState.Off, c.state.value)
+        setup.value = SetupState.Working("Copying the setup…")
+        runCurrent()
+        setup.value = SetupState.Done("Setup copied from Living room.", copied = true, received = true)
+        runCurrent()
+        assertEquals(CastState.Off, c.state.value)
+        assertTrue(client.joins.isEmpty())
+
+        // The copy screen closed: the cast already running is joined.
+        setup.value = SetupState.Idle
+        runCurrent()
+        assertTrue(c.state.value is CastState.Following)
+    }
+
+    @Test fun recheckWhileHeldDoesNothing() = runTest {
+        autoJoin = false
+        val c = controller()
+        announce()
+        runCurrent()
+        c.recheckAutoJoin()
+        runCurrent()
+        assertEquals(CastState.Off, c.state.value)
+        assertNull(c.invite.value)
     }
 }

@@ -131,7 +131,27 @@ internal class LocalM3uOpener(
         if (!temp.renameTo(copyFile(playlistId))) temp.delete()
     }
 
-    private fun copyFile(playlistId: Long) = File(copiesDir, "$playlistId.m3u")
+    /** Where [playlistId]'s last-good copy lives (a setup copied from another TV is read from it too). */
+    internal fun copyFile(playlistId: Long) = File(copiesDir, "$playlistId.m3u")
+
+    /**
+     * The file's raw bytes as a stream, else [playlistId]'s last-good copy; null when neither
+     * opens. No sniffing and no copy tee. Call on IO.
+     */
+    internal fun openRaw(location: String, playlistId: Long): InputStream? {
+        fun <T> orNull(open: () -> T): T? = try {
+            open()
+        } catch (e: IOException) {
+            null
+        } catch (e: SecurityException) {
+            null
+        } catch (e: IllegalArgumentException) {
+            null
+        } catch (e: IllegalStateException) {
+            null
+        }
+        return orNull { openStream(location) } ?: orNull { copyFile(playlistId).takeIf { it.isFile }?.inputStream() }
+    }
 
     /** Throws [FileNotFoundException] / [SecurityException] / [IOException] when it can't be opened. */
     private fun openStream(location: String): InputStream {

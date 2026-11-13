@@ -84,6 +84,10 @@ fun AddPlaylistScreen(
     onDone: () -> Unit,
     onBack: (() -> Unit)? = null,
     editId: Long? = null,
+    /** First start only: leave setup for later (opens an empty guide). */
+    onSkip: (() -> Unit)? = null,
+    /** First start only: copy another TV's setup instead of typing one. */
+    onCopyFromAnotherTv: (() -> Unit)? = null,
     // Keyed so an add form and an edit form never share one ViewModel, even in one back-stack entry.
     vm: AddPlaylistViewModel = viewModel(key = "playlist-form-${editId ?: "new"}", factory = AddPlaylistViewModel.factory(editId)),
 ) {
@@ -97,7 +101,7 @@ fun AddPlaylistScreen(
     if (browsing) {
         FileBrowser(onPick = { vm.setFile(it); browsing = false }, onCancel = { browsing = false })
     } else {
-        AddPlaylistContent(ui, vm, chooseFile)
+        AddPlaylistContent(ui, vm, chooseFile, onSkip, onCopyFromAnotherTv)
     }
 }
 
@@ -138,7 +142,13 @@ private fun FormField(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AddPlaylistContent(ui: AddPlaylistUi, vm: AddPlaylistViewModel, chooseFile: () -> Unit) {
+private fun AddPlaylistContent(
+    ui: AddPlaylistUi,
+    vm: AddPlaylistViewModel,
+    chooseFile: () -> Unit,
+    onSkip: (() -> Unit)?,
+    onCopyFromAnotherTv: (() -> Unit)?,
+) {
     val firstField = remember { FocusRequester() }
     // Also re-runs when an edited playlist has loaded (its mode decides the first field).
     LaunchedEffect(ui.loaded) { runCatching { firstField.requestFocus() } }
@@ -207,6 +217,8 @@ private fun AddPlaylistContent(ui: AddPlaylistUi, vm: AddPlaylistViewModel, choo
             if (named) FormField(ctl, "Playlist name", ui.name, vm::setName, last = true)
             Spacer(Modifier.height(4.dp))
             PillButton(if (ui.editing) "Save" else "Add playlist", selected = false, enabled = !ui.busy, onFocus = stopTyping) { vm.submit() }
+            onCopyFromAnotherTv?.let { PillButton("Copy from another TV", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }
+            onSkip?.let { PillButton("Skip for now", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }
             // On a long form (MAC portal) the status sits below the fold: scroll it into view.
             val status = remember { BringIntoViewRequester() }
             LaunchedEffect(ui.phase) { if (ui.phase != Phase.Editing) runCatching { status.bringIntoView() } }

@@ -90,13 +90,132 @@ class LocalHttpServerTest {
         }
     }
 
-    @Test fun postBodyIsIgnoredAndRouted() {
+    @Test fun emptyPostIsRoutedOnARouteWithoutBodies() {
         server.route("POST", "/cmd") { _, res -> res.start(204, null) }
         val port = server.start(listOf(loopback))
-        val body = "ignored body".toRequestBody()
-        client.newCall(Request.Builder().url(url(port, "/cmd")).post(body).build()).execute().use {
+        client.newCall(Request.Builder().url(url(port, "/cmd")).post(ByteArray(0).toRequestBody()).build()).execute().use {
             assertEquals(204, it.code)
         }
+        assertTrue(raw(port, "POST /cmd HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 204"))
+    }
+
+    @Test fun routeWithoutBodiesRejectsABody() {
+        val ran = AtomicBoolean(false)
+        server.route("POST", "/cmd") { _, res -> ran.set(true); res.start(204, null) }
+        val port = server.start(listOf(loopback))
+        val body = "a body".toRequestBody()
+        client.newCall(Request.Builder().url(url(port, "/cmd")).post(body).build()).execute().use {
+            assertEquals(413, it.code)
+        }
+        assertFalse(ran.get())
+    }
+
+    @Test fun bodyIsReadUpToContentLength() {
+        val seen = AtomicReference<String>()
+        server.route("POST", "/echo", maxBodyBytes = 4096) { req, res ->
+            assertEquals(5L, req.bodyLength)
+            seen.set(String(req.body.readBytes()))
+            res.start(204, null)
+        }
+        val port = server.start(listOf(loopback))
+        // Bytes past Content-Length (here in the same packet as the head) are not part of the body.
+        val reply = raw(port, "POST /echo HTTP/1.1\r\nContent-Length: 5\r\n\r\nhelloEXTRA")
+        assertTrue(reply, reply.startsWith("HTTP/1.1 204"))
+        assertEquals("hello", seen.get())
+    }
+
+    @Test fun largeBodyArrivesWhole() {
+        val size = 3 * 1024 * 1024
+        val got = AtomicReference<ByteArray>()
+        server.route("POST", "/big", maxBodyBytes = size.toLong()) { req, res ->
+            got.set(req.body.readBytes())
+            res.start(204, null)
+        }
+        val port = server.start(listOf(loopback))
+        val sent = ByteArray(size) { (it % 251).toByte() }
+        client.newCall(Request.Builder().url(url(port, "/big")).post(sent.toRequestBody()).build()).execute().use {
+            assertEquals(204, it.code)
+        }
+        assertTrue(sent.contentEquals(got.get()))
+    }
+
+    @Test fun bodyOverTheRouteLimitIs413() {
+        val ran = AtomicBoolean(false)
+        server.route("POST", "/small", maxBodyBytes = 4) { _, res -> ran.set(true); res.start(204, null) }
+        val port = server.start(listOf(loopback))
+        client.newCall(Request.Builder().url(url(port, "/small")).post("12345".toRequestBody()).build()).execute().use {
+            assertEquals(413, it.code)
+        }
+        assertFalse(ran.get())
+    }
+
+    @Test fun bodyWithoutContentLengthIs411() {
+        val ran = AtomicBoolean(false)
+        server.route("POST", "/up", maxBodyBytes = 4096) { _, res -> ran.set(true); res.start(204, null) }
+        val port = server.start(listOf(loopback))
+        val chunked = raw(port, "POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+        assertTrue(chunked, chunked.startsWith("HTTP/1.1 411"))
+        val missing = raw(port, "POST /up HTTP/1.1\r\n\r\nhello")
+        assertTrue(missing, missing.startsWith("HTTP/1.1 411"))
+        assertFalse(ran.get())
+    }
+
+    @Test fun malformedContentLengthIs400() {
+        server.route("POST", "/up", maxBodyBytes = 4096) { _, res -> res.start(204, null) }
+        val port = server.start(listOf(loopback))
+        listOf("-1", "abc", "5, 5", "+5").forEach { value ->
+            val reply = raw(port, "POST /up HTTP/1.1\r\nContent-Length: $value\r\n\r\nhello")
+            assertTrue(reply, reply.startsWith("HTTP/1.1 400"))
+        }
+    }
+
+    @Test fun bodyReadGivesUpAtTheDeadline() {
+        val slow = LocalHttpServer(scope, bodyTimeoutMs = 300)
+        val failure = AtomicReference<Throwable>()
+        val done = CountDownLatch(1)
+        slow.route("POST", "/up", maxBodyBytes = 4096) { req, res ->
+            try {
+                req.body.readBytes()
+            } catch (e: IOException) {
+                failure.set(e)
+            } finally {
+                done.countDown()
+            }
+            res.start(204, null)
+        }
+        try {
+            val port = slow.start(listOf(loopback))
+            Socket(loopback, port).use { s ->
+                s.getOutputStream().write("POST /up HTTP/1.1\r\nContent-Length: 10\r\n\r\nab".toByteArray())
+                s.getOutputStream().flush()
+                assertTrue(done.await(10, TimeUnit.SECONDS))
+            }
+            assertTrue(failure.get() is java.net.SocketTimeoutException)
+        } finally {
+            slow.stop()
+        }
+    }
+
+    @Test fun truncatedBodyFailsTheRead() {
+        val failure = AtomicReference<Throwable>()
+        val done = CountDownLatch(1)
+        server.route("POST", "/up", maxBodyBytes = 4096) { req, res ->
+            try {
+                req.body.readBytes()
+            } catch (e: IOException) {
+                failure.set(e)
+            } finally {
+                done.countDown()
+            }
+            res.start(204, null)
+        }
+        val port = server.start(listOf(loopback))
+        Socket(loopback, port).use { s ->
+            s.getOutputStream().write("POST /up HTTP/1.1\r\nContent-Length: 10\r\n\r\nab".toByteArray())
+            s.shutdownOutput()
+            assertTrue(done.await(10, TimeUnit.SECONDS))
+        }
+        assertTrue(failure.get() is IOException)
     }
 
     @Test fun putIs405() {
@@ -365,12 +484,12 @@ class LocalHttpServerTest {
         }
     }
 
-    @Test fun largePostBodyStillGetsItsReply() {
+    @Test fun largeRefusedBodyStillGetsItsReply() {
         server.route("POST", "/cmd") { _, res -> res.start(204, null) }
         val port = server.start(listOf(loopback))
         val body = ByteArray(40_000).toRequestBody()
         client.newCall(Request.Builder().url(url(port, "/cmd")).post(body).build()).execute().use {
-            assertEquals(204, it.code)
+            assertEquals(413, it.code)
         }
     }
 
@@ -479,9 +598,12 @@ class LocalHttpServerTest {
     }
 
     @Test fun requestToStringHidesPathQueryAndHeaders() {
-        val req = HttpRequest("GET", "/c/s3cr3t/1.ts", mapOf("k" to "qv4lue"), mapOf("x-h" to "hv4lue"), loopback)
+        val req = HttpRequest(
+            "GET", "/c/s3cr3t/1.ts", mapOf("k" to "qv4lue"), mapOf("x-h" to "hv4lue"), loopback,
+            body = "b0dyv4lue".byteInputStream(), bodyLength = 9,
+        )
         val text = req.toString()
-        listOf("s3cr3t", "qv4lue", "hv4lue", "x-h").forEach { assertFalse(text, text.contains(it)) }
+        listOf("s3cr3t", "qv4lue", "hv4lue", "x-h", "b0dyv4lue").forEach { assertFalse(text, text.contains(it)) }
         assertTrue(text.contains("GET"))
     }
 
@@ -557,5 +679,58 @@ class LocalHttpServerTest {
         assertEquals(2, made.size)
         assertTrue(made.all { it.isClosed })
         assertNull(fixed.port)
+    }
+
+    @Test fun aRouteCanHaveAShorterBodyDeadline() {
+        val failure = AtomicReference<Throwable>()
+        val done = CountDownLatch(1)
+        server.route("POST", "/small", 4096, 300) { req, res ->
+            try {
+                req.body.readBytes()
+            } catch (e: IOException) {
+                failure.set(e)
+            } finally {
+                done.countDown()
+            }
+            res.start(204, null)
+        }
+        val port = server.start(listOf(loopback))
+        Socket(loopback, port).use { s ->
+            s.getOutputStream().write("POST /small HTTP/1.1\r\nContent-Length: 10\r\n\r\nab".toByteArray())
+            s.getOutputStream().flush()
+            assertTrue("well before the server-wide deadline", done.await(10, TimeUnit.SECONDS))
+        }
+        assertTrue(failure.get() is java.net.SocketTimeoutException)
+    }
+
+    @Test fun bodySplitBetweenTheHeadAndLaterReadsArrivesWhole() {
+        val seen = AtomicReference<String>()
+        server.route("POST", "/echo", maxBodyBytes = 4096) { req, res ->
+            seen.set(String(req.body.readBytes()))
+            res.start(204, null)
+        }
+        val port = server.start(listOf(loopback))
+        Socket(loopback, port).use { s ->
+            s.soTimeout = 10_000
+            val out = s.getOutputStream()
+            out.write("POST /echo HTTP/1.1\r\nContent-Length: 11\r\n\r\nhe".toByteArray())
+            out.flush()
+            Thread.sleep(150)
+            out.write("llo ".toByteArray())
+            out.flush()
+            Thread.sleep(150)
+            out.write("world".toByteArray())
+            out.flush()
+            val reply = s.getInputStream().bufferedReader(Charsets.ISO_8859_1).readLine()
+            assertTrue(reply, reply.startsWith("HTTP/1.1 204"))
+        }
+        assertEquals("hello world", seen.get())
+    }
+
+    @Test fun getWithZeroContentLengthIsServed() {
+        server.route("GET", "/c") { _, res -> res.start(200, null, 0) }
+        val port = server.start(listOf(loopback))
+        val reply = raw(port, "GET /c/x HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+        assertTrue(reply, reply.startsWith("HTTP/1.1 200"))
     }
 }

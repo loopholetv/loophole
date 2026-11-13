@@ -16,6 +16,9 @@ enum class CastStatus { IDLE, WATCHING, CASTING }
  * [seq] is the sender's announce counter: it goes up whenever anything above changes, so a late,
  * older copy of an announce can be told apart from a newer one. It should keep growing across
  * restarts of the sender (for example by starting from the wall clock).
+ *
+ * [setup] is the version of the setup-copy protocol the TV speaks ([SETUP_VERSION]); TVs from
+ * before it don't send the field, which reads as 0.
  */
 data class CastAnnounce(
     val id: String,
@@ -28,10 +31,16 @@ data class CastAnnounce(
     val castStartedAtMs: Long?,
     val seq: Long = 0,
     val v: Int = 1,
+    val setup: Int = 0,
 ) {
     override fun toString() =
         "CastAnnounce(id=$id, name=$name, port=$port, status=$status, accepts=$accepts, castId=$castId, " +
-            "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, seq=$seq, v=$v)"
+            "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, seq=$seq, v=$v, setup=$setup)"
+
+    companion object {
+        /** The setup-copy protocol this build speaks. */
+        const val SETUP_VERSION = 1
+    }
 }
 
 data class CastPeer(
@@ -45,10 +54,13 @@ data class CastPeer(
     val token: String?,
     val castStartedAtMs: Long?,
     val lastSeenMs: Long,
+    /** See [CastAnnounce.setup]; 0 for a TV that can't copy setups. */
+    val setup: Int = 0,
 ) {
     override fun toString() =
         "CastPeer(id=$id, name=$name, host=$host, port=$port, status=$status, accepts=$accepts, castId=$castId, " +
-            "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, lastSeenMs=$lastSeenMs)"
+            "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, lastSeenMs=$lastSeenMs, " +
+            "setup=$setup)"
 }
 
 enum class StopReason { STOPPED, LEFT_APP, EXTERNAL_PLAYER }
@@ -87,6 +99,7 @@ object CastJson {
         name("startedAt").value(a.castStartedAtMs)
         name("seq").value(a.seq)
         name("v").value(a.v.toLong())
+        name("setup").value(a.setup.toLong())
     }
 
     /**
@@ -106,6 +119,7 @@ object CastJson {
             token = f.string("token"),
             castStartedAtMs = f.long("startedAt"),
             seq = f.long("seq")?.takeIf { it >= 0 } ?: return@parse null,
+            setup = f.int("setup") ?: 0,
         )
         val castComplete = a.castId != null && a.token != null && a.castStartedAtMs != null
         if (a.status == CastStatus.CASTING && !castComplete) null else a

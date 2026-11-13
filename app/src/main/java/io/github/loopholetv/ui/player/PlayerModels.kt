@@ -113,10 +113,12 @@ data class PlayerKeyState(
     val catchupActive: Boolean,
     /** The archive failed to play (its own error card shows). */
     val archiveFailed: Boolean,
+    /** The catch-up seek bar shows (it can outlive the overlay while paused). */
+    val barVisible: Boolean = false,
 )
 
 /** [PlayerKeyState] for this screen. */
-internal fun PlayerUi.keyState(catchupActive: Boolean, archiveFailed: Boolean) = PlayerKeyState(
+internal fun PlayerUi.keyState(catchupActive: Boolean, archiveFailed: Boolean, barVisible: Boolean) = PlayerKeyState(
     overlayVisible = overlayVisible,
     bannerVisible = bannerVisible,
     numberEntry = numberEntry != null,
@@ -124,6 +126,7 @@ internal fun PlayerUi.keyState(catchupActive: Boolean, archiveFailed: Boolean) =
     hasCatchup = channel.catchup() != null,
     catchupActive = catchupActive,
     archiveFailed = archiveFailed,
+    barVisible = barVisible,
 )
 
 /** Carries out the key routes that are not catch-up ones (see [PlayerCatchup.perform]). */
@@ -182,9 +185,11 @@ sealed interface PlayerKeyRoute {
 /**
  * Key-down routing for the player. Digits always enter a number and OK commits one being typed.
  * Bound buttons ([RemoteSettings.bindings]) act everywhere. With the overlay up the D-pad belongs
- * to it. On bare video D-pad Up and Down open the overlay and never change channel; Left and Right
- * seek while catch-up is active ([RemoteSettings.leftRightSeek]), and Left on live goes back in
- * time only when [RemoteSettings.leftRewindsLive] is on, so a stray press never drops the picture.
+ * to it. On bare video D-pad Up opens the overlay on the channel row and Down opens the quick
+ * menu; neither changes channel. While a number is typed or the seek bar shows, both open the
+ * overlay. Left and Right seek while catch-up is active ([RemoteSettings.leftRightSeek]), and
+ * Left on live goes back in time only when [RemoteSettings.leftRewindsLive] is on, so a stray
+ * press never drops the picture.
  */
 fun routePlayerKey(s: PlayerKeyState, keyCode: Int, remote: RemoteSettings): PlayerKeyRoute {
     digitOf(keyCode)?.let { return PlayerKeyRoute.Digit(it) }
@@ -193,7 +198,10 @@ fun routePlayerKey(s: PlayerKeyState, keyCode: Int, remote: RemoteSettings): Pla
     remote.bindings.player(keyCode)?.takeIf { it != PlayerAction.NONE }?.let { return boundRoute(s, it, remote) }
     if (s.overlayVisible) return PlayerKeyRoute.Pass
     return when (keyCode) {
-        KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> PlayerKeyRoute.ShowOverlay
+        KeyEvent.KEYCODE_DPAD_UP -> PlayerKeyRoute.ShowOverlay
+        // While a number is typed or the seek bar shows, Down keeps showing the overlay.
+        KeyEvent.KEYCODE_DPAD_DOWN ->
+            if (s.numberEntry || s.barVisible) PlayerKeyRoute.ShowOverlay else PlayerKeyRoute.Action(PlayerAction.QUICK_MENU)
         KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
             val back = keyCode == KeyEvent.KEYCODE_DPAD_LEFT
             when {

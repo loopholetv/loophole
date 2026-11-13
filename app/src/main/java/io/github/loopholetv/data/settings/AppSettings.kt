@@ -49,6 +49,8 @@ data class AppSettings(
     val castAllowJoin: Boolean = true,
     /** Name shown to other TVs; null means the device's own name ([defaultTvName]). */
     val castTvName: String? = null,
+    /** The first-start screen was skipped: with no playlist the app opens an empty guide. */
+    val onboardingSkipped: Boolean = false,
     val playback: PlaybackSettings = PlaybackSettings(),
     val remote: RemoteSettings = RemoteSettings(),
 ) {

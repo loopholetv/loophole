@@ -15,7 +15,7 @@ sealed interface CastState {
     data class Casting(val followers: Int) : CastState
 
     /** This TV shows [peer]'s cast. */
-    data class Following(val peer: CastPeer) : CastState
+    data class Following(val peer: CastPeer, val epoch: Int? = null) : CastState
 }
 
 /** Another TV started casting while this one plays something: offer to watch it. */

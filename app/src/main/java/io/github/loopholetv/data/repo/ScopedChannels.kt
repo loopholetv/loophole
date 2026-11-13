@@ -6,6 +6,16 @@ import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.FavouriteDao
 import io.github.loopholetv.data.db.label
+import io.github.loopholetv.data.db.AppDatabase
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+/**
+ * Fires after every committed change to the tables the [ScopedChannels.pages] lists read
+ * (channels and favourites), including changes committed while a list is still loading.
+ */
+fun AppDatabase.channelListChanges(): Flow<Unit> =
+    invalidationTracker.createFlow("channels", "favourites", emitInitialState = false).map { }
 
 /**
  * Channel lists and zapping order per [ChannelScope]: "All channels" in guide-number order and a

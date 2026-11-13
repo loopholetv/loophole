@@ -1,5 +1,6 @@
 package io.github.loopholetv.ui.cast
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,8 +39,10 @@ import io.github.loopholetv.ui.settings.focusSoon
 
 /**
  * The TVs panel (right side, opened from the side menu): this TV first, then the other TVs by
- * name, each with what it does. OK on a TV that casts joins it and closes the panel through
- * [onClose]; OK on this TV while it casts stops the cast. Back is handled by the dialog.
+ * name, each with what it does. OK on another TV opens its menu (join its cast, copy setups);
+ * an action that joins or starts a copy closes the panel through [onClose], and Back in the menu
+ * returns to the list on the same TV. OK on this TV while it casts stops the cast. Back on the
+ * list is handled by the dialog.
  */
 @Composable
 fun TvsPanel(
@@ -47,31 +50,64 @@ fun TvsPanel(
     vm: TvsViewModel = viewModel(factory = TvsViewModel.Factory),
 ) {
     val ui by vm.ui.collectAsStateWithLifecycle()
+    val menu by vm.menu.collectAsStateWithLifecycle()
     val selfFocus = remember { FocusRequester() }
     var focusedKey by remember { mutableStateOf<String?>(null) }
+    /** The row to focus once the list is back after the menu. */
+    var restoreKey by remember { mutableStateOf<String?>(null) }
+    var menuOpened by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { focusSoon(selfFocus) }
     // The focused TV dropped out of the list: focus goes back to this TV's row.
     val keys = ui.rows.map { it.key }
     LaunchedEffect(keys) {
         if (focusedKey != null && focusedKey !in keys) focusSoon(selfFocus)
     }
+    // The menu closed (Back, or its TV left): back on that TV's row, or this TV's.
+    LaunchedEffect(menu == null) {
+        if (menu != null) {
+            menuOpened = true
+        } else if (menuOpened) {
+            menuOpened = false
+            vm.closeMenu()
+            val back = focusedKey
+            if (back != null && ui.rows.any { it.key == back }) restoreKey = back else focusSoon(selfFocus)
+        }
+    }
+    BackHandler(enabled = menu != null) { vm.closeMenu() }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 24.dp)) {
         Text(
-            "TVs",
+            menu?.name ?: "TVs",
             style = MaterialTheme.typography.headlineSmall,
             color = Tokens.OnBackground,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.height(16.dp))
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        val open = menu
+        if (open != null) {
+            TvMenuList(open, onAction = { if (vm.onAction(it)) onClose() })
+            return@Column
+        }
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).padding(vertical = LIST_EDGE),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             for (row in ui.rows) {
                 // Keyed by TV, so focus stays on the same TV when others appear or go above it.
                 key(row.key) {
+                    val own = remember { FocusRequester() }
+                    val requester = if (row is TvRow.ThisTv) selfFocus else own
+                    if (restoreKey == row.key) {
+                        LaunchedEffect(Unit) {
+                            focusSoon(requester)
+                            restoreKey = null
+                        }
+                    }
                     TvRowItem(
                         row = row,
                         modifier = Modifier
-                            .then(if (row is TvRow.ThisTv) Modifier.focusRequester(selfFocus) else Modifier)
+                            .focusRequester(requester)
                             .onFocusChanged { if (it.isFocused) focusedKey = row.key },
                         onClick = { if (vm.onOk(row)) onClose() },
                     )
@@ -83,6 +119,60 @@ fun TvsPanel(
                     style = MaterialTheme.typography.bodyMedium,
                     color = Tokens.Muted,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One TV's menu; the first action has focus, and gets it back when the focused action goes
+ * (its TV stopped casting, say).
+ */
+@Composable
+private fun TvMenuList(menu: TvMenu, onAction: (TvAction) -> Unit) {
+    val first = remember { FocusRequester() }
+    var focused by remember { mutableStateOf<TvAction?>(null) }
+    LaunchedEffect(menu.peerId, menu.actions) {
+        if (focused == null || focused !in menu.actions) focusSoon(first)
+    }
+    Column(
+        Modifier.verticalScroll(rememberScrollState()).padding(vertical = LIST_EDGE),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        menu.actions.forEachIndexed { index, action ->
+            key(action) {
+                val older = menu.olderVersion?.takeIf { action != TvAction.JOIN }
+                ListItem(
+                    selected = false,
+                    onClick = { onAction(action) },
+                    headlineContent = {
+                        Text(actionLabel(action), style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                    },
+                    supportingContent = older?.let {
+                        { Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 2) }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (index == 0) Modifier.focusRequester(first) else Modifier)
+                        .onFocusChanged { if (it.isFocused) focused = action },
+                    // An older TV can't copy: still reachable, so its line can be read, but drawn as off.
+                    colors = if (older != null) {
+                        ListItemDefaults.colors(
+                            containerColor = Tokens.Surface,
+                            contentColor = Tokens.Muted,
+                            focusedContainerColor = Tokens.Outline,
+                            focusedContentColor = Tokens.OnBackground,
+                        )
+                    } else {
+                        ListItemDefaults.colors(
+                            containerColor = Tokens.SurfaceRaised,
+                            contentColor = Tokens.OnBackground,
+                            focusedContainerColor = Tokens.FocusFill,
+                            focusedContentColor = Tokens.OnFocus,
+                        )
+                    },
+                    shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),
                 )
             }
         }
@@ -133,3 +223,6 @@ private fun Pill(text: String, background: Color, content: Color, modifier: Modi
         Text(text, style = MaterialTheme.typography.labelMedium, color = content, maxLines = 1)
     }
 }
+
+/** Room above and below a list, so a focused row (drawn larger) keeps its rounded corners. */
+private val LIST_EDGE = 8.dp

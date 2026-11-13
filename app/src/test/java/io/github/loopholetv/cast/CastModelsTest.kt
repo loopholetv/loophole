@@ -17,6 +17,18 @@ class CastModelsTest {
     }
 
     @Test
+    fun setupVersionRoundTripsAndReadsAsZeroWhenMissing() {
+        val withSetup = full.copy(setup = 1)
+        val json = CastJson.announce(withSetup)
+        assertTrue(json, json.contains("\"setup\":1"))
+        assertTrue(json, json.contains("\"v\":1"))
+        assertEquals(withSetup, CastJson.announce(json))
+        val older = json.replace(",\"setup\":1", "")
+        assertEquals(0, CastJson.announce(older)!!.setup)
+        assertEquals(0, CastJson.announce(json.replace("\"setup\":1", "\"setup\":-3"))!!.setup)
+    }
+
+    @Test
     fun announceUsesTheDocumentedKeys() {
         val json = CastJson.announce(full)
         listOf("id", "name", "port", "status", "accepts", "castId", "token", "startedAt", "seq", "v").forEach {

@@ -1,6 +1,7 @@
 package io.github.loopholetv.ui.player
 
 import android.view.KeyEvent
+import io.github.loopholetv.data.settings.PlayerAction
 import io.github.loopholetv.data.settings.RemoteSettings
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -32,10 +33,41 @@ class PlayerKeyRouteTest {
         assertEquals(PlayerKeyRoute.TogglePause, route(bare.copy(catchupActive = false), KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, off))
     }
 
-    @Test fun upDownOnlyOpenTheOverlay() {
-        for (s in listOf(bare, bare.copy(catchupActive = false), bare.copy(archiveFailed = true), bare.copy(hasCatchup = false))) {
-            assertEquals(PlayerKeyRoute.ShowOverlay, route(s, KeyEvent.KEYCODE_DPAD_UP))
-            assertEquals(PlayerKeyRoute.ShowOverlay, route(s, KeyEvent.KEYCODE_DPAD_DOWN))
+    private val up = KeyEvent.KEYCODE_DPAD_UP
+    private val down = KeyEvent.KEYCODE_DPAD_DOWN
+    private val quickMenu = PlayerKeyRoute.Action(PlayerAction.QUICK_MENU)
+    private val bareStates = listOf(bare, bare.copy(catchupActive = false), bare.copy(archiveFailed = true), bare.copy(hasCatchup = false), bare.copy(bannerVisible = true))
+
+    @Test fun downOnBareVideoOpensQuickMenu() {
+        for (s in bareStates) assertEquals(quickMenu, route(s, down))
+    }
+
+    @Test fun upOnBareVideoShowsChannelRow() {
+        for (s in bareStates) assertEquals(PlayerKeyRoute.ShowOverlay, route(s, up))
+    }
+
+    @Test fun upDownOnlyChangeOnBareVideo() {
+        // With the overlay showing, the D-pad belongs to it.
+        val overlay = bare.copy(overlayVisible = true)
+        assertEquals(PlayerKeyRoute.Pass, route(overlay, up))
+        assertEquals(PlayerKeyRoute.Pass, route(overlay, down))
+        // A number being typed keeps opening the overlay.
+        val typing = bare.copy(numberEntry = true)
+        assertEquals(PlayerKeyRoute.ShowOverlay, route(typing, up))
+        assertEquals(PlayerKeyRoute.ShowOverlay, route(typing, down))
+    }
+
+    @Test fun upDownKeepOpeningTheOverlayWhileTheSeekBarShowsWithoutIt() {
+        val barOnly = bare.copy(overlayVisible = false, barVisible = true)
+        assertEquals(PlayerKeyRoute.ShowOverlay, route(barOnly, up))
+        assertEquals(PlayerKeyRoute.ShowOverlay, route(barOnly, down))
+    }
+
+    @Test fun upDownNeverZap() {
+        val states = bareStates + bare.copy(overlayVisible = true) + bare.copy(numberEntry = true) + bare.copy(barVisible = true)
+        for (s in states) for (code in listOf(up, down)) {
+            val r = route(s, code)
+            assertEquals("$code in $s", true, r == PlayerKeyRoute.Pass || r == PlayerKeyRoute.ShowOverlay || r == quickMenu)
         }
     }
 

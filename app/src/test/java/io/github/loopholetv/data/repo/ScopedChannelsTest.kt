@@ -16,6 +16,9 @@ import io.github.loopholetv.data.db.toArg
 import androidx.paging.PagingSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -161,5 +164,33 @@ class ScopedChannelsTest {
         assertFalse(scoped.contains(c("b"), ChannelScope.Group(p, "News")))
         assertTrue(scoped.contains(c("b"), ChannelScope.Favourites))
         assertFalse(scoped.contains(c("a"), ChannelScope.Favourites))
+    }
+
+    @Test fun channelListChangesFireForChannelAndFavouriteWrites() = kotlinx.coroutines.runBlocking {
+        val seen = java.util.concurrent.atomic.AtomicInteger()
+        val started = java.util.concurrent.atomic.AtomicBoolean()
+        val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO)
+        try {
+            scope.launch { db.channelListChanges().onStart { started.set(true) }.collect { seen.incrementAndGet() } }
+            withTimeout(5_000) { while (!started.get()) delay(10) }
+            // The tracker's observer registers some time after the collection starts: write until
+            // the first notice proves it is listening, then count from there.
+            var visible = false
+            withTimeout(5_000) {
+                while (seen.get() == 0) {
+                    setVisible("a", visible)
+                    visible = !visible
+                    delay(20)
+                }
+            }
+            val listening = seen.get()
+            setVisible("c", false)
+            withTimeout(5_000) { while (seen.get() <= listening) delay(10) }
+            val afterChannel = seen.get()
+            fav("b")
+            withTimeout(5_000) { while (seen.get() <= afterChannel) delay(10) }
+        } finally {
+            scope.cancel()
+        }
     }
 }

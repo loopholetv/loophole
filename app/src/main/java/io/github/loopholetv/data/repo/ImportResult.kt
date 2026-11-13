@@ -41,6 +41,12 @@ sealed interface ImportResult {
 
     /** [message] is redacted and safe to show or store. */
     data class Failure(val error: ImportError, val message: String) : ImportResult
+
+    /**
+     * An update stopped because a copied setup is replacing every playlist. Not a failure: nothing
+     * changed, nothing was stored, and the copied playlists are updated next.
+     */
+    data object Stopped : ImportResult
 }
 
 /** Thrown inside an import to abort (and roll back) with a specific [error]. Message is not yet redacted. */

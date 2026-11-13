@@ -19,8 +19,11 @@ enum class OkPressAction { Click, LongClick }
 /**
  * Tells a short OK press from a hold. A press clicks on KeyUp; holding OK (the first key repeat)
  * long-clicks once, and that press then does not click. The Menu key long-clicks at once.
+ * Only a press whose first KeyDown arrived here counts: the repeats and KeyUp of a press that began
+ * on a window that has since closed (a setup result going by itself) do nothing.
  */
 class OkPressTracker {
+    private var pressed = false
     private var longFired = false
 
     fun onKey(type: KeyPhase, isOk: Boolean, isMenu: Boolean, repeatCount: Int): OkPressAction? = when {
@@ -28,11 +31,15 @@ class OkPressTracker {
         isMenu -> if (type == KeyPhase.Down && repeatCount == 0) OkPressAction.LongClick else null
         !isOk -> null
         type == KeyPhase.Down -> when {
-            repeatCount == 0 -> { longFired = false; null }
-            !longFired -> { longFired = true; OkPressAction.LongClick }
-            else -> null
+            repeatCount == 0 -> { pressed = true; longFired = false; null }
+            !pressed || longFired -> null
+            else -> { longFired = true; OkPressAction.LongClick }
         }
-        else -> if (longFired) { longFired = false; null } else OkPressAction.Click
+        !pressed -> null
+        else -> {
+            pressed = false
+            if (longFired) { longFired = false; null } else OkPressAction.Click
+        }
     }
 }
 

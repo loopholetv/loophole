@@ -132,11 +132,13 @@ class GuideViewModelTest {
     private fun vm(cast: CastControls = NoCast) = GuideViewModel(
         groupRows = groupRows,
         channelPages = { scope ->
-            when (scope) {
-                ChannelScope.All -> all
+            val source = when (scope) {
+                ChannelScope.All -> { allSources++; allRows ?: all }
                 ChannelScope.Favourites -> favourites
                 is ChannelScope.Group -> all.filter { it.playlistId == scope.playlistId && it.groupTitle == scope.title }
             }.asPagingSourceFactory()()
+            if (scope == ChannelScope.All) lastAllSource = source
+            source
         },
         favouriteCount = flowOf(favourites.size),
         programmes = { keys, _, _ -> programmeQueries += keys.toList(); flowOf(shiftedRows(keys)) },
@@ -161,7 +163,20 @@ class GuideViewModelTest {
         sleepExpired = sleepExpired,
         keyBindings = bindings,
         cast = cast,
+        channelChanges = channelChanges,
     )
+
+    /** How many All-channels sources were made (one per load generation). */
+    private var allSources = 0
+
+    /** The All-channels source made last. */
+    private var lastAllSource: androidx.paging.PagingSource<Int, ChannelEntity>? = null
+
+    /** The rows the All-channels source serves when set (the source itself never changes). */
+    private var allRows: List<ChannelEntity>? = null
+
+    /** The channel table's change notices, as the database sends them. */
+    private val channelChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
 
     /** Casting as the quick menu and the guide see it: starting casts to nobody yet. */
     private class FakeCast(initial: CastState = CastState.Off) : CastControls {
@@ -1012,6 +1027,29 @@ class GuideViewModelTest {
         assertNull(emptyHintFor(allPlaylistsOff = false, scope = ChannelScope.Favourites, listEmpty = false))
     }
 
+    @Test fun emptyGuideShowsHint() = runTest {
+        val expected = "No playlist yet. Add one in Settings \u2192 Playlists, or choose Copy from another TV."
+        assertEquals(expected, NO_PLAYLIST_HINT)
+        assertEquals(expected, emptyHintFor(allPlaylistsOff = false, scope = ChannelScope.All, listEmpty = true, noPlaylists = true))
+        assertEquals(expected, emptyHintFor(allPlaylistsOff = false, scope = ChannelScope.Favourites, listEmpty = true, noPlaylists = true))
+        assertNull(emptyHintFor(allPlaylistsOff = false, scope = ChannelScope.All, listEmpty = true, noPlaylists = false))
+        val vm = GuideViewModel(
+            groupRows = flowOf(emptyList()),
+            channelPages = { emptyList<ChannelEntity>().asPagingSourceFactory()() },
+            programmes = { _, _, _ -> flowOf(emptyMap()) },
+            latestStop = { null },
+            playback = playback,
+            clock = { now },
+            zone = ZoneOffset.UTC,
+            playlistsOn = flowOf(0),
+            playlistsExist = flowOf(false),
+        )
+        backgroundScope.launch { vm.noPlaylists.collect {} }
+        runCurrent()
+        assertTrue(vm.noPlaylists.value)
+        assertFalse(vm().noPlaylists.value)
+    }
+
     @Test fun noPlaylistsAtAllIsNotAllOff() = runTest {
         val vm = GuideViewModel(
             groupRows = flowOf(emptyList()),
@@ -1536,5 +1574,63 @@ class GuideViewModelTest {
         )
         // The block airing at 01:47 the day before, not the window's last block.
         assertEquals(1, entryIndex(shown, anchor, clock, pastWindow = true))
+    }
+
+    @Test fun aChannelChangeReloadsTheListEvenWhenItsSourceMissedIt() = runTest {
+        // Rows as the playlist import leaves them, before the guide links them to guide channels.
+        allRows = all.map { it.copy(guideEpgId = null) }
+        val vm = vm()
+        runCurrent()
+        assertEquals(listOf(null, null, null), vm.pages.value!!.flow.asSnapshot().map { it.guideEpgId })
+
+        // The guide update links them. The list's own source never says so (a list-backed source
+        // stands in for one whose change notice arrived while it was still loading); the database's
+        // change notice for the channel table does.
+        allRows = all.map { it.copy(guideEpgId = it.epgChannelId) }
+        channelChanges.emit(Unit)
+        advanceTimeBy(CHANNEL_RELOAD_DEBOUNCE_MS + 1)
+        runCurrent()
+
+        assertEquals(listOf("e1", "e2", "e3"), vm.pages.value!!.flow.asSnapshot().map { it.guideEpgId })
+    }
+
+    @Test fun aBurstOfChannelChangesReloadsTheListOnce() = runTest {
+        val vm = vm()
+        runCurrent()
+        vm.pages.value!!.flow.asSnapshot()
+        val before = allSources
+
+        // A playlist import, then its guide link, then a favourite: commits moments apart.
+        repeat(5) {
+            channelChanges.emit(Unit)
+            advanceTimeBy(CHANNEL_RELOAD_DEBOUNCE_MS / 5)
+            runCurrent()
+        }
+        assertEquals("nothing reloads while the burst goes on", before, allSources)
+
+        advanceTimeBy(CHANNEL_RELOAD_DEBOUNCE_MS + 1)
+        runCurrent()
+        vm.pages.value!!.flow.asSnapshot()
+        assertEquals("one reload for the whole burst", before + 1, allSources)
+    }
+
+    @Test fun aChangeTheListsOwnSourceSawReloadsTheListOnce() = runTest {
+        val vm = vm()
+        runCurrent()
+        vm.pages.value!!.flow.asSnapshot()
+        val before = allSources
+
+        // A favourite toggle: the database's change notice arrives, and the list's own source
+        // reloads for it as it normally does.
+        channelChanges.emit(Unit)
+        lastAllSource!!.invalidate()
+        runCurrent()
+        vm.pages.value!!.flow.asSnapshot()
+        assertEquals(before + 1, allSources)
+
+        advanceTimeBy(CHANNEL_RELOAD_DEBOUNCE_MS + 1)
+        runCurrent()
+        vm.pages.value!!.flow.asSnapshot()
+        assertEquals("no second reload once the changes settle", before + 1, allSources)
     }
 }

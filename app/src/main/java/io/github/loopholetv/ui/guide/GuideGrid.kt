@@ -123,6 +123,10 @@ fun GuideGrid(
     modifier: Modifier = Modifier,
     /** Centred in the grid area (below the header) while the list is empty; null draws nothing. */
     emptyHint: String? = null,
+    /** Focuses the "Copy from another TV" button shown with the no-playlist hint. */
+    emptyButtonFocus: FocusRequester = remember { FocusRequester() },
+    /** OK on the "Copy from another TV" button: the TV picker. */
+    onCopyFromAnotherTv: () -> Unit = {},
     /** Channels drawn with the ★ marker. */
     favourites: Set<ChannelRef> = emptySet(),
     /** The row being reordered (Move mode), outlined. */
@@ -191,12 +195,49 @@ fun GuideGrid(
                 }
             }
             if (emptyHint != null && channels.itemCount == 0) {
-                Text(
-                    text = emptyHint,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = Tokens.Muted,
+                GuideEmptyState(
+                    emptyHint,
+                    onCopyFromAnotherTv = onCopyFromAnotherTv,
+                    buttonFocus = emptyButtonFocus,
                     modifier = Modifier.align(Alignment.Center),
                 )
+            }
+        }
+    }
+}
+
+/** The "Copy from another TV" button goes with the no-playlist hint only. */
+fun showsCopyFromAnotherTv(hint: String?): Boolean = hint == NO_PLAYLIST_HINT
+
+const val COPY_FROM_ANOTHER_TV = "Copy from another TV"
+
+/**
+ * The grid area's message for an empty list. With the no-playlist hint it also offers
+ * [COPY_FROM_ANOTHER_TV] beneath it, which [buttonFocus] can focus.
+ */
+@Composable
+fun GuideEmptyState(
+    hint: String,
+    onCopyFromAnotherTv: () -> Unit,
+    buttonFocus: FocusRequester,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text(text = hint, style = MaterialTheme.typography.bodyLarge, color = Tokens.Muted)
+        if (showsCopyFromAnotherTv(hint)) {
+            io.github.loopholetv.ui.onboarding.PillButton(
+                COPY_FROM_ANOTHER_TV,
+                selected = false,
+                modifier = Modifier.focusRequester(buttonFocus),
+                onClick = onCopyFromAnotherTv,
+            )
+            // Focus moves to it each time it appears (also when the playlists are known only after
+            // the list loaded empty), so OK works at once; it isn't there once channels exist.
+            LaunchedEffect(buttonFocus) {
+                repeat(20) {
+                    if (runCatching { buttonFocus.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+                    kotlinx.coroutines.delay(50)
+                }
             }
         }
     }

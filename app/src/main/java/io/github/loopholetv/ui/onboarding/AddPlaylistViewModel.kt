@@ -280,6 +280,8 @@ class AddPlaylistViewModel(
                     if (editId == null) loadGuide(result.playlistId)
                     _state.update { it.copy(phase = Phase.Done) }
                 }
+                // A copied setup replaced the edited playlist (and closes this form): no error.
+                ImportResult.Stopped -> _state.update { it.copy(phase = Phase.Done) }
             }
         }
     }

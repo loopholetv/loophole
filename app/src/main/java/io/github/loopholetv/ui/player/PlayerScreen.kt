@@ -87,6 +87,9 @@ private const val CLOCK_TICK_MS = 5_000L
 /** The casting label's height plus a gap: what a typed number moves down by under it. */
 private val CASTING_LABEL_SPACE = 48.dp
 
+/** The same, while the label has shrunk to its dot. */
+private val CASTING_DOT_SPACE = 40.dp
+
 /**
  * Full-screen playback. Bare video or the slim banner a channel key shows: D-pad Up, Down and OK
  * open the full overlay, holding OK (or Menu) opens the quick menu, Back hides the banner /
@@ -128,7 +131,8 @@ fun PlayerScreen(
     val replaying by remember { derivedStateOf { catchupBar.value != null } }
     val barVisible by vm.barVisible.collectAsStateWithLifecycle()
     val archiveFailed by vm.archiveFailed.collectAsStateWithLifecycle()
-    val castingLabel by vm.castingLabel.collectAsStateWithLifecycle()
+    val castingFollowers by vm.castingFollowers.collectAsStateWithLifecycle()
+    var castingMarkerExpanded by remember { mutableStateOf(true) }
     val inPip = rememberInPictureInPicture()
     LaunchedEffect(inPip) { vm.onPipChanged(inPip) }
     // Read when the user presses Home; the view model clears it as soon as an exit starts.
@@ -354,7 +358,14 @@ fun PlayerScreen(
         // Below the clock while the top bar shows; a number being typed goes under it.
         val topBar = u.overlayVisible || u.bannerVisible
         val labelTop = if (topBar) 72.dp else 24.dp
-        castingLabel?.let { CastingLabel(it, Modifier.align(Alignment.TopEnd).padding(top = labelTop, end = 48.dp)) }
+        castingFollowers?.let {
+            CastingMarker(
+                it,
+                Modifier.align(Alignment.TopEnd).padding(top = labelTop, end = 48.dp),
+                onExpandedChange = { expanded -> castingMarkerExpanded = expanded },
+            )
+        }
+        val castingLabelSpace = if (castingMarkerExpanded) CASTING_LABEL_SPACE else CASTING_DOT_SPACE
         u.numberEntry?.let {
             Text(
                 text = it,
@@ -362,7 +373,7 @@ fun PlayerScreen(
                 color = Tokens.OnBackground,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = if (castingLabel != null && topBar) labelTop + CASTING_LABEL_SPACE else 72.dp, end = 48.dp)
+                    .padding(top = if (castingFollowers != null && topBar) labelTop + castingLabelSpace else 72.dp, end = 48.dp)
                     .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
                     .padding(horizontal = 20.dp, vertical = 4.dp),
             )
@@ -482,21 +493,6 @@ internal fun Overlay(
                 )
             }
         }
-    }
-}
-
-/** "Casting to 2 TVs": small, over the video, never focused. */
-@Composable
-private fun CastingLabel(text: String, modifier: Modifier) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = modifier
-            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-    ) {
-        Icon(quickIcon(QuickItem.CAST), contentDescription = null, tint = Tokens.Accent, modifier = Modifier.size(18.dp))
-        Text(text, style = MaterialTheme.typography.labelLarge, color = Tokens.OnBackground, maxLines = 1)
     }
 }
 

@@ -423,6 +423,17 @@ class AddPlaylistViewModelTest {
         assertEquals(PortalConfig("http://portal.example.test", "00:1A:79:00:00:02", login = "l", password = "pp"), cfg)
     }
 
+    @Test fun anEditStoppedByACopiedSetupShowsNoError() = runTest {
+        val f = Fakes(
+            stored = entity(8, PlaylistType.M3U).copy(url = "http://example.test/a.m3u"),
+            update = { _, _, _ -> ImportResult.Stopped },
+        )
+        val vm = f.vm(editId = 8)
+        vm.setUrl("http://example.test/b.m3u")
+        vm.submit()
+        assertEquals(Phase.Done, vm.state.value.phase)
+    }
+
     @Test fun editModeFailureShowsCopyAndStaysOnForm() = runTest {
         val f = Fakes(
             stored = entity(8, PlaylistType.M3U).copy(url = "http://example.test/a.m3u"),

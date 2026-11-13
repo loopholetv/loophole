@@ -15,6 +15,7 @@ import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
@@ -92,6 +93,7 @@ class PlaylistRepositoryTest {
     private fun successOf(result: ImportResult): ImportResult.Success = when (result) {
         is ImportResult.Success -> result
         is ImportResult.Failure -> throw AssertionError("import failed: ${result.error} ${result.message}")
+        ImportResult.Stopped -> throw AssertionError("import stopped")
     }
 
     private suspend fun totalChannels() = db.channelDao().groups().first().sumOf { it.count }
@@ -663,5 +665,37 @@ class PlaylistRepositoryTest {
         assertEquals(20_000, progress.last())
         assertEquals((1..40).map { it * 500 }, progress.toList())
         assertEquals(20_000, totalChannels())
+    }
+
+    @Test fun exclusiveStopsARefreshStillDownloadingInsteadOfWaitingForIt() = kotlinx.coroutines.runBlocking {
+        val id = addFive()
+        // The provider answers this refresh only after a minute.
+        server.enqueue(MockResponse().setBody(res("import/five.m3u")).setHeadersDelay(60, java.util.concurrent.TimeUnit.SECONDS))
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+        try {
+            val refresh = scope.async { repo.refresh(id) {} }
+            server.takeRequest() // the add
+            server.takeRequest(10, java.util.concurrent.TimeUnit.SECONDS)!! // the refresh is now waiting on the network
+
+            var ran = false
+            kotlinx.coroutines.withTimeout(5_000) { repo.exclusive { ran = true } }
+
+            assertTrue("the replacing work ran without waiting for the download", ran)
+            val stopped = kotlinx.coroutines.withTimeout(5_000) { refresh.await() }
+            assertEquals(ImportResult.Stopped, stopped)
+            assertEquals("the stopped refresh changed nothing", 5, channels(id).size)
+            assertTrue("and stored no error", db.playlistDao().byId(id)!!.lastError == null)
+            // The caller of the stopped refresh carries on.
+            assertTrue(refresh.isCompleted && !refresh.isCancelled)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test fun refreshAfterExclusiveRunsNormally() = kotlinx.coroutines.runBlocking {
+        val id = addFive()
+        repo.exclusive { }
+        enqueue(res("import/five.m3u"))
+        assertTrue(repo.refresh(id) {} is ImportResult.Success)
     }
 }

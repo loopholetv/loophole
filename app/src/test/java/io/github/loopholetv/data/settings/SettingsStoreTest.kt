@@ -283,6 +283,16 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun skipFlagPersists() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        assertEquals(false, store.current().onboardingSkipped)
+        store.update { it.copy(onboardingSkipped = true) }
+        assertEquals(true, store.current().onboardingSkipped)
+        store.update { it.copy(onboardingSkipped = false) }
+        assertEquals(false, store.current().onboardingSkipped)
+    }
+
+    @Test
     fun castDefaults() = runTest {
         val s = SettingsStore(dataStore(backgroundScope)).current()
         assertEquals(true, s.castAllowJoin)

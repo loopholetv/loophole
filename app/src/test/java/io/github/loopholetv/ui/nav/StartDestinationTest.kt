@@ -87,12 +87,36 @@ class StartDestinationTest {
 
     @Test
     fun noPlaylistStartsAtOnboarding() {
-        assertEquals(Routes.ONBOARDING, startDestination(hasPlaylist = false))
+        assertEquals(Routes.ONBOARDING, startDestination(hasPlaylist = false, skipped = false))
     }
 
     @Test
     fun withPlaylistStartsAtGuide() {
-        assertEquals(Routes.GUIDE, startDestination(hasPlaylist = true))
+        assertEquals(Routes.GUIDE, startDestination(hasPlaylist = true, skipped = false))
+    }
+
+    @Test
+    fun skippedStartsOnGuide() {
+        assertEquals(Routes.GUIDE, startDestination(hasPlaylist = false, skipped = true))
+        assertEquals(Routes.GUIDE, startDestination(hasPlaylist = true, skipped = true))
+    }
+
+    @Test
+    fun deletingLastPlaylistAfterSkipStaysOnGuide() {
+        assertFalse(shouldGoToOnboarding(0, Routes.GUIDE, skipped = true))
+        assertFalse(shouldGoToOnboarding(0, Routes.SETTINGS, skipped = true))
+        assertFalse(shouldGoToOnboarding(0, Routes.PLAYER, skipped = true))
+    }
+
+    @Test
+    fun notSkippedStillForcesOnboarding() {
+        assertTrue(shouldGoToOnboarding(0, Routes.GUIDE, skipped = false))
+        assertTrue(shouldGoToOnboarding(0, Routes.GUIDE))
+    }
+
+    @Test
+    fun copyFromRouteConstant() {
+        assertEquals("setup/copy-from", Routes.SETUP_COPY_FROM)
     }
 
     @Test
@@ -109,7 +133,7 @@ class StartDestinationTest {
     @Test
     fun allOffStillStartsOnGuide() {
         // Playlists that are all turned off still count; the guide shows its message.
-        assertEquals(Routes.GUIDE, startDestination(hasPlaylist = true))
+        assertEquals(Routes.GUIDE, startDestination(hasPlaylist = true, skipped = false))
         assertFalse(shouldGoToOnboarding(2, Routes.GUIDE))
         assertFalse(shouldGoToOnboarding(1, Routes.PLAYLIST_FORM))
         assertTrue(shouldGoToOnboarding(0, Routes.PLAYLIST_FORM))
@@ -189,5 +213,24 @@ class StartDestinationTest {
         assertEquals(FollowNav.NONE, followNavFor(following = false, currentRoute = Routes.GUIDE))
         // No destination yet: nothing to navigate from.
         assertEquals(FollowNav.NONE, followNavFor(following = true, currentRoute = null))
+    }
+
+    @Test
+    fun copyUnderWayNeverBouncesToOnboarding() {
+        // A copy replacing this TV's playlists, or its result on screen, keeps the TV where it is.
+        assertFalse(shouldGoToOnboarding(0, Routes.GUIDE, skipped = false, copying = true))
+        assertFalse(shouldGoToOnboarding(0, Routes.SETUP_COPY_FROM, skipped = false, copying = true))
+        assertTrue(shouldGoToOnboarding(0, Routes.GUIDE, skipped = false, copying = false))
+    }
+
+    @Test
+    fun firstStartScreensHoldAutoJoin() {
+        assertTrue(isFirstStartRoute(Routes.ONBOARDING))
+        assertTrue(isFirstStartRoute(Routes.SETUP_COPY_FROM))
+        // Before the first destination too: the start screen isn't known yet.
+        assertTrue(isFirstStartRoute(null))
+        assertFalse(isFirstStartRoute(Routes.GUIDE))
+        assertFalse(isFirstStartRoute(Routes.PLAYER))
+        assertFalse(isFirstStartRoute(Routes.TVS))
     }
 }

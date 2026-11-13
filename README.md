@@ -63,10 +63,14 @@ Loophole plays live channels and a programme guide from the playlists you give i
 
 ## Features
 
-### Playlists & guide
+### Setting up a TV
+
+- **First start:** add a playlist, choose *Copy from another TV*, or choose *Skip for now*. Skipping opens an empty guide that tells you where to add a playlist later, and Loophole remembers the choice.
+- **Copy setup between TVs:** set up one TV, then copy its setup to your other Loophole TVs instead of typing it all again. It works both ways: on the TV being set up, choose *Copy from another TV* (first start) or *TVs* in the side menu → (a TV) → *Copy this TV's setup*; from a TV that is already set up, choose *TVs* → (a TV) → *Send my setup to this TV*. The TV being set up always shows a 4-digit code, which you enter on the other TV with the remote. Three wrong codes cancel the copy, and a code lasts two minutes.
+- **What is copied:** playlists with their logins, local playlist files (up to 20 MB each, 40 MB in all), guide links, channel and group edits, favourites, update schedules, guide options and most settings, including your remote buttons. **What isn't:** the TV's name, its casting settings, watch history, and its hardware playback choices (decoders, auto frame rate, surround, passthrough, DTS to PCM, tunneling, audio delay), and each channel's own decoders and external player. The copy replaces the receiving TV's playlists, guide, favourites and settings; channels and the guide then update by themselves.
 
 - **Four kinds of playlist:** M3U link, local M3U file, Xtream Codes account or MAC (Stalker) portal, each with an XMLTV programme guide.
-- **TV guide with a live preview:** the channel you pick plays in a small window above the grid, next to the programme's title, time, progress and description.
+- **TV guide with a live preview:** the channel you pick plays in a small window above the grid, next to the programme's title, time, progress and description. *Guide* in the side menu takes you back to the grid.
 - **Several playlists:** Settings → Playlists → *Add playlist*. Each playlist can be turned off, renamed, given another address or login, and have its own user agent and update schedule. Update one on its own or all of them with *Update all playlists*. Channel numbers continue from one playlist to the next.
 - **Guides per playlist:** Settings → EPG lists each playlist's own guide (which you can turn off) and any extra guide links you add. You choose how many past days to keep (*Automatic* keeps as many as your channels' catch-up goes back, up to a week), and can clear the guide.
 - **Scheduled updates:** playlists and guides update on a schedule and at app start, and the guide can also update after each playlist update.
@@ -92,11 +96,11 @@ Enter the portal address and the MAC address your provider registered (usually s
 - **Catch-up TV:** on channels your provider records, a rewind icon marks them in the guide and Left walks back into finished programmes, as far as the channel's archive goes. OK on one plays it from the start in full screen; when it ends, the next one starts. Works with Xtream Codes accounts (`tv_archive`) and with M3U playlists that declare catch-up (`catchup="default"`, `"append"`, `"shift"`, `"flussonic"` or `"xc"`, with `catchup-source` and `catchup-days`). MAC (Stalker) portals have no catch-up yet.
 - **Seek bar:** while a programme plays back, Rewind and Fast-forward jump 10 and 30 seconds (hold them to go faster; the picture moves once you let go), Play/Pause pauses, and the bar shows the title, times, elapsed and total time. *Live* (or fast-forwarding to the end) returns to the live channel. *Watch from start* in the quick menu restarts the current programme.
 - **Rewind and pause live TV:** on a catch-up channel, Rewind goes back from live and Pause holds the picture; Play carries on from where you paused. On a channel without catch-up, Loophole says so.
-- **Quick menu:** press ≡ or hold OK while watching for Search, Channels, Video quality, Audio track, Audio delay, Subtitles, Aspect ratio, Sleep timer, Add to favourites, Cast to all TVs, Channel options, Picture-in-picture (where the TV supports it) and Settings.
+- **Quick menu:** press Down, ≡ or hold OK while watching for Search, Cast to all TVs, Channels, Video quality, Audio track, Audio delay, Subtitles, Aspect ratio, Sleep timer, Add to favourites, Channel options, Picture-in-picture (where the TV supports it) and Settings. Up opens the row of channels.
 - **History:** channels you watched for 10 seconds or more, newest first, from the History tile in the full-screen overlay.
 - **Sleep timer:** 15 minutes to 2 hours, with a warning before it stops.
 - **Picture-in-picture:** on TVs that support it, from the quick menu or (if you turn it on) the Home button. Closing the small window stops the stream. Fire TV devices usually don't offer it, and then it isn't shown.
-- **Cast to other TVs:** one TV shares what it's playing with the other Loophole TVs on your home network, using a single connection to your provider. Choose *Cast to all TVs* in the quick menu: TVs with nothing playing join by themselves, and a TV that is playing something gets a short prompt. Back on a following TV leaves the cast, and *TVs* in the side menu lists the other TVs and lets it join again. Each TV takes part only while Loophole is open on it. To stop a TV joining by itself, turn off Settings → General → *Allow other TVs to cast to this TV*.
+- **Cast to other TVs:** one TV shares what it's playing with the other Loophole TVs on your home network, using a single connection to your provider. Choose *Cast to all TVs* in the quick menu: TVs with nothing playing join by themselves, and a TV that is playing something gets a short prompt. Back on a following TV leaves the cast, and *TVs* in the side menu lists the other TVs and lets it join again. The casting label shrinks to a small dot with the number of watching TVs after a few seconds, and the label on a following TV steps aside after 10 seconds; both come back when something changes. Each TV takes part only while Loophole is open on it. To stop a TV joining by itself, turn off Settings → General → *Allow other TVs to cast to this TV*.
 - **External players:** a channel can open in MX Player, VLC, Kodi or Just Player when they're installed, or ask each time. Loophole stops its own stream first, so a one-connection account isn't used twice.
 - **Start and exit:** optionally reopen the last channel on start, and optionally confirm before Back leaves the app.
 
@@ -104,7 +108,7 @@ Enter the portal address and the MAC address your provider registered (usually s
 
 - **Settings → Remote control:** four switches choose whether Rewind/Fast-forward/Pause seek in catch-up, whether Rewind goes back from live, whether Left/Right seek when the controls are hidden, and whether Left goes back from live.
 - **Your own buttons:** map any spare remote button (a colour key, for example) to an action in the player (channel up/down, channel list, TV guide, quick menu, favourite, subtitles, audio track, sleep timer, search, play/pause, rewind, fast-forward, live, watch from start) or in the guide (page up/down, back to now, previous/next day, favourite, search, Settings). *Reset buttons* puts them back.
-- **Defaults:** CH+/CH− (or Page up/down) change channel full screen and page the guide; Rewind/Fast-forward move the guide a day. D-pad Up and Down never change channel full screen.
+- **Defaults:** CH+/CH− (or Page up/down) change channel full screen and page the guide; Rewind/Fast-forward move the guide a day. Full screen, D-pad Down opens the quick menu and Up the channel row; they never change channel.
 
 ### Playback & sound
 
@@ -124,7 +128,7 @@ Enter the portal address and the MAC address your provider registered (usually s
 ### Private by design
 
 - No analytics, crash reporting or ads.
-- Network requests go only to the playlist, guide, logo and stream addresses you supply, and, for casting, to other Loophole TVs on your home network.
+- Network requests go only to the playlist, guide, logo and stream addresses you supply, and, for casting and copying a setup, to other Loophole TVs on your home network.
 
 ## Install
 
@@ -161,7 +165,7 @@ adb shell cmd package compile -m speed-profile -f io.github.loopholetv
 
 ## Updating
 
-From 0.4.1, Loophole checks for new releases by itself, at most once a day. When one is available, a small card on the guide offers it: choose **Update**, and Android asks you to confirm the install. The first time, Android asks you to allow Loophole to install apps. You can turn the check off in **Settings → General**, or check now from **Settings → About**.
+From 0.4.1, Loophole checks for new releases by itself, at most once a day. When one is available, a small card on the guide offers it: choose **Update**, and Android asks you to confirm the install. The first time, Android asks you to allow Loophole to install apps. You can turn the check off in **Settings → General**, or check now with *Check for updates* in **Settings → General** or **Settings → About**.
 
 You can also install a new APK over the old one by hand, the same way as above. Either way, your playlists and settings are kept.
 
@@ -181,7 +185,11 @@ Release signing reads a `keystore.properties` file (`storeFile`, `storePassword`
 
 ## Privacy
 
-Loophole has no analytics, crash reporting or ads, and no account of its own. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply. When casting, Loophole talks to other Loophole TVs on your home network and never sends them playlist links or logins. Playlist URLs and credentials are redacted from logs and error messages.
+Loophole has no analytics, crash reporting or ads, and no account of its own. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply. When casting, Loophole talks to other Loophole TVs on your home network and never sends them playlist links or logins.
+
+Copying a setup is the one time playlist links and logins go to another TV. The setup is encrypted with a key made from the 4-digit code shown on the TV being set up, and only travels on your home network while Loophole is open on both TVs. The short code keeps out casual mistakes and look-alike devices, but it isn't strong encryption: only copy setups on a home network you trust, and only to your own TVs, because your playlist logins are included.
+
+Playlist URLs and credentials are redacted from logs and error messages.
 
 ## Licence & third-party notices
 

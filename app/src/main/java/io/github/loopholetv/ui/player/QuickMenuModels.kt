@@ -38,6 +38,9 @@ const val AUDIO_DELAY_WRITE_MS = 500L
 /** The quick menu's tiles, in display order. */
 enum class QuickItem(val label: String) {
     SEARCH("Search"),
+
+    /** Labelled [CAST_STOP_LABEL] while this TV casts. */
+    CAST("Cast to all TVs"),
     CHANNELS("Channels"),
     START_OVER("Watch from start"),
     VIDEO("Video"),
@@ -47,9 +50,6 @@ enum class QuickItem(val label: String) {
     ASPECT("Aspect ratio"),
     SLEEP("Sleep timer"),
     FAVOURITE("Add to favourites"),
-
-    /** Labelled [CAST_STOP_LABEL] while this TV casts. */
-    CAST("Cast to all TVs"),
     OPTIONS("Channel options"),
     PIP("Picture-in-picture"),
     SETTINGS("Settings"),

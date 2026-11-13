@@ -49,6 +49,7 @@ internal class OverlayPlaylist(private val db: AppDatabase, private val name: St
     private fun success(result: ImportResult): ImportResult.Success = when (result) {
         is ImportResult.Success -> result
         is ImportResult.Failure -> throw AssertionError("import failed: ${result.error} ${result.message}")
+        ImportResult.Stopped -> throw AssertionError("import stopped")
     }
 
     suspend fun all(): List<ChannelEntity> = db.channelDao().channelsOf(id)

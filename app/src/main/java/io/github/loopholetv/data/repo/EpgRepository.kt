@@ -65,6 +65,8 @@ class EpgRepository(
     private val userAgentFor: suspend (PlaylistEntity) -> String? = { null },
     /** Streams a MAC portal's own guide ([PORTAL_EPG_SOURCE]) as [XmltvChannel]s and [XmltvProgramme]s. */
     private val portalEpg: suspend (PlaylistEntity, emit: (Any) -> Unit) -> Unit = { _, _ -> throw IOException("No portal guide") },
+    /** Shared with the playlists' repository, whose `exclusive` stops guide updates too. */
+    private val stops: RefreshStops = RefreshStops(),
 ) {
     private val playlistDao = db.playlistDao()
     private val channelDao = db.channelDao()
@@ -94,16 +96,22 @@ class EpgRepository(
     /**
      * Never throws for source problems: the outcome is returned and stored as the playlist's status
      * (message redacted). [progress] receives the number of programmes stored so far, on a background thread.
+     *
+     * A copied setup replacing the playlists stops a refresh that is running or waiting, and one
+     * asked for meanwhile: it stores nothing and returns a [STOPPED] status that isn't stored either.
      */
-    suspend fun refresh(playlistId: Long, progress: (Int) -> Unit): EpgStatusEntity = mutex.withLock {
-        withContext(Dispatchers.Default) {
-            val playlist = requireNotNull(playlistDao.byId(playlistId)) { "Unknown playlist $playlistId" }
-            val urls = epgSourceUrls(playlist, xtream::epgUrl, sourceDao.forPlaylist(playlistId).map { it.url })
-            if (urls.isEmpty()) return@withContext fail(playlist.id, EPG_NO_SOURCE)
-            val secrets = playlistSecrets(playlist) + urls.filter { it != PORTAL_EPG_SOURCE }.flatMap(::m3uSecrets)
-            importAll(playlist, urls, secrets, progress, options())
+    suspend fun refresh(playlistId: Long, progress: (Int) -> Unit): EpgStatusEntity =
+        stops.stoppable({ stopped(playlistId) }) {
+            mutex.withLock {
+                withContext(Dispatchers.Default) {
+                    val playlist = requireNotNull(playlistDao.byId(playlistId)) { "Unknown playlist $playlistId" }
+                    val urls = epgSourceUrls(playlist, xtream::epgUrl, sourceDao.forPlaylist(playlistId).map { it.url })
+                    if (urls.isEmpty()) return@withContext fail(playlist.id, EPG_NO_SOURCE)
+                    val secrets = playlistSecrets(playlist) + urls.filter { it != PORTAL_EPG_SOURCE }.flatMap(::m3uSecrets)
+                    importAll(playlist, urls, secrets, progress, options())
+                }
+            }
         }
-    }
 
     /**
      * Removes every stored programme and every playlist's status, waiting for a running refresh.
@@ -248,6 +256,10 @@ class EpgRepository(
     private fun removed(playlistId: Long) =
         EpgStatusEntity(playlistId, updatedAt = null, matchedChannels = 0, ok = false, message = REMOVED)
 
+    /** A copied setup stopped the refresh: nothing is stored. */
+    private fun stopped(playlistId: Long) =
+        EpgStatusEntity(playlistId, updatedAt = null, matchedChannels = 0, ok = false, message = STOPPED)
+
     /** Short, fixed texts only: no exception message (which may carry a URL) is ever shown. */
     private fun describe(e: Exception): String = when (e) {
         is EpgHttpException -> "The TV guide server returned an error (${e.code})."
@@ -261,6 +273,7 @@ class EpgRepository(
         /** Kept after the retention so the guide's current window has no hole at its left edge. */
         val GRACE: Duration = Duration.ofMinutes(30)
         const val REMOVED = "This playlist was removed."
+        const val STOPPED = "The update stopped while this TV's setup was replaced."
         const val DAMAGED = "The TV guide file is damaged or not in XMLTV format."
     }
 }

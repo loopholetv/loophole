@@ -113,6 +113,7 @@ class PlaylistSourcesTest {
     private fun successOf(result: ImportResult): ImportResult.Success = when (result) {
         is ImportResult.Success -> result
         is ImportResult.Failure -> throw AssertionError("import failed: ${result.error} ${result.message}")
+        ImportResult.Stopped -> throw AssertionError("import stopped")
     }
 
     private suspend fun playlist(id: Long): PlaylistEntity = db.playlistDao().byId(id)!!

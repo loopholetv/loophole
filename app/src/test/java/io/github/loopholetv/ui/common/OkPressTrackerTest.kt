@@ -42,6 +42,20 @@ class OkPressTrackerTest {
         assertNull(t.onKey(Up, isOk = false, isMenu = true, repeatCount = 0))
     }
 
+    @Test fun releaseOfAPressThatStartedElsewhereDoesNothing() {
+        // OK went down on a window that closed before the release (a setup result going by itself).
+        assertNull(ok(Up))
+        // A fresh press still clicks.
+        assertNull(ok(Down))
+        assertEquals(OkPressAction.Click, ok(Up))
+    }
+
+    @Test fun heldPressThatStartedElsewhereNeitherLongClicksNorClicks() {
+        assertNull(ok(Down, 3))
+        assertNull(ok(Down, 4))
+        assertNull(ok(Up))
+    }
+
     @Test fun otherKeysAreIgnored() {
         assertNull(t.onKey(Down, isOk = false, isMenu = false, repeatCount = 0))
         assertNull(t.onKey(Up, isOk = false, isMenu = false, repeatCount = 0))

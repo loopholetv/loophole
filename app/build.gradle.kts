@@ -30,8 +30,8 @@ android {
         applicationId = "io.github.loopholetv"
         minSdk = 25
         targetSdk = 37
-        versionCode = 10
-        versionName = "0.6.1"
+        versionCode = 11
+        versionName = "0.7.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

@@ -41,6 +41,10 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import io.github.loopholetv.update.UpdateAction
+import io.github.loopholetv.update.UpdateCardUi
+import io.github.loopholetv.update.UpdateStatus
+import io.github.loopholetv.update.cardFor
 import kotlinx.coroutines.launch
 import java.time.ZoneId
 import java.util.Locale
@@ -95,11 +99,14 @@ data class SettingsUi(
     val loaded: Boolean = false,
     /** This TV's name for casting: the stored name, or the device default. */
     val tvName: String = "",
+    /** The update found by "Check for updates" and its next step; null when none is on offer. */
+    val updateCard: UpdateCardUi? = null,
 )
 
 private data class UpdateAll(val playlistId: Long? = null, val count: Int = 0)
 
 private data class Ops(
+    val updateCard: UpdateCardUi? = null,
     val playlist: Map<Long, PlaylistOp> = emptyMap(),
     val epgUpdating: Set<Long> = emptySet(),
     val confirmDelete: Long? = null,
@@ -132,6 +139,11 @@ class SettingsViewModel(
     settings: Flow<AppSettings> = flowOf(AppSettings()),
     private val updateSettings: suspend ((AppSettings) -> AppSettings) -> Unit = {},
     private val clearEpg: suspend () -> Unit = {},
+    /** The same manual update check as About's. */
+    private val checkForUpdatesNow: () -> Unit = {},
+    /** The update offered now, as the card on the guide shows it. */
+    updateStatus: Flow<UpdateStatus> = flowOf(UpdateStatus.None),
+    private val performUpdateAction: (UpdateAction) -> Unit = {},
     private val rename: suspend (Long, String) -> Unit = { _, _ -> },
     private val setEnabled: suspend (Long, Boolean) -> Unit = { _, _ -> },
     private val setPlaylistUserAgent: suspend (Long, String?) -> Unit = { _, _ -> },
@@ -182,10 +194,14 @@ class SettingsViewModel(
             automaticPastDays = effectivePastDays(AUTO_PAST_DAYS, o.maxCatchupDays),
             loaded = true,
             tvName = opts.castTvName ?: defaultTvName,
+            updateCard = o.updateCard,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUi())
 
     init {
+        viewModelScope.launch {
+            updateStatus.collect { st -> ops.update { it.copy(updateCard = cardFor(st)) } }
+        }
         viewModelScope.launch {
             val days = try {
                 maxCatchupDays()
@@ -245,6 +261,8 @@ class SettingsViewModel(
         is ImportResult.Success -> PlaylistOp.Updated(channelCount)
         // A portal's failures carry fixed copy of their own; everything else gets errorCopy.
         is ImportResult.Failure -> PlaylistOp.Failed(message.trim().takeIf { it in PORTAL_ERROR_COPY } ?: errorCopy(error))
+        // A copied setup is replacing the playlists: no error, the row shows what is stored.
+        ImportResult.Stopped -> PlaylistOp.Idle
     }
 
     private fun setOp(id: Long, op: PlaylistOp) = ops.update { it.copy(playlist = it.playlist + (id to op)) }
@@ -421,6 +439,11 @@ class SettingsViewModel(
         setRemote { it.copy(bindings = KeyBindings.DEFAULT) }
     }
 
+    fun checkForUpdatesNow() = checkForUpdatesNow.invoke()
+
+    /** A step of the update offered by the last check (Update, Install, ...). */
+    fun performUpdate(action: UpdateAction) = performUpdateAction(action)
+
     fun requestClearEpg() = ops.update { it.copy(confirmClearEpg = true, epgCleared = false) }
 
     fun cancelClearEpg() = ops.update { it.copy(confirmClearEpg = false) }
@@ -460,6 +483,9 @@ class SettingsViewModel(
                     settings = c.settingsStore.settings,
                     updateSettings = c.settingsStore::update,
                     clearEpg = c.epgRepository::clearGuide,
+                    checkForUpdatesNow = { c.updater.checkNow() },
+                    updateStatus = c.updater.status,
+                    performUpdateAction = { c.updater.perform(it) },
                     rename = { id, n -> c.playlistRepository.rename(id, n) },
                     setEnabled = { id, on -> c.channelEdits.setPlaylistEnabled(id, on) },
                     setPlaylistUserAgent = { id, ua -> c.playlistRepository.setUserAgent(id, ua) },

@@ -352,23 +352,35 @@ class PlayerViewModelTest {
         assertEquals(listOf(1L, 6L), playback.played)
     }
 
-    @Test fun dpadUpDownOnBareVideoOpensOverlayWithoutZapping() = runTest {
-        listOf(dpadUp, dpadDown).forEach { code ->
-            val playback = FakePlayback()
-            val vm = vm(playback, start = 5)
-            runCurrent()
-            vm.onBack() // bare video
-            assertFalse(vm.state().overlayVisible)
-            assertTrue(key(vm, code))
-            settle()
-            assertEquals(5L, vm.channelId())
-            assertEquals("no zap", listOf(5L), playback.played)
-            assertTrue(vm.state().overlayVisible)
-            assertEquals(5L, vm.row.value.currentId)
-        }
+    @Test fun dpadUpOnBareVideoShowsChannelRowWithoutZapping() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 5)
+        runCurrent()
+        vm.onBack() // bare video
+        assertFalse(vm.state().overlayVisible)
+        assertTrue(key(vm, dpadUp))
+        settle()
+        assertEquals(5L, vm.channelId())
+        assertEquals("no zap", listOf(5L), playback.played)
+        assertTrue(vm.state().overlayVisible)
+        assertEquals(5L, vm.row.value.currentId)
+        assertNull(vm.quickMenu.value)
     }
 
-    @Test fun dpadUpDownWhileBannerShowsOpensOverlayWithoutZapping() = runTest {
+    @Test fun dpadDownOnBareVideoOpensQuickMenuWithoutZapping() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 5)
+        runCurrent()
+        vm.onBack() // bare video
+        assertTrue(key(vm, dpadDown))
+        settle()
+        assertNotNull(vm.quickMenu.value)
+        assertFalse(vm.state().overlayVisible)
+        assertEquals(5L, vm.channelId())
+        assertEquals("no zap", listOf(5L), playback.played)
+    }
+
+    @Test fun dpadUpWhileBannerShowsOpensOverlayWithoutZapping() = runTest {
         val playback = FakePlayback()
         val vm = vm(playback)
         runCurrent() // entry banner is up
@@ -380,19 +392,38 @@ class PlayerViewModelTest {
         assertTrue(vm.state().overlayVisible)
     }
 
-    @Test fun dpadUpDownOnErrorCardOpensOverlayOkStaysRetry() = runTest {
-        val playback = FakePlayback()
+    private fun TestScope.failedBareVm(playback: FakePlayback): PlayerViewModel {
         val vm = vm(playback)
         runCurrent()
         playback.fail(1, "x")
         runCurrent()
         vm.onBack()
+        return vm
+    }
+
+    @Test fun okOnErrorCardStaysTryAgain() = runTest {
+        val playback = FakePlayback()
+        val vm = failedBareVm(playback)
         assertTrue("OK is Try again", key(vm, ok))
         assertEquals("retried", listOf(1L, 1L), playback.played)
         assertFalse(vm.state().overlayVisible)
-        assertTrue(key(vm, dpadDown))
+    }
+
+    @Test fun dpadUpOnErrorCardShowsChannelRow() = runTest {
+        val playback = FakePlayback()
+        val vm = failedBareVm(playback)
+        assertTrue(key(vm, dpadUp))
         assertTrue(vm.state().overlayVisible)
-        assertEquals(listOf(1L, 1L), playback.played)
+        assertNull(vm.quickMenu.value)
+        assertEquals(listOf(1L), playback.played)
+    }
+
+    @Test fun dpadDownOnErrorCardOpensQuickMenu() = runTest {
+        val playback = FakePlayback()
+        val vm = failedBareVm(playback)
+        assertTrue(key(vm, dpadDown))
+        assertNotNull(vm.quickMenu.value)
+        assertEquals(listOf(1L), playback.played)
     }
 
     @Test fun digitsJumpAfterTimeout() = runTest {
@@ -1172,7 +1203,7 @@ class PlayerViewModelTest {
         assertFalse(vm.dialogOpen())
     }
 
-    @Test fun upDownStillOnlyOpenOverlay() = runTest {
+    @Test fun upDownNeverZap() = runTest {
         val playback = FakePlayback()
         val vm = vm(playback, start = 3)
         runCurrent()
@@ -1181,12 +1212,12 @@ class PlayerViewModelTest {
         assertTrue(vm.state().overlayVisible)
         vm.onBack()
         assertTrue(key(vm, dpadDown))
-        assertTrue(vm.state().overlayVisible)
+        assertNotNull(vm.quickMenu.value)
+        assertFalse(vm.state().overlayVisible)
         settle()
         assertEquals(3L, vm.channelId())
         assertEquals(listOf(3L), playback.played)
-        assertNull(vm.quickMenu.value)
-        vm.onBack()
+        vm.dismissQuickMenu()
         assertFalse("Left stays unbound", key(vm, KeyEvent.KEYCODE_DPAD_LEFT))
         assertFalse("Right stays unbound", key(vm, KeyEvent.KEYCODE_DPAD_RIGHT))
         assertNull(vm.quickMenu.value)
@@ -1565,7 +1596,7 @@ class PlayerViewModelTest {
         val cast = FakeCast()
         val vm = vm(FakePlayback(), start = 3, cast = cast)
         runCurrent()
-        assertNull("no label while not casting", vm.castingLabel.value)
+        assertNull("no count while not casting", vm.castingFollowers.value)
         vm.onLongOk()
         assertEquals("Cast to all TVs", vm.entry(QuickItem.CAST).label)
         vm.pickQuickItem(QuickItem.CAST)
@@ -1573,20 +1604,20 @@ class PlayerViewModelTest {
         assertEquals(1, cast.starts)
         assertEquals("the menu stays open on the tile", QuickItem.CAST, vm.menu().focus)
         assertEquals("Stop casting", vm.entry(QuickItem.CAST).label)
-        assertEquals("Casting", vm.castingLabel.value)
+        assertEquals(0, vm.castingFollowers.value)
         cast.current.value = CastState.Casting(1)
         runCurrent()
-        assertEquals("Casting to 1 TV", vm.castingLabel.value)
+        assertEquals(1, vm.castingFollowers.value)
         cast.current.value = CastState.Casting(3)
         runCurrent()
-        assertEquals("Casting to 3 TVs", vm.castingLabel.value)
+        assertEquals(3, vm.castingFollowers.value)
 
         vm.pickQuickItem(QuickItem.CAST)
         runCurrent()
         assertEquals(listOf(StopReason.STOPPED), cast.stops)
         assertEquals(1, cast.starts)
         assertEquals("Cast to all TVs", vm.entry(QuickItem.CAST).label)
-        assertNull(vm.castingLabel.value)
+        assertNull(vm.castingFollowers.value)
     }
 
     @Test fun castTileLabelFollowsState() = runTest {
@@ -1937,13 +1968,14 @@ class PlayerViewModelTest {
         // Up/Down never change channel, whatever is showing.
         val playback = FakePlayback()
         val vm = archiveVm(playback)
-        listOf(dpadUp, dpadDown).forEach { code ->
-            assertTrue(key(vm, code))
-            assertTrue(vm.state().overlayVisible)
-            assertFalse(key(vm, code))
-            settle()
-            vm.hideOverlay()
-        }
+        assertTrue(key(vm, dpadUp))
+        assertTrue(vm.state().overlayVisible)
+        assertFalse(key(vm, dpadUp))
+        settle()
+        vm.hideOverlay()
+        assertTrue(key(vm, dpadDown))
+        assertNotNull(vm.quickMenu.value)
+        vm.dismissQuickMenu()
         key(vm, ok)
         key(vm, dpadUp)
         key(vm, dpadDown)

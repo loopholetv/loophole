@@ -1,6 +1,8 @@
 package io.github.loopholetv.cast.net
 
+import java.io.EOFException
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -25,9 +27,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * [path], [query] and [headers] are exactly as the peer sent them and must be treated as untrusted.
- * Header names are lower-case; a repeated header's values are joined with ", ". [toString] leaves
- * out the path, query and headers, since they can carry a token.
+ * [path], [query], [headers] and [body] are exactly as the peer sent them and must be treated as
+ * untrusted. Header names are lower-case; a repeated header's values are joined with ", ".
+ * [body] holds exactly [bodyLength] bytes (the request's `Content-Length`, within the route's
+ * limit) and ends there; reading it past the server's body deadline, or from a peer that stops
+ * early, throws an [IOException]. [toString] leaves out the path, query, headers and body, since
+ * they can carry a token.
  */
 data class HttpRequest(
     val method: String,
@@ -35,6 +40,8 @@ data class HttpRequest(
     val query: Map<String, String>,
     val headers: Map<String, String>,
     val remote: InetAddress,
+    val body: InputStream = EmptyBody,
+    val bodyLength: Long = 0,
 ) {
     override fun toString() = "HttpRequest(method=$method, remote=${remote.hostAddress})"
 }
@@ -58,6 +65,11 @@ typealias HttpHandler = suspend (HttpRequest, HttpResponse) -> Unit
  * At most [MAX_CLIENTS] connections are served at once; extra ones are closed immediately.
  * A request head must arrive within [headTimeoutMs] in total, and a single write that blocks for
  * [writeTimeoutMs] closes the connection.
+ *
+ * A route takes no request body unless it is given a `maxBodyBytes`: a `Content-Length` over the
+ * route's limit gets 413, a body without one (`Transfer-Encoding`, or none on a route that takes
+ * bodies) gets 411, and the whole body must arrive within [bodyTimeoutMs] of the head (or the
+ * route's own deadline).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class LocalHttpServer(
@@ -67,9 +79,19 @@ class LocalHttpServer(
     private val writeTimeoutMs: Long = 8_000,
     private val newListener: () -> ServerSocket = { ServerSocket() },
     private val maxPerRemote: Int = MAX_PER_REMOTE,
+    private val bodyTimeoutMs: Long = BODY_TIMEOUT_MS,
 ) {
-    private class Route(val method: String, val prefix: String, val handler: HttpHandler)
+    private class Route(
+        val method: String,
+        val prefix: String,
+        val maxBody: Long,
+        val bodyTimeoutMs: Long,
+        val handler: HttpHandler,
+    )
     private class HeadTooLarge : IOException()
+
+    /** A request head and the bytes after it that arrived in the same reads, `buf[bodyStart until end]`. */
+    private class Head(val text: String, val buf: ByteArray, val bodyStart: Int, val end: Int)
 
     private val routes = CopyOnWriteArrayList<Route>()
     private val listeners = CopyOnWriteArrayList<ServerSocket>()
@@ -84,9 +106,19 @@ class LocalHttpServer(
     var port: Int? = null
         private set
 
-    fun route(method: String, pathPrefix: String, handler: HttpHandler) {
+    /** A route that takes no request body. */
+    fun route(method: String, pathPrefix: String, handler: HttpHandler) = route(method, pathPrefix, 0, handler)
+
+    /** [maxBodyBytes] is the largest request body the route takes; 0 takes none. */
+    fun route(method: String, pathPrefix: String, maxBodyBytes: Long, handler: HttpHandler) =
+        route(method, pathPrefix, maxBodyBytes, bodyTimeoutMs, handler)
+
+    /** As above, with its own deadline for the whole body (for routes with small bodies). */
+    fun route(method: String, pathPrefix: String, maxBodyBytes: Long, bodyTimeoutMs: Long, handler: HttpHandler) {
+        require(maxBodyBytes >= 0)
+        require(bodyTimeoutMs > 0)
         routes.removeAll { it.method == method && it.prefix == pathPrefix }
-        routes.add(Route(method, pathPrefix, handler))
+        routes.add(Route(method, pathPrefix, maxBodyBytes, bodyTimeoutMs, handler))
     }
 
     fun unroute(pathPrefix: String) {
@@ -241,13 +273,28 @@ class LocalHttpServer(
         } catch (_: HeadTooLarge) {
             return respond(socket, 400, watchdog)
         } ?: return
-        val request = parse(head, socket.inetAddress) ?: return respond(socket, 400, watchdog)
-        if (!pathIsSafe(request.path)) return respond(socket, 400, watchdog)
-        if (request.method != "GET" && request.method != "POST") return respond(socket, 405, watchdog)
+        val headEnd = System.nanoTime()
+        val parsed = parse(head.text, socket.inetAddress) ?: return respond(socket, 400, watchdog)
+        if (!pathIsSafe(parsed.path)) return respond(socket, 400, watchdog)
+        if (parsed.method != "GET" && parsed.method != "POST") return respond(socket, 405, watchdog)
         val route = routes
-            .filter { it.method == request.method && matches(it.prefix, request.path) }
+            .filter { it.method == parsed.method && matches(it.prefix, parsed.path) }
             .maxByOrNull { it.prefix.length }
             ?: return respond(socket, 404, watchdog)
+        if ("transfer-encoding" in parsed.headers) return respond(socket, 411, watchdog)
+        val lengthHeader = parsed.headers["content-length"]
+        val length = when {
+            lengthHeader != null -> contentLength(lengthHeader) ?: return respond(socket, 400, watchdog)
+            route.maxBody > 0 && parsed.method == "POST" -> return respond(socket, 411, watchdog)
+            else -> 0L
+        }
+        if (length > route.maxBody) return respond(socket, 413, watchdog)
+        val request = if (length == 0L) {
+            parsed
+        } else {
+            val deadline = headEnd + route.bodyTimeoutMs * 1_000_000L
+            parsed.copy(body = BodyStream(socket, head, length, deadline), bodyLength = length)
+        }
         val response = ResponseImpl(socket.getOutputStream(), watchdog)
         try {
             route.handler(request, response)
@@ -295,8 +342,14 @@ class LocalHttpServer(
         }
     }
 
+    /** Plain decimal digits only; null for anything else (signs, lists, overflow). */
+    private fun contentLength(value: String): Long? {
+        if (value.isEmpty() || value.length > 18 || value.any { it !in '0'..'9' }) return null
+        return value.toLong()
+    }
+
     /** Reads up to the blank line ending the headers, or returns null on EOF. */
-    private fun readHead(socket: Socket): String? {
+    private fun readHead(socket: Socket): Head? {
         val input = socket.getInputStream()
         val deadline = System.nanoTime() + headTimeoutMs * 1_000_000L
         val buf = ByteArray(MAX_HEAD)
@@ -310,15 +363,61 @@ class LocalHttpServer(
             if (r < 0) return null
             val from = maxOf(0, n - 3)
             n += r
-            if (endOfHead(buf, from, n)) return String(buf, 0, n, Charsets.ISO_8859_1)
+            val end = endOfHead(buf, from, n)
+            if (end >= 0) return Head(String(buf, 0, end, Charsets.ISO_8859_1), buf, end, n)
         }
     }
 
-    private fun endOfHead(b: ByteArray, from: Int, n: Int): Boolean {
+    /** The index just past the blank line ending the head, or -1 when it hasn't arrived yet. */
+    private fun endOfHead(b: ByteArray, from: Int, n: Int): Int {
         for (i in maxOf(3, from + 3) until n) {
-            if (b[i - 3] == CR && b[i - 2] == LF && b[i - 1] == CR && b[i] == LF) return true
+            if (b[i - 3] == CR && b[i - 2] == LF && b[i - 1] == CR && b[i] == LF) return i + 1
         }
-        return false
+        return -1
+    }
+
+    /**
+     * A request body of exactly [length] bytes: what arrived with the head, then the socket. Every
+     * read is bounded by [deadline] (System.nanoTime), so a peer that trickles can't hold it open.
+     */
+    private class BodyStream(
+        private val socket: Socket,
+        head: Head,
+        length: Long,
+        private val deadline: Long,
+    ) : InputStream() {
+        private val buf = head.buf
+        private var pos = head.bodyStart
+        private val end = head.end
+        private var remaining = length
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            return if (read(one, 0, 1) < 0) -1 else one[0].toInt() and 0xFF
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (off < 0 || len < 0 || len > b.size - off) throw IndexOutOfBoundsException()
+            if (len == 0) return 0
+            if (remaining <= 0) return -1
+            val want = minOf(len.toLong(), remaining).toInt()
+            if (pos < end) {
+                val n = minOf(want, end - pos)
+                System.arraycopy(buf, pos, b, off, n)
+                pos += n
+                remaining -= n
+                return n
+            }
+            val left = (deadline - System.nanoTime()) / 1_000_000L
+            if (left <= 0) throw SocketTimeoutException()
+            socket.soTimeout = left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val n = socket.getInputStream().read(b, off, want)
+            if (n < 0) throw EOFException()
+            remaining -= n
+            return n
+        }
+
+        override fun available(): Int = minOf(remaining, (end - pos).toLong()).toInt().coerceAtLeast(0)
     }
 
     private fun parse(head: String, remote: InetAddress): HttpRequest? {
@@ -431,6 +530,8 @@ class LocalHttpServer(
             405 -> "Method Not Allowed"
             409 -> "Conflict"
             410 -> "Gone"
+            411 -> "Length Required"
+            413 -> "Content Too Large"
             416 -> "Range Not Satisfiable"
             429 -> "Too Many Requests"
             500 -> "Internal Server Error"
@@ -445,6 +546,7 @@ class LocalHttpServer(
         const val MAX_CLIENTS = 16
         const val MAX_PER_REMOTE = 6
         const val BIND_ATTEMPTS = 3
+        const val BODY_TIMEOUT_MS = 120_000L
         private val RESERVED_HEADERS =
             setOf("content-type", "content-length", "connection", "cache-control", "transfer-encoding")
         private const val TOKEN_SYMBOLS = "!#$%&'*+-.^_`|~"
@@ -461,4 +563,9 @@ class LocalHttpServer(
         private const val CR = '\r'.code.toByte()
         private const val LF = '\n'.code.toByte()
     }
+}
+
+/** The body of a request without one. */
+private object EmptyBody : InputStream() {
+    override fun read(): Int = -1
 }

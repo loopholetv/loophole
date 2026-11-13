@@ -59,8 +59,12 @@ class AppContainer(context: Context) {
             stalker = stalkerClient,
             sessions = stalkerSessions,
             downloadUa = downloadUserAgent,
+            stops = refreshStops,
         )
     }
+
+    /** Lets a copied setup stop the playlist and guide updates in flight. */
+    private val refreshStops = io.github.loopholetv.data.repo.RefreshStops()
 
     val epgRepository: EpgRepository by lazy {
         EpgRepository(
@@ -70,6 +74,7 @@ class AppContainer(context: Context) {
             portalEpg = { p, emit ->
                 io.github.loopholetv.data.repo.readPortalGuide(p, db.maintenanceDao(), stalkerClient, stalkerSessions, emit)
             },
+            stops = refreshStops,
         )
     }
 
@@ -253,9 +258,19 @@ class AppContainer(context: Context) {
     /** The beacon's UDP port; tests set 0 (a free port, no beacons sent) before first use. */
     internal var castBeaconPort: Int = io.github.loopholetv.cast.CastDiscovery.DEFAULT_BEACON_PORT
 
-    /** Relay jobs, the local server and discovery; lives for the process. */
+    /**
+     * Relay jobs, the local server, discovery and setup copies; lives for the process. A failure
+     * that escapes is swallowed, logging its class name only.
+     */
     private val castScope: kotlinx.coroutines.CoroutineScope by lazy {
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default + backgroundErrorHandler(),
+        )
+    }
+
+    /** Holds joining a cast on its own while the first-start screens show; released by the navigation. Main thread. */
+    internal val autoJoinHold: io.github.loopholetv.cast.AutoJoinHold by lazy {
+        io.github.loopholetv.cast.AutoJoinHold { castController.recheckAutoJoin() }
     }
 
     /** This TV's casting id once loaded; null until then. */
@@ -331,9 +346,48 @@ class AppContainer(context: Context) {
             settings = settingsStore.settings.catch { },
             tvName = { io.github.loopholetv.data.settings.defaultTvName(appContext) },
             clock = System::currentTimeMillis,
+            canAutoJoin = { autoJoinHold.allows() },
             holdWifi = io.github.loopholetv.cast.castWifiHold(appContext),
             watchNetwork = io.github.loopholetv.cast.defaultNetworkChanges(appContext),
         )
     }
     // --- End of casting between TVs ------------------------------------------------------------
+
+    // --- Copying a setup between TVs -----------------------------------------------------------
+
+    /**
+     * Copies this TV's setup to or from another TV over the cast server, which runs only while
+     * Loophole is on screen. Its routes are added once, here, and stay across server restarts.
+     */
+    internal val setupController: io.github.loopholetv.setup.SetupController by lazy {
+        val opener = localM3u
+        io.github.loopholetv.setup.SetupController(
+            scope = castScope,
+            server = castServer,
+            table = peerTable,
+            http = http,
+            export = io.github.loopholetv.setup.SetupExporter(db, settingsStore, opener)::export,
+            import = io.github.loopholetv.setup.SetupImporter(
+                db, settingsStore, opener,
+                // No playlist add, update or delete runs while the playlists are replaced.
+                serialize = playlistRepository::exclusive,
+            )::import,
+            stageFile = opener::newTemp,
+            clock = android.os.SystemClock::elapsedRealtime,
+            selfId = { castSelfId.await() },
+            // The name this TV announces to the others.
+            selfName = { castController.selfAnnounce().name },
+            onImported = { result ->
+                io.github.loopholetv.setup.afterSetupImported(
+                    result,
+                    invalidateSession = stalkerSessions::invalidate,
+                    refreshAll = { refreshCoordinator.refreshAll() },
+                )
+            },
+            hasPlaylists = { db.setupDao().hasPlaylists() },
+        ).also { it.register() }
+    }
+
+    /** Copying this TV's setup to or from another TV, for the setup screens. */
+    val setup: io.github.loopholetv.setup.SetupView get() = setupController
 }

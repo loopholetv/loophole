@@ -26,6 +26,7 @@ import io.github.loopholetv.data.db.label
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.data.db.toArg
 import io.github.loopholetv.data.repo.GuideKey
+import io.github.loopholetv.data.repo.channelListChanges
 import io.github.loopholetv.data.repo.guideKey
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
@@ -59,8 +60,11 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -127,8 +131,17 @@ fun channelLabel(channel: ChannelEntity): String = "${channel.guideNumber}  ${ch
 /** Shown in the grid area when playlists exist but every one is turned off. */
 const val ALL_PLAYLISTS_OFF = "All playlists are turned off. Turn one on in Settings \u2192 Playlists."
 
+/** Shown in the grid area when there is no playlist at all (setup was skipped). */
+const val NO_PLAYLIST_HINT = "No playlist yet. Add one in Settings \u2192 Playlists, or choose Copy from another TV."
+
 /** The grid area's message for an empty list, or null. */
-fun emptyHintFor(allPlaylistsOff: Boolean, scope: ChannelScope, listEmpty: Boolean): String? = when {
+fun emptyHintFor(
+    allPlaylistsOff: Boolean,
+    scope: ChannelScope,
+    listEmpty: Boolean,
+    noPlaylists: Boolean = false,
+): String? = when {
+    noPlaylists -> NO_PLAYLIST_HINT
     allPlaylistsOff -> ALL_PLAYLISTS_OFF
     scope == ChannelScope.Favourites && listEmpty -> FAVOURITES_EMPTY_HINT
     else -> null
@@ -180,6 +193,9 @@ data class ProgrammeSlice(
 }
 
 const val GROUP_FOCUS_DEBOUNCE_MS = 250L
+
+/** Channel-table commits within this long of each other reload the guide's list once. */
+const val CHANNEL_RELOAD_DEBOUNCE_MS = 300L
 
 /** How long the start waits for the groups list before giving up on the remembered group. */
 private const val GROUPS_WAIT_MS = 2_000L
@@ -243,6 +259,8 @@ class GuideViewModel(
     keyBindings: Flow<KeyBindings> = flowOf(KeyBindings.DEFAULT),
     /** This TV's cast, if one runs: the info area offers to stop it. */
     private val cast: CastControls = NoCast,
+    /** Fires after every committed change to the channel list's tables (channels, favourites). */
+    private val channelChanges: Flow<Unit> = emptyFlow(),
 ) : ViewModel() {
 
     /** True while this TV casts to the other TVs (the "Casting" banner shows). */
@@ -284,18 +302,39 @@ class GuideViewModel(
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    /** There is no playlist at all: the grid says how to add one. */
+    val noPlaylists: StateFlow<Boolean> = playlistsExist.map { !it }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     private val _selectedScope = MutableStateFlow<ChannelScope>(ChannelScope.All)
     val selectedScope: StateFlow<ChannelScope> = _selectedScope.asStateFlow()
 
     /** Keeps the current scope's paging cache alive; cancelled when the scope changes. */
     private var pagesJob: Job? = null
 
+    @OptIn(FlowPreview::class)
     private fun pagesFor(scope: ChannelScope): ScopePages {
         pagesJob?.cancel()
         val job = SupervisorJob(viewModelScope.coroutineContext[Job])
         pagesJob = job
-        val flow = Pager(PAGING) { channelPages(scope) }.flow
-            .cachedIn(CoroutineScope(viewModelScope.coroutineContext + job))
+        val pagesScope = CoroutineScope(viewModelScope.coroutineContext + job)
+        // The source being shown. Room's paging source ignores a change notice that arrives while
+        // its first load is still running, so a change committed right after another (a playlist
+        // import, then the guide linking its channels) could leave the list on the earlier rows
+        // until the app restarts. So once a burst of commits settles, the current source is
+        // invalidated here too, but only when no new source was made since the burst's last
+        // change: a source made after it has read that change already.
+        val current = java.util.concurrent.atomic.AtomicReference<PagingSource<Int, ChannelEntity>?>(null)
+        val made = java.util.concurrent.atomic.AtomicInteger(0)
+        val flow = Pager(PAGING) { channelPages(scope).also { current.set(it); made.incrementAndGet() } }.flow
+            .cachedIn(pagesScope)
+        pagesScope.launch {
+            val madeAtLastChange = java.util.concurrent.atomic.AtomicInteger(0)
+            channelChanges.onEach { madeAtLastChange.set(made.get()) }.debounce(CHANNEL_RELOAD_DEBOUNCE_MS).collect {
+                if (made.get() == madeAtLastChange.get()) current.get()?.takeUnless { it.invalid }?.invalidate()
+            }
+        }
         return ScopePages(scope, flow)
     }
 
@@ -971,6 +1010,7 @@ class GuideViewModel(
                     sleepExpired = c.sleepTimer.expired,
                     keyBindings = c.settingsStore.settings.map { it.remote.bindings }.distinctUntilChanged(),
                     cast = c.castController,
+                    channelChanges = c.db.channelListChanges(),
                 ) as T
             }
         }

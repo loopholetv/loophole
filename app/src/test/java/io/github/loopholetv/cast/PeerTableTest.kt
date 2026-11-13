@@ -11,6 +11,13 @@ class PeerTableTest {
         CastAnnounce(id, name, 8000, CastStatus.IDLE, true, null, null, null)
 
     @Test
+    fun peerKeepsTheSetupVersion() {
+        table.seen(ann("old"), "10.0.0.2")
+        table.seen(ann("new").copy(setup = 1), "10.0.0.3")
+        assertEquals(mapOf("new" to 1, "old" to 0), table.peers.value.associate { it.id to it.setup })
+    }
+
+    @Test
     fun peerTableExcludesSelf() {
         table.seen(ann("self"), "10.0.0.1")
         table.seen(ann("other"), "10.0.0.2")

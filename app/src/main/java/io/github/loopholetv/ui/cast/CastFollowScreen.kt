@@ -40,6 +40,7 @@ import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.player.rememberInPictureInPicture
 import io.github.loopholetv.ui.player.VideoSurface
+import io.github.loopholetv.ui.player.rememberCastLabelState
 import io.github.loopholetv.ui.settings.focusSoon
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -71,6 +72,8 @@ internal fun followKeyFor(keyCode: Int, down: Boolean): FollowKey = when (keyCod
     else -> FollowKey.CONSUME
 }
 
+private const val FOLLOW_LABEL_SHOW_MS = 10_000L
+
 /** `From <name>`, with the name the casting TV announces now. */
 internal fun followLabel(peer: CastPeer, peers: List<CastPeer>): String =
     "From ${peers.firstOrNull { it.id == peer.id }?.name ?: peer.name}"
@@ -97,10 +100,17 @@ fun CastFollowScreen(onExit: () -> Unit) {
 
     // The label stays while the screen closes after the cast ended: the last followed TV is
     // remembered after each composition, never written during one.
-    val current = (state as? CastState.Following)?.peer
-    val lastFollowed = remember { mutableStateOf<CastPeer?>(null) }
+    val current = state as? CastState.Following
+    val lastFollowed = remember { mutableStateOf<CastState.Following?>(null) }
     SideEffect { if (current != null) lastFollowed.value = current }
     val followed = current ?: lastFollowed.value
+    // Shown for 10 s after joining, and again on a channel change (the epoch) or another casting TV.
+    val label = rememberCastLabelState(
+        text = followed?.let { followLabel(it.peer, peers) },
+        count = null,
+        key = followed?.let { it.peer.castId to it.epoch },
+        showMs = FOLLOW_LABEL_SHOW_MS,
+    )
 
     var leaving by remember { mutableStateOf(false) }
     fun leave() {
@@ -141,10 +151,9 @@ fun CastFollowScreen(onExit: () -> Unit) {
             inPip = inPip,
             onSurfaceAttached = playback::setFullScreenSurface,
         )
-        val peer = followed
-        if (peer != null && !inPip) {
+        if (label != null && label.expanded && !inPip) {
             Text(
-                followLabel(peer, peers),
+                label.text,
                 style = MaterialTheme.typography.labelLarge,
                 color = Color.White,
                 maxLines = 1,

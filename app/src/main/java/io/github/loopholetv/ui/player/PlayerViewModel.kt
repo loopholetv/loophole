@@ -225,9 +225,10 @@ class PlayerViewModel(
     /** The open quick menu; null when closed. */
     val quickMenu: StateFlow<QuickMenuUi?> = menu.ui
 
-    /** "Casting", "Casting to 1 TV"... over the video while this TV casts; null otherwise. */
-    val castingLabel: StateFlow<String?> =
-        cast.state.map { it.label() }.stateIn(viewModelScope, SharingStarted.Eagerly, cast.state.value.label())
+    /** How many TVs follow this one's cast; null while it is not casting. */
+    val castingFollowers: StateFlow<Int?> =
+        cast.state.map { (it as? CastState.Casting)?.followers }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, (cast.state.value as? CastState.Casting)?.followers)
 
     private val opener = ChannelOpener(playback, channelPlayback, cast)
 
@@ -765,9 +766,10 @@ class PlayerViewModel(
     /**
      * Key-down routing (see [routePlayerKey]); true = consumed. Digits always enter a number, and
      * OK commits one being typed; bound buttons (channel keys, Rewind, Play/Pause…) act everywhere.
-     * Without the full overlay (bare video or banner) D-pad Up and Down open it and never change
-     * channel, and OK opens it too (on the catch-up bar while replaying), except OK on bare video
-     * with an error card, where it is Try again. With the full overlay the D-pad belongs to it and
+     * Without the full overlay (bare video or banner) D-pad Up opens it on the channel row and Down
+     * opens the quick menu (the overlay again while the seek bar shows); neither changes channel.
+     * OK opens the overlay too (on the catch-up bar while replaying), except OK on bare video with
+     * an error card, where it is Try again. With the full overlay the D-pad belongs to it and
      * only restarts the hide timer. [repeatCount] sizes held seek keys; their key-up ([onKeyUp])
      * commits one seek.
      */
@@ -775,7 +777,7 @@ class PlayerViewModel(
         val ui = _ui.value ?: return false
         if (exited) return false
         if (consumeSleepWarning()) return true
-        val route = routePlayerKey(ui.keyState(catchup.active, archiveFailed.value), keyCode, remoteSettings)
+        val route = routePlayerKey(ui.keyState(catchup.active, archiveFailed.value, barVisible.value), keyCode, remoteSettings)
         if (route == PlayerKeyRoute.Pass) {
             onUserInput()
             return false
@@ -892,6 +894,3 @@ class PlayerViewModel(
             playerViewModelFactory(channelId, scope, archiveFrom)
     }
 }
-
-/** The label over the video for this state; null while not casting. */
-private fun CastState.label(): String? = (this as? CastState.Casting)?.let { castingLabel(it.followers) }

@@ -8,15 +8,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.loopholetv.BuildConfig
+import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.data.settings.MAX_TV_NAME_LENGTH
 import io.github.loopholetv.ui.manage.TextEntryDialog
+import io.github.loopholetv.update.AboutCheck
+import io.github.loopholetv.update.aboutCheckText
 
 private const val LAST_CHANNEL_KEY = "lastChannel"
 private const val UA_KEY = "userAgent"
@@ -42,6 +48,9 @@ fun GeneralPage(ui: SettingsUi, vm: SettingsViewModel, focusKey: String?, onFocu
     }
     val close: () -> Unit = { refocus = dialog; dialog = null }
     val o = ui.options
+    val context = LocalContext.current
+    val updater = remember(context) { (context.applicationContext as LoopholeApp).container.updater }
+    val check by updater.about.collectAsStateWithLifecycle()
     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         ToggleRow(
             "Turn on last channel on app start",
@@ -63,11 +72,26 @@ fun GeneralPage(ui: SettingsUi, vm: SettingsViewModel, focusKey: String?, onFocu
             supporting = "Join a cast automatically when nothing is playing",
         )
         ToggleRow(
-            "Check for updates",
+            "Check for updates automatically",
             o.checkForUpdates,
             { vm.setOption { it.copy(checkForUpdates = !it.checkForUpdates) } },
             supporting = "Once a day, when Loophole starts",
         )
+        ActionRow(
+            "Check for updates",
+            onClick = vm::checkForUpdatesNow,
+            supporting = aboutCheckText(check),
+            supportingIsError = check == AboutCheck.Failed,
+        )
+        // The offered update's next step (Update, Install, ...), as in About.
+        ui.updateCard?.let { card ->
+            val action = card.buttons.firstOrNull()
+            ActionRow(
+                action?.first ?: card.message,
+                onClick = { action?.second?.let(vm::performUpdate) },
+                supporting = if (action != null) card.message else null,
+            )
+        }
         ValueRow(
             "User agent",
             generalUserAgentText(o.userAgent, BuildConfig.VERSION_NAME),

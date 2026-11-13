@@ -76,6 +76,8 @@ class PlaylistRepository internal constructor(
     private val sessions: StalkerSessions? = null,
     /** The download user agent for a playlist (null while adding): playlist > general > default. */
     private val downloadUa: suspend (PlaylistEntity?) -> String = { "Loophole/test" },
+    /** Shared with the guide's repository, so [exclusive] stops guide updates too. */
+    private val stops: RefreshStops = RefreshStops(),
 ) {
     private val playlistDao = db.playlistDao()
     private val channelDao = db.channelDao()
@@ -170,7 +172,7 @@ class PlaylistRepository internal constructor(
      * turned-off playlist too (a manual update); only automatic updates skip those.
      */
     suspend fun refresh(playlistId: Long, progress: (Int) -> Unit): ImportResult = mutex.withLock {
-        refreshLocked(playlistId, progress)
+        stoppable { refreshLocked(playlistId, progress) }
     }
 
     /**
@@ -197,7 +199,7 @@ class PlaylistRepository internal constructor(
                 local?.deleteCopy(playlistId)
             }
         }
-        refreshLocked(playlistId, progress)
+        stoppable { refreshLocked(playlistId, progress) }
     }
 
     /** A blank name is ignored. */
@@ -214,6 +216,25 @@ class PlaylistRepository internal constructor(
         require(hours == null || hours >= 0) { "Invalid update interval" }
         playlistDao.setUpdateOptions(playlistId, hours, onStart)
     }
+
+    /**
+     * Runs [block] with no add, update or delete of a playlist in flight, and none starting until
+     * it returns (a copied setup replacing every playlist). A playlist or guide update that is
+     * running is stopped rather than waited for, since the caller updates everything afterwards;
+     * updates asked for meanwhile return at once without changing anything. Not reentrant: [block] must not call
+     * this repository's other suspending writes.
+     */
+    suspend fun exclusive(block: suspend () -> Unit) {
+        // A refresh still downloading would hold the lock for as long as its provider takes.
+        stops.during { mutex.withLock { block() } }
+    }
+
+    /**
+     * Runs a refresh so that [exclusive] can stop it. A stopped refresh changes nothing (its
+     * transaction rolls back), stores no error and returns [ImportResult.Stopped]; its caller carries on.
+     */
+    private suspend fun stoppable(refresh: suspend () -> ImportResult): ImportResult =
+        stops.stoppable({ ImportResult.Stopped }, refresh)
 
     /**
      * The remaining playlists' guide numbers close up. Programmes no remaining channel uses,
@@ -290,6 +311,7 @@ class PlaylistRepository internal constructor(
         when (result) {
             is ImportResult.Failure -> playlistDao.setError(playlist.id, result.message)
             is ImportResult.Success -> notice?.let { playlistDao.setError(playlist.id, it) }
+            ImportResult.Stopped -> Unit
         }
         return result
     }

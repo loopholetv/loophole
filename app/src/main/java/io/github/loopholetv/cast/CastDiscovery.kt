@@ -343,6 +343,7 @@ class CastDiscovery(
             put("status", status.name)
             put("accepts", accepts.toString())
             put("seq", seq.toString())
+            put("setup", setup.toString())
             castId?.let { put("castId", it) }
             token?.let { put("token", it) }
             castStartedAtMs?.let { put("startedAt", it.toString()) }
@@ -361,6 +362,7 @@ class CastDiscovery(
                 token = txt["token"],
                 castStartedAtMs = txt["startedAt"]?.toLongOrNull(),
                 seq = txt["seq"]?.toLongOrNull()?.takeIf { it >= 0 } ?: return null,
+                setup = txt["setup"]?.toIntOrNull()?.takeIf { it >= 0 } ?: 0,
             )
             val castComplete = a.castId != null && a.token != null && a.castStartedAtMs != null
             return if (a.status == CastStatus.CASTING && !castComplete) null else a

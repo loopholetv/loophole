@@ -28,4 +28,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun epgChannelDao(): EpgChannelDao
     abstract fun overlayDao(): OverlayDao
     abstract fun maintenanceDao(): MaintenanceDao
+    abstract fun setupDao(): SetupDao
 }

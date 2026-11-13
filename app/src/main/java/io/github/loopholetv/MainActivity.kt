@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
         // screen), and kick off the once-per-process background refresh only if a playlist exists.
         // This runs behind the splash, independent of composition.
         val hasPlaylist = mutableStateOf<Boolean?>(null)
+        var skipped = false
         // One-shot (StartSlot): taken by the first guide composition, so a later return to the guide
         // (e.g. all playlists deleted -> onboarding -> new playlist) can't replay it.
         var startSlot = StartSlot(null)
@@ -86,12 +87,17 @@ class MainActivity : ComponentActivity() {
                 )
             }
             if (exists) app.startupRefresher.start()
+            skipped = app.container.settingsStore.settings.orDefaultsOnError().first().onboardingSkipped
             hasPlaylist.value = exists
         }
 
         // A picture-in-picture window must not hold the TV at the stream's frame rate while
         // another app is full screen behind it; full screen asks again once it settles.
-        addOnPictureInPictureModeChangedListener { if (it.isInPictureInPictureMode) displayModes.restore() }
+        addOnPictureInPictureModeChangedListener {
+            if (it.isInPictureInPictureMode) displayModes.restore()
+            // The setup screens can't show in the small window: other TVs' requests are refused meanwhile.
+            app.container.setupController.setPaused(it.isInPictureInPictureMode)
+        }
         // The sleep timer has stopped playback: a picture-in-picture window would stay open, black.
         lifecycleScope.launch {
             app.container.sleepTimer.expired.collect {
@@ -115,7 +121,7 @@ class MainActivity : ComponentActivity() {
                         if (decided != null && session.contentAllowed) {
                             LaunchedEffect(Unit) { session.onContentComposed(SystemClock.uptimeMillis()) }
                             AppNav(
-                                rememberNavController(), startDestination(decided),
+                                rememberNavController(), startDestination(decided, skipped),
                                 startPlayback = startSlot, confirmExit = settings.confirmExit,
                             )
                         }
@@ -152,11 +158,16 @@ class MainActivity : ComponentActivity() {
     /** Other TVs can find this one, and it them, only while Loophole is on screen. */
     override fun onStart() {
         super.onStart()
+        // The setup copy's routes are on the cast server before it starts (added once; later calls do nothing).
+        container.setupController.register()
+        // The picture-in-picture callback doesn't always arrive when its window closes.
+        container.setupController.setPaused(isInPictureInPictureMode)
         container.castController.onForeground(true)
     }
 
     override fun onResume() {
         super.onResume()
+        container.setupController.setPaused(isInPictureInPictureMode)
         // Back from the install-permission screen or the system installer.
         container.updater.onResumed()
     }

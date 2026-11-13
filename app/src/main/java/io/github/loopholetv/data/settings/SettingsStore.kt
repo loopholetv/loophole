@@ -89,6 +89,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             udpProxy = this[UDP_PROXY]?.trim()?.takeIf { it.isNotEmpty() },
             castAllowJoin = this[CAST_ALLOW_JOIN] ?: d.castAllowJoin,
             castTvName = this[CAST_TV_NAME].cleanTvName(),
+            onboardingSkipped = this[ONBOARDING_SKIPPED] ?: d.onboardingSkipped,
             playback = readPlayback(),
             remote = readRemote(),
         )
@@ -147,6 +148,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         putOrRemove(UDP_PROXY, s.udpProxy)
         this[CAST_ALLOW_JOIN] = s.castAllowJoin
         putOrRemove(CAST_TV_NAME, s.castTvName.cleanTvName())
+        this[ONBOARDING_SKIPPED] = s.onboardingSkipped
         writePlayback(s.playback)
         writeRemote(s.remote)
     }
@@ -217,6 +219,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         val UDP_PROXY = stringPreferencesKey("udp_proxy")
         val CAST_ALLOW_JOIN = booleanPreferencesKey("cast_allow_join")
         val CAST_TV_NAME = stringPreferencesKey("cast_tv_name")
+        val ONBOARDING_SKIPPED = booleanPreferencesKey("onboarding_skipped")
         val CAST_SELF_ID = stringPreferencesKey("cast_self_id")
         val BUFFER_PRESET = stringPreferencesKey("buffer_preset")
         val VIDEO_DECODER = stringPreferencesKey("video_decoder")

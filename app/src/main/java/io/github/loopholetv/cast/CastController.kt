@@ -356,15 +356,24 @@ class CastController(
         if (offered != null && list.none { it.isCasting() && it.castId == offered.peer.castId }) {
             clearInvite(decline = false)
         }
-        if (!foreground || !settled) return
+        // While held, sightings aren't counted, so [recheckAutoJoin] can still react to them.
+        if (!foreground || !settled || !canAutoJoin()) return
         val fresh = list.filter { it.isCasting() && it.castId !in seen }
         if (fresh.isEmpty()) return
         fresh.forEach { seen += it.castId.orEmpty() }
         val latest = fresh.filter { it.castId !in declined }
             .maxWithOrNull(compareBy<CastPeer> { it.castStartedAtMs ?: Long.MIN_VALUE }.thenBy { it.id })
             ?: return
-        if (_state.value != CastState.Off || !s.castAllowJoin || !canAutoJoin()) return
+        if (_state.value != CastState.Off || !s.castAllowJoin) return
         if (playback.state.value is PlaybackState.Idle) follow(latest) else offer(latest)
+    }
+
+    /**
+     * [canAutoJoin] may have changed: reacts to the casts on the network now, as on a new
+     * sighting. Casts seen while it said no were not counted, so one of them can be joined now.
+     */
+    fun recheckAutoJoin() {
+        latestSettings.value?.let { onPeers(table.peers.value, it) }
     }
 
     private fun offer(peer: CastPeer) {
@@ -451,6 +460,7 @@ class CastController(
                 val url = CastClient.mediaUrl(f.peer, e.path, f.selfId) ?: return
                 f.resetErrors()
                 f.playing = e
+                _state.value = CastState.Following(f.peer, e.epoch)
                 play(f, url, e.hls)
             }
             is CastEvent.Idle -> {
@@ -568,6 +578,7 @@ class CastController(
             token = session?.token,
             castStartedAtMs = session?.startedAtMs,
             seq = 0,
+            setup = CastAnnounce.SETUP_VERSION,
         )
         if (now != announced) {
             announced = now

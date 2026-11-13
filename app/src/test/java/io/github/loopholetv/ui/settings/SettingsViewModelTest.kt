@@ -26,6 +26,11 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import io.github.loopholetv.update.Release
+import io.github.loopholetv.update.SemVer
+import io.github.loopholetv.update.UpdateAction
+import io.github.loopholetv.update.UpdateStatus
+import io.github.loopholetv.update.availableText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -95,6 +100,10 @@ class SettingsViewModelTest {
 
         var maxCatchupDays: Int? = null
 
+        var updateChecks = 0
+        val updateStatus = MutableStateFlow<UpdateStatus>(UpdateStatus.None)
+        val performed = mutableListOf<UpdateAction>()
+
         fun vm(pipSupported: Boolean = false) = SettingsViewModel(
             playlists = playlists,
             channelCounts = counts,
@@ -108,6 +117,9 @@ class SettingsViewModelTest {
             locale = Locale.US,
             settings = settings,
             updateSettings = { t -> settings.update(t) },
+            checkForUpdatesNow = { updateChecks++ },
+            updateStatus = updateStatus,
+            performUpdateAction = { performed += it },
             clearEpg = { clears++ },
             rename = { id, n -> renamed += id to n },
             setEnabled = { id, on -> enabledSet += id to on; events += "enabled:$id=$on" },
@@ -131,6 +143,25 @@ class SettingsViewModelTest {
             maxCatchupDays = { maxCatchupDays },
             defaultTvName = "Default TV",
         )
+    }
+
+    @Test fun generalCheckNowCallsUpdater() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.vm().checkForUpdatesNow()
+        assertEquals(1, f.updateChecks)
+    }
+
+    @Test fun generalShowsTheFoundUpdateAndItsAction() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        assertEquals(null, vm.state.value.updateCard)
+        val release = Release(SemVer(9, 9, 9), "https://example.org/a.apk", 1L)
+        f.updateStatus.value = UpdateStatus.Available(release)
+        val card = vm.state.value.updateCard!!
+        assertEquals(availableText(release), card.message)
+        assertEquals("Update", card.buttons.first().first)
+        vm.performUpdate(card.buttons.first().second)
+        assertEquals(listOf(UpdateAction.UPDATE), f.performed)
     }
 
     @Test fun deletingLastPlaylistDeletesAndStopsPlayback() = runTest {
@@ -279,6 +310,23 @@ class SettingsViewModelTest {
         val text = (vm.state.value.playlists.single().op as PlaylistOp.Failed).message
         assertEquals("The server rejected the username or password.", text)
         assertTrue(vm.state.value.playlists.single().op is PlaylistOp.Failed)
+    }
+
+    @Test fun anUpdateStoppedByACopiedSetupShowsNoErrorAndNoGuideUpdate() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.refreshPlaylist = { _, _ -> ImportResult.Stopped }
+        val vm = f.vm()
+        vm.updatePlaylist(1)
+        assertEquals(PlaylistOp.Idle, vm.state.value.playlists.single().op)
+        assertTrue(f.epgRefreshes.isEmpty())
+    }
+
+    @Test fun updateAllStoppedByACopiedSetupShowsNoError() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.refreshAll = { mapOf(1L to ImportResult.Stopped) }
+        val vm = f.vm()
+        vm.updateAll()
+        assertEquals(PlaylistOp.Idle, vm.state.value.playlists.single().op)
     }
 
     @Test fun updateFailureNeverShowsRawMessage() = runTest {

@@ -3,6 +3,7 @@ package io.github.loopholetv.data.db
 import androidx.paging.PagingSource
 import androidx.room.Dao
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import androidx.room.Upsert
@@ -406,4 +407,60 @@ interface EpgStatusDao {
 
     @Query("DELETE FROM epg_status")
     suspend fun deleteAll()
+}
+
+/**
+ * Whole-table reads and the replace step for copying a setup to another TV. The writes are meant
+ * to run inside one transaction (the caller's), so a failure anywhere leaves the old rows.
+ */
+@Dao
+abstract class SetupDao {
+    @Query("SELECT * FROM playlists ORDER BY id")
+    abstract suspend fun playlists(): List<PlaylistEntity>
+
+    /** Whether there is any playlist, without reading one. */
+    @Query("SELECT EXISTS(SELECT 1 FROM playlists)")
+    abstract suspend fun hasPlaylists(): Boolean
+
+    @Query("SELECT * FROM epg_sources ORDER BY playlistId, position, id")
+    abstract suspend fun epgSources(): List<EpgSourceEntity>
+
+    @Query("SELECT * FROM channel_prefs ORDER BY playlistId, channelKey")
+    abstract suspend fun channelPrefs(): List<ChannelPrefsEntity>
+
+    @Query("SELECT * FROM group_prefs ORDER BY playlistId, groupTitle")
+    abstract suspend fun groupPrefs(): List<GroupPrefsEntity>
+
+    /** In the user's order. */
+    @Query("SELECT * FROM favourites ORDER BY position")
+    abstract suspend fun favourites(): List<FavouriteEntity>
+
+    @Query("SELECT * FROM history ORDER BY watchedAt DESC")
+    abstract suspend fun history(): List<HistoryEntity>
+
+    /** Everything of every playlist goes with it (ON DELETE CASCADE). */
+    @Query("DELETE FROM playlists")
+    abstract suspend fun deleteAllPlaylists()
+
+    @Insert
+    abstract suspend fun insertPlaylist(playlist: PlaylistEntity): Long
+
+    @Query("UPDATE playlists SET url = :url WHERE id = :id")
+    abstract suspend fun setUrl(id: Long, url: String)
+
+    @Insert
+    abstract suspend fun insertEpgSources(rows: List<EpgSourceEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun insertChannelPrefs(rows: List<ChannelPrefsEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun insertGroupPrefs(rows: List<GroupPrefsEntity>)
+
+    /** A repeated channel keeps its first place. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertFavourites(rows: List<FavouriteEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun insertHistory(rows: List<HistoryEntity>)
 }

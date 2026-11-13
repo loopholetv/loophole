@@ -112,6 +112,8 @@ fun GuideScreen(
     onPlayArchive: (channelId: Long, scope: ChannelScope, from: Instant) -> Unit = { _, _, _ -> },
     /** The side menu's TVs: the other TVs on the home network. */
     onTvs: () -> Unit = {},
+    /** "Copy from another TV" under the no-playlist hint: the TV picker. */
+    onCopyFromAnotherTv: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as LoopholeApp).container }
@@ -124,6 +126,7 @@ fun GuideScreen(
     val groups by vm.groups.collectAsStateWithLifecycle()
     val groupEntries by vm.groupEntries.collectAsStateWithLifecycle()
     val allPlaylistsOff by vm.allPlaylistsOff.collectAsStateWithLifecycle()
+    val noPlaylists by vm.noPlaylists.collectAsStateWithLifecycle()
     val moveKind by vm.moveKind.collectAsStateWithLifecycle()
     val movingGroup by vm.movingGroup.collectAsStateWithLifecycle()
     // One state for the scope and its list, so they always change in the same frame. Null only at
@@ -169,6 +172,8 @@ fun GuideScreen(
     val listState = rememberLazyListState()
     val gridFocus = remember { FocusRequester() }
     val selectedGroupFocus = remember { FocusRequester() }
+    // The "Copy from another TV" button under the no-playlist hint.
+    val copyFromFocus = remember { FocusRequester() }
     val previewFocus = remember { FocusRequester() }
     // Where a grid focus request lands: this channel's row strip if it is on screen, else the first
     // visible row's (see GuideGrid). Channel cells are not focus stops: every grid focus path lands
@@ -211,13 +216,14 @@ fun GuideScreen(
             }
         }
     }
-    LaunchedEffect(gridFocusPending, channels, channels.itemCount > 0, listEmpty) {
+    LaunchedEffect(gridFocusPending, channels, channels.itemCount > 0, listEmpty, noPlaylists) {
         if (!gridFocusPending) return@LaunchedEffect
         if (channels.itemCount == 0) {
-            // An empty list (e.g. no favourites yet) has nothing to land on: the selected group.
+            // An empty list (e.g. no favourites yet) has nothing to land on: the selected group,
+            // or with no playlist at all the "Copy from another TV" button, so OK works at once.
             if (listEmpty) {
                 for (attempt in 0 until 20) {
-                    if (selectedGroupFocus.tryFocus()) break
+                    if (if (noPlaylists) copyFromFocus.tryFocus() else selectedGroupFocus.tryFocus()) break
                     delay(50)
                 }
                 gridFocusPending = false
@@ -409,6 +415,12 @@ fun GuideScreen(
         groupFocus = GroupFocus(currentScope) {}
     }
 
+    /** An empty list: the "Copy from another TV" button when there is no playlist, else the selected group. */
+    fun focusEmptyList() {
+        if (noPlaylists && copyFromFocus.tryFocus()) return
+        focusSelectedGroup()
+    }
+
     // Back: a window shifted away from now (past or future) snaps back to now first (focus staying
     // where it is); then programme → groups list (on the current group) → side rail → the app's
     // confirm-exit.
@@ -445,7 +457,7 @@ fun GuideScreen(
             GuideArea.Preview -> if (!previewFocus.tryFocus()) focusGrid()
             GuideArea.Rail -> if (!railFocus.tryFocus()) focusGrid()
             GuideArea.Groups -> focusSelectedGroup()
-            GuideArea.Grid, GuideArea.None -> if (channels.itemCount > 0) focusGrid() else focusSelectedGroup()
+            GuideArea.Grid, GuideArea.None -> if (channels.itemCount > 0) focusGrid() else focusEmptyList()
         }
     }
 
@@ -597,7 +609,7 @@ fun GuideScreen(
                         onLongPress = { channel -> options = OptionsTarget(channel, fromPreview = true) },
                         subtitleStyle = subtitleStyle,
                         rightTo = castFocus.takeIf { casting } ?: cardFocus.takeIf { updateCard?.buttons?.isNotEmpty() == true },
-                        onDown = { if (channels.itemCount > 0) focusGrid() else focusSelectedGroup() },
+                        onDown = { if (channels.itemCount > 0) focusGrid() else focusEmptyList() },
                         modifier = Modifier.fillMaxHeight().onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Preview) },
                     )
                     // The cast banner and the update card stack at the top end, inside the details
@@ -693,7 +705,9 @@ fun GuideScreen(
                             favourites = favourites,
                             movingId = movingId,
                             pastWindow = pastWindow,
-                            emptyHint = emptyHintFor(allPlaylistsOff, selectedScope, listEmpty),
+                            emptyHint = emptyHintFor(allPlaylistsOff, selectedScope, listEmpty, noPlaylists),
+                            emptyButtonFocus = copyFromFocus,
+                            onCopyFromAnotherTv = onCopyFromAnotherTv,
                             modifier = Modifier.fillMaxSize()
                                 .onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Grid) }
                                 // Move mode: Up/Down move the row, OK finishes; nothing else leaves the row.
@@ -709,12 +723,12 @@ fun GuideScreen(
         SideRail(
             onFocused = vm::commitPendingGroup,
             // Right from any rail item enters the grid like TV does (never focus search to the preview).
-            onRight = { if (channels.itemCount > 0) focusGrid() else focusSelectedGroup() },
+            onRight = { if (channels.itemCount > 0) focusGrid() else focusEmptyList() },
             onSelect = { item ->
                 when (item) {
                     // Lands on the row focused last if visible, else the first visible row, else
                     // (empty list) on the selected group.
-                    RailItem.TV -> if (channels.itemCount > 0) focusGrid() else focusSelectedGroup()
+                    RailItem.TV -> if (channels.itemCount > 0) focusGrid() else focusEmptyList()
                     RailItem.SETTINGS -> onSettings()
                     RailItem.SEARCH -> onSearch()
                     RailItem.TVS -> onTvs()

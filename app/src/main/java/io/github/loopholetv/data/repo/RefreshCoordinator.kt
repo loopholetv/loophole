@@ -131,8 +131,8 @@ class RefreshCoordinator(
     /**
      * App-start run, per playlist: the playlist when [startRefreshWanted]; then the EPG when wanted on
      * its own or chained after a playlist refresh, at most once. The EPG is skipped after the playlist was unreachable or
-     * rejected our credentials (its source is then very likely unreachable too; old data stays), and
-     * when the playlist refresh threw (e.g. deleted mid-run).
+     * rejected our credentials (its source is then very likely unreachable too; old data stays),
+     * when the playlist refresh threw (e.g. deleted mid-run), and when it was stopped by a copied setup.
      */
     suspend fun runStartup(): Unit = lock.withLock {
         val s = guarded { settings() } ?: return@withLock
@@ -166,6 +166,8 @@ class RefreshCoordinator(
         var chained = false
         if (startRefreshWanted(effectiveOnStart(p, s), p.lastRefreshedAt, effectiveHours(p, s), clock())) {
             val result = refreshPlaylistFn(id) {}
+            // Stopped: a copied setup is replacing this playlist, so its guide is not wanted either.
+            if (result == ImportResult.Stopped) return
             if (result is ImportResult.Failure &&
                 (result.error == ImportError.AuthFailed || result.error == ImportError.Unreachable)
             ) {

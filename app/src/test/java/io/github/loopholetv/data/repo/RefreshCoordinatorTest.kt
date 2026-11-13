@@ -313,6 +313,25 @@ class RefreshCoordinatorTest {
     }
 
     @Test
+    fun skipsEpgWhenACopiedSetupStoppedThePlaylistUpdate() = runTest {
+        given(1, 2)
+        playlistResult = { ImportResult.Stopped }
+        coordinator().runStartup()
+        assertEquals(listOf("p1", "p2"), calls)
+    }
+
+    @Test
+    fun aStoppedUpdateChainsNoEpgAndIsReturnedAsStopped() = runTest {
+        given(1)
+        playlistResult = { ImportResult.Stopped }
+        val c = coordinator()
+        assertEquals(ImportResult.Stopped, c.refreshPlaylist(1))
+        assertEquals(mapOf(1L to ImportResult.Stopped), c.refreshAll())
+        c.runDue(RefreshKind.PLAYLIST)
+        assertEquals(listOf("p1", "p1", "p1"), calls)
+    }
+
+    @Test
     fun runsEpgAfterOtherPlaylistFailures() = runTest {
         given(1)
         playlistResult = { ImportResult.Failure(ImportError.EmptyPlaylist, "x") }

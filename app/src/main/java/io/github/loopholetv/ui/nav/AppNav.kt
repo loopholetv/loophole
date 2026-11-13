@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -32,6 +33,7 @@ import io.github.loopholetv.ui.cast.CastInviteCard
 import io.github.loopholetv.ui.cast.InviteKeys
 import io.github.loopholetv.ui.cast.TvsPanel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.player.rememberInPictureInPicture
 import io.github.loopholetv.shouldCloseAbovePlayerForPip
@@ -59,6 +61,8 @@ import io.github.loopholetv.ui.player.KeepScreenOnWhilePlaying
 import io.github.loopholetv.ui.player.PlayerScreen
 import io.github.loopholetv.ui.search.SearchScreen
 import io.github.loopholetv.ui.settings.SettingsPanel
+import io.github.loopholetv.setup.SetupState
+import io.github.loopholetv.ui.setup.SetupOverlay
 import io.github.loopholetv.ui.theme.Tokens
 
 object Routes {
@@ -73,6 +77,8 @@ object Routes {
     const val TVS = "tvs"
     /** Full-screen video of another TV's cast. */
     const val CAST_FOLLOW = "cast/follow"
+    /** Copying another TV's setup onto this one, from the first-start screen. */
+    const val SETUP_COPY_FROM = "setup/copy-from"
 
     const val ARG_CHANNEL_ID = "channelId"
     const val ARG_SCOPE = "scope"
@@ -154,15 +160,38 @@ private fun NavHostController.leaveFollow() {
  * Every playlist counts, turned on or off: with all of them off the guide stays and says so,
  * so [hasPlaylist] comes from all playlists, never only the enabled ones.
  */
-fun startDestination(hasPlaylist: Boolean): String =
-    if (hasPlaylist) Routes.GUIDE else Routes.ONBOARDING
+fun startDestination(hasPlaylist: Boolean, skipped: Boolean): String =
+    if (hasPlaylist || skipped) Routes.GUIDE else Routes.ONBOARDING
 
 /**
- * App-level rule: with no playlist left, only onboarding makes sense. [currentRoute] null means
- * no destination yet (the graph is still being set up), which never navigates.
+ * App-level rule: with no playlist left, only onboarding makes sense, unless setup was [skipped]
+ * or a setup copy is [copying] (it replaces the playlists, and returns to the guide itself).
+ * [currentRoute] null means no destination yet (the graph is still being set up), which never
+ * navigates.
  */
-fun shouldGoToOnboarding(playlistCount: Int, currentRoute: String?): Boolean =
-    playlistCount == 0 && currentRoute != null && currentRoute != Routes.ONBOARDING
+fun shouldGoToOnboarding(playlistCount: Int, currentRoute: String?, skipped: Boolean = false, copying: Boolean = false): Boolean =
+    !skipped && !copying && playlistCount == 0 && currentRoute != null && currentRoute != Routes.ONBOARDING
+
+/**
+ * The first-start screens, where this TV must not join a cast on its own. No destination yet
+ * (null) counts too, since the first screen may be one of them.
+ */
+fun isFirstStartRoute(route: String?): Boolean =
+    route == null || route == Routes.ONBOARDING || route == Routes.SETUP_COPY_FROM
+
+/**
+ * Holds joining a cast on its own ([hold] true) while [routes] is on a first-start screen, or
+ * while a setup copy is [copying] on any screen (a following TV would cover the copy's screens).
+ */
+suspend fun holdAutoJoin(
+    routes: kotlinx.coroutines.flow.Flow<String?>,
+    copying: kotlinx.coroutines.flow.Flow<Boolean>,
+    hold: (Boolean) -> Unit,
+) {
+    kotlinx.coroutines.flow.combine(routes.map(::isFirstStartRoute), copying) { firstStart, copy -> firstStart || copy }
+        .distinctUntilChanged()
+        .collect(hold)
+}
 
 @Composable
 fun AppNav(
@@ -174,7 +203,9 @@ fun AppNav(
     val container = (LocalContext.current.applicationContext as LoopholeApp).container
     LaunchedEffect(navController, container) {
         container.playlistRepository.playlists().map { it.size }.distinctUntilChanged().collect { count ->
-            if (shouldGoToOnboarding(count, navController.currentDestination?.route)) {
+            val skipped = runCatching { container.settingsStore.current().onboardingSkipped }.getOrDefault(false)
+            val copying = container.setup.state.value !is SetupState.Idle
+            if (shouldGoToOnboarding(count, navController.currentDestination?.route, skipped, copying)) {
                 container.playback.stop()
                 navController.navigate(Routes.ONBOARDING) { popUpTo(navController.graph.id) { inclusive = true } }
             }
@@ -191,6 +222,14 @@ fun AppNav(
         }
     }
     val cast = container.castController
+    // Discovery runs on every screen (copying a setup needs it), but on the first-start screens
+    // and during a setup copy this TV doesn't join a cast on its own.
+    LaunchedEffect(navController, container) {
+        holdAutoJoin(
+            navController.currentBackStackEntryFlow.map { it.destination.route },
+            container.setup.state.map { it !is SetupState.Idle },
+        ) { container.autoJoinHold.set(it) }
+    }
     val toastContext = LocalContext.current
     // Messages about casts (ended, lost, can't play...), wherever the app is.
     LaunchedEffect(cast, toastContext) {
@@ -235,10 +274,24 @@ fun AppNav(
             modifier = Modifier.fillMaxSize().background(Tokens.Background),
         ) {
             composable(Routes.ONBOARDING) {
-                AddPlaylistScreen(onDone = {
-                    navController.navigate(Routes.GUIDE) { popUpTo(Routes.ONBOARDING) { inclusive = true } }
-                })
+                val scope = rememberCoroutineScope()
+                AddPlaylistScreen(
+                    onDone = {
+                        navController.navigate(Routes.GUIDE) { popUpTo(Routes.ONBOARDING) { inclusive = true } }
+                    },
+                    onSkip = {
+                        scope.launch {
+                            // If the flag can't be saved the guide still opens; it just won't be remembered.
+                            runCatching { container.settingsStore.update { it.copy(onboardingSkipped = true) } }
+                            navController.navigate(Routes.GUIDE) { popUpTo(Routes.ONBOARDING) { inclusive = true } }
+                        }
+                    },
+                    onCopyFromAnotherTv = { navController.openCopyFrom() },
+                )
             }
+            // Back returns to where it opened (first start, or the guide with no playlist); the copy
+            // itself shows in the setup screens.
+            copyFromDestination(cast.peers, container.setup)
             composable(Routes.GUIDE) {
                 // Last channel on start: at most once per process start (the slot empties on the
                 // first look, wherever the app is); the guide stays underneath for Back.
@@ -263,6 +316,7 @@ fun AppNav(
                     onSettings = { navController.navigate(Routes.SETTINGS) },
                     onSearch = { navController.navigate(Routes.SEARCH) { launchSingleTop = true } },
                     onTvs = { navController.navigate(Routes.TVS) { launchSingleTop = true } },
+                    onCopyFromAnotherTv = { navController.openCopyFrom() },
                 )
             }
             // Only Back does anything here; the cast plays through the shared player.
@@ -337,6 +391,8 @@ fun AppNav(
             )
         }
     }
+    // Copying a setup between TVs: a window of its own above every screen, panel and the card.
+    SetupOverlay(setup = container.setup, hidden = inPip, onReturnToGuide = { navController.returnToGuide() })
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
