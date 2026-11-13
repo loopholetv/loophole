@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import io.github.loopholetv.util.takeCodePoints
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
@@ -24,7 +25,7 @@ import kotlinx.coroutines.flow.map
 fun Flow<AppSettings>.orDefaultsOnError(): Flow<AppSettings> = catch { emit(AppSettings()) }
 
 /** DataStore-backed [AppSettings]. Preference key names are persisted: never rename. */
-class SettingsStore(private val store: DataStore<Preferences>) {
+class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags {
 
     val settings: Flow<AppSettings> = flow {
         migrate()
@@ -52,6 +53,24 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             id = stored ?: UUID.randomUUID().toString().also { prefs[CAST_SELF_ID] = it }
         }
         return id
+    }
+
+    /** Whether the one-off film and show fill after the update is done (or was never needed). Not part of [AppSettings]. */
+    override suspend fun isFilled(): Boolean = store.data.first()[VOD_FILLED] == true
+
+    override suspend fun markFilled(skipped: Set<Long>) {
+        store.edit {
+            it[VOD_FILLED] = true
+            it[VOD_FILL_SKIPPED] = skipped.mapTo(HashSet()) { id -> id.toString() }
+        }
+    }
+
+    /** Playlists the fill left out because they were turned off, still to refresh when turned on. */
+    override suspend fun skipped(): Set<Long> =
+        store.data.first()[VOD_FILL_SKIPPED].orEmpty().mapNotNullTo(HashSet()) { it.toLongOrNull() }
+
+    override suspend fun clearSkipped(id: Long) {
+        store.edit { it[VOD_FILL_SKIPPED] = it[VOD_FILL_SKIPPED].orEmpty() - id.toString() }
     }
 
     /** One-off upgrade step, run before the first read. */
@@ -245,6 +264,8 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         val CATCHUP_LEFT_RIGHT_SEEK = booleanPreferencesKey("catchup_left_right_seek")
         val CATCHUP_LEFT_REWINDS_LIVE = booleanPreferencesKey("catchup_left_rewinds_live")
         val KEY_BINDINGS = stringPreferencesKey("key_bindings")
+        val VOD_FILLED = booleanPreferencesKey("vod_filled")
+        val VOD_FILL_SKIPPED = stringSetPreferencesKey("vod_fill_skipped")
         val EPG_PAST_DAYS_AUTO_APPLIED = booleanPreferencesKey("epg_past_days_auto_applied")
     }
 }

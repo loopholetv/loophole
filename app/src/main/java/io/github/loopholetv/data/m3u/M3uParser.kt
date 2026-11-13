@@ -98,6 +98,7 @@ object M3uParser {
                                 catchupSource = nonBlank(a["catchup-source"]) ?: nonBlank(defaults["catchup-source"]),
                                 catchupCorrectionMinutes = correctionMinutes(a["catchup-correction"])
                                     ?: correctionMinutes(defaults["catchup-correction"]) ?: 0,
+                                type = a["tvg-type"],
                             )
                         )
                     }

@@ -3,6 +3,8 @@ package io.github.loopholetv.ui.search
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ProgrammeEntity
 import io.github.loopholetv.data.db.ProgrammeHit
+import io.github.loopholetv.data.vod.FilmCard
+import io.github.loopholetv.data.vod.ShowCard
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -35,7 +37,12 @@ class SearchViewModelTest {
     private var channelRows: suspend (String) -> List<ChannelEntity> = { emptyList() }
     private var programmeRows: suspend (String) -> List<ProgrammeHit> = { emptyList() }
 
+    private var filmRows: suspend (String) -> List<FilmCard> = { emptyList() }
+    private var showRows: suspend (String) -> List<ShowCard> = { emptyList() }
+
     private fun vm() = SearchViewModel(
+        searchFilms = { p -> filmRows(p) },
+        searchShows = { p -> showRows(p) },
         searchChannels = { p -> channelCalls += p; channelRows(p) },
         searchProgrammes = { p, t -> programmeCalls += p to t; programmeRows(p) },
         clock = { now },
@@ -95,6 +102,59 @@ class SearchViewModelTest {
         vm.setQuery("news")
         settle()
         assertEquals(SearchUi.Results(listOf(c), listOf(p)), vm.results.value)
+    }
+
+    @Test fun resultsIncludeFilmsAndShows() = runTest(dispatcher) {
+        val f = FilmCard(1, "f1", "News: The Movie", null)
+        val sh = ShowCard(1, "s1", "News Hour", null, "Other list")
+        filmRows = { listOf(f) }
+        showRows = { listOf(sh) }
+        val vm = vm()
+        vm.setQuery("news")
+        settle()
+        assertEquals(SearchUi.Results(emptyList(), emptyList(), films = listOf(f), shows = listOf(sh)), vm.results.value)
+    }
+
+    @Test fun onlyFilmMatchIsNotEmpty() = runTest(dispatcher) {
+        val f = FilmCard(1, "f1", "News: The Movie", null)
+        filmRows = { listOf(f) }
+        val vm = vm()
+        vm.setQuery("news")
+        settle()
+        assertEquals(SearchUi.Results(emptyList(), emptyList(), films = listOf(f)), vm.results.value)
+    }
+
+    @Test fun channelsAppearBeforeFilmsResolve() = runTest(dispatcher) {
+        val c = channel(1, "News 24")
+        val gate = CompletableDeferred<Unit>()
+        channelRows = { listOf(c) }
+        filmRows = { gate.await(); listOf(FilmCard(1, "f1", "News: The Movie", null)) }
+        val vm = vm()
+        vm.setQuery("news")
+        settle()
+        assertEquals(SearchUi.Results(listOf(c), emptyList(), programmesLoading = true), vm.results.value)
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(listOf(FilmCard(1, "f1", "News: The Movie", null)), (vm.results.value as SearchUi.Results).films)
+    }
+
+    @Test fun failingFilmSearchKeepsChannelResults() = runTest(dispatcher) {
+        val c = channel(1, "News 24")
+        channelRows = { listOf(c) }
+        filmRows = { error("disk I/O") }
+        val vm = vm()
+        vm.setQuery("news")
+        settle()
+        assertEquals(SearchUi.Results(listOf(c), emptyList()), vm.results.value)
+    }
+
+    @Test fun onlyShowMatchIsNotEmpty() = runTest(dispatcher) {
+        val sh = ShowCard(1, "s1", "News Hour", null, null)
+        showRows = { listOf(sh) }
+        val vm = vm()
+        vm.setQuery("news")
+        settle()
+        assertEquals(SearchUi.Results(emptyList(), emptyList(), shows = listOf(sh)), vm.results.value)
     }
 
     @Test fun channelsAppearBeforeProgrammesFinish() = runTest(dispatcher) {

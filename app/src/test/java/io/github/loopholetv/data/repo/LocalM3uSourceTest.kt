@@ -91,7 +91,7 @@ class LocalM3uSourceTest {
 
     private suspend fun LocalM3uSource.collect(): List<ImportedChannel> {
         val out = mutableListOf<ImportedChannel>()
-        stream { out += it }
+        stream { if (it is ImportedChannel) out += it }
         return out
     }
 

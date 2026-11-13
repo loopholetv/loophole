@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
                     ),
                 )
             }
-            if (exists) app.startupRefresher.start()
+            if (exists) app.startupRefresher.start() else app.startupRefresher.markFilledWithoutPlaylists()
             skipped = app.container.settingsStore.settings.orDefaultsOnError().first().onboardingSkipped
             hasPlaylist.value = exists
         }

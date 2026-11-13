@@ -20,6 +20,7 @@ import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.data.catchup.CatchupUrls
 import io.github.loopholetv.data.catchup.XtreamArchive
 import io.github.loopholetv.data.catchup.catchup
+import io.github.loopholetv.data.vod.VodPlayable
 import io.github.loopholetv.player.catchup.ArchiveRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -45,6 +46,10 @@ interface StreamResolver {
 
     /** Resolves [channel]'s archive for [request]; null when this channel can't play that time. */
     suspend fun resolveArchive(channel: ChannelEntity, request: ArchiveRequest, now: Instant): ResolvedStream? = null
+
+    /** The stream for a film or episode: its stored URL with its own user agent and referrer. */
+    suspend fun resolveVod(item: VodPlayable): ResolvedStream =
+        ResolvedStream(item.streamUrl, item.userAgent ?: "", item.referrer?.let { mapOf("Referer" to it) } ?: emptyMap())
 }
 
 /** The stored URL with the channel's own user agent and referrer. */
@@ -53,6 +58,12 @@ class DirectResolver(private val defaultUa: String) : StreamResolver {
         url = channel.streamUrl,
         userAgent = UserAgents.forStream(channel.userAgent, null, null, defaultUa),
         headers = refererHeader(channel),
+    )
+
+    override suspend fun resolveVod(item: VodPlayable) = ResolvedStream(
+        url = item.streamUrl,
+        userAgent = UserAgents.forStream(item.userAgent, null, null, defaultUa),
+        headers = refererHeader(item.referrer),
     )
 }
 
@@ -103,6 +114,17 @@ class PlaylistStreamResolver(
             url = rewriteForProxy(url, parseUdpProxy(s.udpProxy)),
             userAgent = UserAgents.forStream(channel.userAgent, p?.userAgent, s.userAgent, defaultUa),
             headers = refererHeader(channel),
+        )
+    }
+
+    /** A film or episode's stored URL, with the same user agent choice as [resolve]. */
+    override suspend fun resolveVod(item: VodPlayable): ResolvedStream {
+        val p = playlist(item.ref.playlistId)
+        val s = settings()
+        return ResolvedStream(
+            url = item.streamUrl,
+            userAgent = UserAgents.forStream(item.userAgent, p?.userAgent, s.userAgent, defaultUa),
+            headers = refererHeader(item.referrer),
         )
     }
 
@@ -237,8 +259,10 @@ class PlaylistStreamResolver(
 // Template placeholders that read the current time rather than the programme's.
 private val NOW_PLACEHOLDER = Regex("""\{(?:offset|lutc|now|timestamp)(?::[^{}]*)?\}""")
 
-private fun refererHeader(channel: ChannelEntity): Map<String, String> =
-    channel.referrer?.takeIf { it.isNotBlank() }?.let { mapOf("Referer" to it) } ?: emptyMap()
+private fun refererHeader(channel: ChannelEntity): Map<String, String> = refererHeader(channel.referrer)
+
+private fun refererHeader(referrer: String?): Map<String, String> =
+    referrer?.takeIf { it.isNotBlank() }?.let { mapOf("Referer" to it) } ?: emptyMap()
 
 private fun zoneOf(id: String): ZoneId? = try {
     ZoneId.of(id.trim())

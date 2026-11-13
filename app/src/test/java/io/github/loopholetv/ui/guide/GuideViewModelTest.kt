@@ -121,6 +121,8 @@ class GuideViewModelTest {
         }
     }
     private val playlistsOn = MutableStateFlow(1)
+    private val hasFilms = MutableStateFlow(false)
+    private val hasShows = MutableStateFlow(false)
     private val previewHold = PreviewHold()
     private val sleepExpired = MutableSharedFlow<Unit>()
     private var lookups: List<ChannelEntity> = all
@@ -159,6 +161,8 @@ class GuideViewModelTest {
         saveScope = { saved += it },
         edits = dbEdits,
         playlistsOn = playlistsOn,
+        hasFilms = hasFilms,
+        hasShows = hasShows,
         previewHold = previewHold,
         sleepExpired = sleepExpired,
         keyBindings = bindings,
@@ -602,6 +606,28 @@ class GuideViewModelTest {
         assertTrue(vm.shiftWindow(1))
         assertEquals(start.plusSeconds(1800), vm.window.value.start)
         assertTrue(!vm.shiftWindow(1))
+    }
+
+    @Test fun railHidesEmptyVod() = runTest {
+        val vm = vm()
+        runCurrent()
+
+        assertTrue(RailItem.MOVIES !in vm.railItems.value)
+        assertTrue(RailItem.SERIES !in vm.railItems.value)
+        assertTrue(RailItem.TV in vm.railItems.value)
+    }
+
+    @Test fun railShowsMoviesWhenFilmsExist() = runTest {
+        val vm = vm()
+        hasFilms.value = true
+        runCurrent()
+
+        assertTrue(RailItem.MOVIES in vm.railItems.value)
+        assertTrue(RailItem.SERIES !in vm.railItems.value)
+        assertEquals(RailItem.TV, vm.railItems.value[vm.railItems.value.indexOf(RailItem.MOVIES) - 1])
+        hasShows.value = true
+        runCurrent()
+        assertTrue(RailItem.SERIES in vm.railItems.value)
     }
 
     @Test fun latestStopIsOneShotNotCollectedPerChange() = runTest {

@@ -127,8 +127,42 @@ val MIGRATION_5_6: Migration = SqlMigration(
     "ALTER TABLE `channels` ADD COLUMN `catchupCorrectionMinutes` INTEGER NOT NULL DEFAULT 0",
 )
 
+/**
+ * v6 → v7: on-demand tables `vod_films`, `vod_episodes`, `vod_shows` and `vod_progress`. Progress
+ * has no foreign key so it survives a refresh that drops the item. SQL matches Room's schema 7 export.
+ */
+val MIGRATION_6_7: Migration = SqlMigration(
+    6,
+    7,
+    """CREATE TABLE IF NOT EXISTS `vod_films` (`playlistId` INTEGER NOT NULL, `key` TEXT NOT NULL,
+       `name` TEXT NOT NULL, `category` TEXT NOT NULL, `logo` TEXT, `streamUrl` TEXT NOT NULL, `userAgent` TEXT,
+       `referrer` TEXT, `tvgId` TEXT, `position` INTEGER NOT NULL, `firstSeenAt` INTEGER NOT NULL,
+       PRIMARY KEY(`playlistId`, `key`),
+       FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )""",
+    "CREATE INDEX IF NOT EXISTS `index_vod_films_playlistId_category_position` ON `vod_films` (`playlistId`, `category`, `position`)",
+    "CREATE INDEX IF NOT EXISTS `index_vod_films_category_playlistId_position` ON `vod_films` (`category`, `playlistId`, `position`)",
+    "CREATE INDEX IF NOT EXISTS `index_vod_films_firstSeenAt` ON `vod_films` (`firstSeenAt`)",
+    """CREATE TABLE IF NOT EXISTS `vod_episodes` (`playlistId` INTEGER NOT NULL, `key` TEXT NOT NULL,
+       `showKey` TEXT NOT NULL, `groupTitle` TEXT NOT NULL, `name` TEXT NOT NULL, `season` INTEGER, `episode` INTEGER,
+       `logo` TEXT, `streamUrl` TEXT NOT NULL, `userAgent` TEXT, `referrer` TEXT, `tvgId` TEXT,
+       `position` INTEGER NOT NULL, `firstSeenAt` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `key`),
+       FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )""",
+    "CREATE INDEX IF NOT EXISTS `index_vod_episodes_playlistId_showKey` ON `vod_episodes` (`playlistId`, `showKey`)",
+    "CREATE INDEX IF NOT EXISTS `index_vod_episodes_firstSeenAt` ON `vod_episodes` (`firstSeenAt`)",
+    """CREATE TABLE IF NOT EXISTS `vod_shows` (`playlistId` INTEGER NOT NULL, `key` TEXT NOT NULL,
+       `name` TEXT NOT NULL, `groupTitle` TEXT NOT NULL, `category` TEXT, `logo` TEXT, `firstSeenAt` INTEGER NOT NULL,
+       `position` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `key`),
+       FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )""",
+    "CREATE INDEX IF NOT EXISTS `index_vod_shows_category_name` ON `vod_shows` (`category`, `name`)",
+    "CREATE INDEX IF NOT EXISTS `index_vod_shows_name` ON `vod_shows` (`name`)",
+    """CREATE TABLE IF NOT EXISTS `vod_progress` (`kind` TEXT NOT NULL, `playlistId` INTEGER NOT NULL,
+       `key` TEXT NOT NULL, `positionMs` INTEGER NOT NULL, `durationMs` INTEGER, `watched` INTEGER NOT NULL,
+       `lastWatchedAt` INTEGER NOT NULL, PRIMARY KEY(`kind`, `playlistId`, `key`))""",
+    "CREATE INDEX IF NOT EXISTS `index_vod_progress_lastWatchedAt` ON `vod_progress` (`lastWatchedAt`)",
+)
+
 val ALL_MIGRATIONS: Array<Migration> =
-    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */
 private class SqlMigration(from: Int, to: Int, private vararg val statements: String) : Migration(from, to) {

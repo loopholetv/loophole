@@ -23,7 +23,7 @@ import java.io.Closeable
 /** An opened source (HTTP status / login already checked) whose channels can be streamed once. */
 internal interface ChannelSource : Closeable {
     /** Streams channels to [emit] (called on an IO thread). Returns the source's EPG URLs, newline-joined. */
-    suspend fun stream(emit: (ImportedChannel) -> Unit): String
+    suspend fun stream(emit: (ImportItem) -> Unit): String
 
     /** The error to report when [stream] produced no usable channel. */
     fun noChannelsError(): ImportError
@@ -96,11 +96,11 @@ private class M3uSource(
 ) : ChannelSource {
     @Volatile private var rawEntries = 0
 
-    override suspend fun stream(emit: (ImportedChannel) -> Unit): String {
+    override suspend fun stream(emit: (ImportItem) -> Unit): String {
         val header = blockingCall(call) {
             M3uParser.parse(response.body.byteStream()) { entry ->
                 rawEntries++
-                entry.toImported()?.let(emit)
+                entry.toImportItem()?.let(emit)
             }
         }
         return header.epgUrls.joinToString("\n")
@@ -156,7 +156,7 @@ internal class XtreamSourceOpener(private val client: XtreamClient) {
         val account = client.authenticate(creds, userAgent)
         val categories = client.liveCategories(creds, userAgent).associate { it.id to it.name }
         return object : ChannelSource {
-            override suspend fun stream(emit: (ImportedChannel) -> Unit): String {
+            override suspend fun stream(emit: (ImportItem) -> Unit): String {
                 client.liveStreams(creds, userAgent) { s -> s.toImported(creds, categories)?.let(emit) }
                 return client.epgUrl(creds)
             }

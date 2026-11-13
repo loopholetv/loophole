@@ -24,7 +24,7 @@ internal class StalkerSource(
     private val cfg: PortalConfig,
 ) : ChannelSource {
     /** The portal guide isn't a URL: it is announced by the playlist type ([PORTAL_EPG_SOURCE]). */
-    override suspend fun stream(emit: (ImportedChannel) -> Unit): String {
+    override suspend fun stream(emit: (ImportItem) -> Unit): String {
         client.channels(session, cfg) { c ->
             emit(
                 ImportedChannel(

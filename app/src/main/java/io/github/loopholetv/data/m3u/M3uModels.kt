@@ -17,4 +17,6 @@ data class M3uEntry(
     val catchupSource: String?,
     /** The playlist's correction in minutes (from decimal hours); archive times are moved back by this much. */
     val catchupCorrectionMinutes: Int = 0,
+    /** The `tvg-type` attribute, e.g. `movie` or `series`. */
+    val type: String? = null,
 )

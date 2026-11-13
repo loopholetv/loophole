@@ -2,6 +2,7 @@ package io.github.loopholetv.cast
 
 import androidx.core.net.toUri
 import io.github.loopholetv.data.db.ChannelEntity
+import io.github.loopholetv.data.vod.VodPlayable
 import io.github.loopholetv.player.ResolvedStream
 import io.github.loopholetv.player.StreamResolver
 import io.github.loopholetv.player.catchup.ArchiveRequest
@@ -36,6 +37,9 @@ class CastingResolver(internal val inner: StreamResolver, private val host: Cast
         }
         return relay(real, archive = true)
     }
+
+    /** Films and episodes are never relayed: other TVs only follow live and archive streams. */
+    override suspend fun resolveVod(item: VodPlayable): ResolvedStream = inner.resolveVod(item)
 
     override suspend fun keepAlive(channel: ChannelEntity) = inner.keepAlive(channel)
 

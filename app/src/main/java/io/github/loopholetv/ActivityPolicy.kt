@@ -17,7 +17,7 @@ fun shouldEnterPipOnLeave(pipOnHome: Boolean, playerShowing: Boolean, state: Pla
  * panel, the playlist form) is closed. [currentRoute] null means no destination yet.
  */
 fun shouldCloseAbovePlayerForPip(inPip: Boolean, currentRoute: String?): Boolean =
-    inPip && currentRoute != null && currentRoute != Routes.PLAYER
+    inPip && currentRoute != null && currentRoute != Routes.PLAYER && currentRoute != Routes.VOD_PLAYER
 
 /**
  * When the sleep timer stops playback while the picture-in-picture window is open, the window is

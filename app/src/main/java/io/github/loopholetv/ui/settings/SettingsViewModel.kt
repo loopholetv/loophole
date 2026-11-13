@@ -118,10 +118,15 @@ private data class Ops(
     val maxCatchupDays: Int? = null,
 )
 
+/** Films and shows a playlist holds. */
+data class VodCounts(val films: Int = 0, val shows: Int = 0)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModel(
     private val playlists: Flow<List<PlaylistEntity>>,
     channelCounts: Flow<Map<Long, Int>>,
+    /** Films and shows per playlist (absent = none); shown beside the channel count. */
+    vodCounts: Flow<Map<Long, VodCounts>> = flowOf(emptyMap()),
     epgStatus: (Long) -> Flow<EpgStatusEntity?>,
     /** RefreshCoordinator.refreshPlaylist(chainEpg = false): the guide update after it is the VM's ([updatePlaylist]). */
     private val refreshPlaylist: suspend (Long, (Int) -> Unit) -> ImportResult,
@@ -176,9 +181,14 @@ class SettingsViewModel(
             else combine(ids.map { id -> combine(epgStatus(id), epgSources(id)) { s, src -> id to (s to src) } }) { it.toMap() }
         }
 
-    val state: StateFlow<SettingsUi> = combine(playlists, channelCounts, perPlaylist, ops, settings) { list, counts, epg, o, opts ->
+    private val counts = combine(channelCounts, vodCounts) { channels, vod -> channels to vod }
+
+    val state: StateFlow<SettingsUi> = combine(playlists, counts, perPlaylist, ops, settings) { list, (channels, vod), epg, o, opts ->
         val names = list.associate { it.id to it.name }
-        val rows = list.map { rowText.row(it, counts[it.id] ?: 0, o.playlist[it.id] ?: PlaylistOp.Idle) }
+        val rows = list.map {
+            val v = vod[it.id] ?: VodCounts()
+            rowText.row(it, channels[it.id] ?: 0, o.playlist[it.id] ?: PlaylistOp.Idle, v.films, v.shows)
+        }
         val epgUi = list.map { p -> epgBuilder.build(p, epg[p.id]?.first, epg[p.id]?.second.orEmpty(), p.id in o.epgUpdating) }
         SettingsUi(
             playlists = rows,
@@ -188,7 +198,7 @@ class SettingsViewModel(
             confirmClearEpg = o.confirmClearEpg,
             epgCleared = o.epgCleared,
             updatingAll = o.updateAll != null,
-            updateAllText = o.updateAll?.playlistId?.let { "Updating ${names[it].orEmpty()}… ${channelsGrouped(o.updateAll.count, locale)}" },
+            updateAllText = o.updateAll?.playlistId?.let { "Updating ${names[it].orEmpty()}… ${contentCounts(o.updateAll.count, vod[it]?.films ?: 0, vod[it]?.shows ?: 0, locale)}" },
             udpProxyError = o.udpProxyError,
             confirmRemoveSource = o.confirmRemoveSource?.let { sid -> epgUi.flatMap { it.sources }.firstOrNull { it.id == sid } },
             automaticPastDays = effectivePastDays(AUTO_PAST_DAYS, o.maxCatchupDays),
@@ -473,6 +483,11 @@ class SettingsViewModel(
                 return SettingsViewModel(
                     playlists = c.playlistRepository.playlists(),
                     channelCounts = c.db.channelDao().countsByPlaylist().map { l -> l.associate { it.playlistId to it.count } },
+                    vodCounts = combine(c.db.vodBrowseDao().filmCountsByPlaylist(), c.db.vodBrowseDao().showCountsByPlaylist()) { f, sh ->
+                        val films = f.associate { it.playlistId to it.count }
+                        val shows = sh.associate { it.playlistId to it.count }
+                        (films.keys + shows.keys).associateWith { VodCounts(films[it] ?: 0, shows[it] ?: 0) }
+                    },
                     epgStatus = c.epgRepository::status,
                     refreshPlaylist = { id, p -> c.refreshCoordinator.refreshPlaylist(id, p, chainEpg = false) },
                     deletePlaylist = { id -> c.playlistRepository.delete(id) },
@@ -487,7 +502,11 @@ class SettingsViewModel(
                     updateStatus = c.updater.status,
                     performUpdateAction = { c.updater.perform(it) },
                     rename = { id, n -> c.playlistRepository.rename(id, n) },
-                    setEnabled = { id, on -> c.channelEdits.setPlaylistEnabled(id, on) },
+                    setEnabled = { id, on ->
+                        c.channelEdits.setPlaylistEnabled(id, on)
+                        // A playlist the film and show fill left out while it was off is filled now.
+                        if (on) c.vodFill.afterEnabled(id)
+                    },
                     setPlaylistUserAgent = { id, ua -> c.playlistRepository.setUserAgent(id, ua) },
                     setUpdateOptions = { id, h, s -> c.playlistRepository.setUpdateOptions(id, h, s) },
                     refreshAll = { p -> c.refreshCoordinator.refreshAll(p) },

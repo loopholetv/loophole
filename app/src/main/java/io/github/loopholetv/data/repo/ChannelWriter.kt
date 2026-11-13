@@ -32,7 +32,7 @@ internal data class ImportedChannel(
     val catchupCorrectionMinutes: Int = 0,
     /** MAC portal: the stream needs a `create_link` at play time. */
     val needsLink: Boolean = false,
-)
+) : ImportItem
 
 internal fun String?.blankToNull(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
 

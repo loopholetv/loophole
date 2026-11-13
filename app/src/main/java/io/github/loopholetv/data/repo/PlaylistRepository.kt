@@ -15,6 +15,8 @@ import io.github.loopholetv.data.stalker.StalkerUnreachableException
 import io.github.loopholetv.data.stalker.normaliseMac
 import io.github.loopholetv.data.stalker.portalConfig
 import io.github.loopholetv.data.stalker.stalkerSecrets
+import io.github.loopholetv.data.vod.ORPHAN_PROGRESS_DAYS
+import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.xtream.XtreamAuthException
 import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.data.xtream.XtreamCredentials
@@ -34,8 +36,12 @@ import okhttp3.OkHttpClient
 import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+
+/** The films' and episodes' keys with the name and category (group) that identify them across a re-key. */
+private class VodNameGroups(val films: List<KeyNameGroup>, val episodes: List<KeyNameGroup>)
 
 /** A new source for an existing playlist ([PlaylistRepository.updateSource]); the type may change. */
 sealed interface SourceEdit {
@@ -82,6 +88,8 @@ class PlaylistRepository internal constructor(
     private val playlistDao = db.playlistDao()
     private val channelDao = db.channelDao()
     private val maintenance = db.maintenanceDao()
+    private val vodDao = db.vodWriteDao()
+    private val vodProgress = db.vodProgressDao()
     private val m3u = M3uSourceOpener(http)
     private val xtream = XtreamSourceOpener(xtream)
     private val mutex = Mutex()
@@ -247,6 +255,7 @@ class PlaylistRepository internal constructor(
             val playlist = playlistDao.byId(playlistId)
             db.withTransaction {
                 playlistDao.delete(playlistId)
+                vodProgress.deleteForPlaylist(playlistId)
                 overlay.renumber()
                 maintenance.deleteUnreferencedProgrammes()
             }
@@ -335,11 +344,24 @@ class PlaylistRepository internal constructor(
         val rekey = row?.rekeyPending == true
         val before = if (rekey) maintenance.keyNameGroups(id) else emptyList()
         val existing = channelDao.keyIds(id)
+        val vodBefore = if (rekey) vodNameGroups(id) else null
         val writer = ChannelWriter(channelDao, id, existing, progress)
-        val epgUrls = pipe(produce = { emit -> source.stream(emit) }, consume = { writer.add(it) })
+        val vodWriter = VodWriter(vodDao, db.channelPrefsDao(), id, now(), rekey)
+        val epgUrls = pipe<ImportItem, String>(
+            produce = { emit -> source.stream(emit) },
+            consume = {
+                when (it) {
+                    is ImportedChannel -> writer.add(it)
+                    is ImportedVod -> vodWriter.add(it)
+                }
+            },
+        )
         val count = writer.finish()
-        if (count == 0) throw ImportFailure(source.noChannelsError(), "The playlist contains no channels")
+        val vodCount = vodWriter.finish()
+        if (count == 0 && vodCount == 0) throw ImportFailure(source.noChannelsError(), "The playlist contains no channels")
         if (rekey) carryOver(id, before, existing)
+        if (vodBefore != null) carryOverProgress(id, vodBefore)
+        vodProgress.deleteOrphans(now().minus(ORPHAN_PROGRESS_DAYS.toLong(), ChronoUnit.DAYS))
         // The writer overwrote the derived columns; re-derive the edits before the transaction commits.
         overlay.applyPlaylist(id); overlay.renumber()
         // A read from the last-good copy isn't a real update: the next scheduled one tries the file again.
@@ -364,6 +386,16 @@ class PlaylistRepository internal constructor(
             if (from in withData) maintenance.rekey(id, from, to)
             oldEpg[from]?.let { maintenance.carryEpgMatch(id, to, it) }
         }
+    }
+
+    private suspend fun vodNameGroups(id: Long) =
+        VodNameGroups(vodDao.filmNameGroups(id), vodDao.episodeNameGroups(id))
+
+    /** Viewing progress follows its film or episode to the new key, by the same name-and-group rule as channels. */
+    private suspend fun carryOverProgress(id: Long, before: VodNameGroups) {
+        val after = vodNameGroups(id)
+        for ((from, to) in carryOverPlan(before.films, after.films)) vodProgress.rekey(VodKind.MOVIE, id, from, to)
+        for ((from, to) in carryOverPlan(before.episodes, after.episodes)) vodProgress.rekey(VodKind.EPISODE, id, from, to)
     }
 
     /** Gives back a file's read grant unless another playlist still reads the same file. */

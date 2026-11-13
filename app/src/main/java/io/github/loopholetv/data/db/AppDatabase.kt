@@ -9,8 +9,9 @@ import androidx.room.TypeConverters
         PlaylistEntity::class, ChannelEntity::class, ProgrammeEntity::class, EpgStatusEntity::class,
         EpgPendingEntity::class, FavouriteEntity::class, HistoryEntity::class, ChannelPrefsEntity::class,
         GroupPrefsEntity::class, EpgSourceEntity::class, EpgChannelEntity::class,
+        FilmEntity::class, EpisodeEntity::class, ShowEntity::class, VodProgressEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -29,4 +30,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun overlayDao(): OverlayDao
     abstract fun maintenanceDao(): MaintenanceDao
     abstract fun setupDao(): SetupDao
+    abstract fun vodWriteDao(): VodWriteDao
+    abstract fun vodBrowseDao(): VodBrowseDao
+    abstract fun vodProgressDao(): VodProgressDao
 }

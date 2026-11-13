@@ -40,6 +40,20 @@ fun onOff(b: Boolean): String = if (b) "On" else "Off"
 internal fun channelsGrouped(n: Int, locale: Locale): String =
     if (n == 1) "1 channel" else "${NumberFormat.getIntegerInstance(locale).format(n)} channels"
 
+/**
+ * "120 channels · 850 films · 40 shows": zero parts are left out, so a playlist of films only never
+ * reads "0 channels". An empty playlist still reads "0 channels".
+ */
+internal fun contentCounts(channels: Int, films: Int, shows: Int, locale: Locale): String {
+    if (channels == 0 && films == 0 && shows == 0) return channelsGrouped(0, locale)
+    val nf = NumberFormat.getIntegerInstance(locale)
+    return buildList {
+        if (channels > 0) add(channelsGrouped(channels, locale))
+        if (films > 0) add(if (films == 1) "1 film" else "${nf.format(films)} films")
+        if (shows > 0) add(if (shows == 1) "1 show" else "${nf.format(shows)} shows")
+    }.joinToString(" · ")
+}
+
 /** Per-playlist "Update interval" choices; `null` = "Same as default". */
 fun playlistIntervalChoices(general: AppSettings): List<Pair<Int?, String>> =
     listOf<Pair<Int?, String>>(null to "Same as default (${intervalText(general.playlistUpdateHours)})") +

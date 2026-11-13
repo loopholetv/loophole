@@ -65,7 +65,7 @@ fun durationText(d: Duration): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
 }
 
-private fun signedDurationText(d: Duration): String {
+internal fun signedDurationText(d: Duration): String {
     val sign = if (d.isNegative) "−" else "+"
     return sign + durationText(Duration.ofSeconds(abs(d.seconds)))
 }

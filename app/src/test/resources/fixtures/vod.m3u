@@ -1,0 +1,21 @@
+#EXTM3U
+#EXTINF:-1 group-title="Live",Live One
+http://s.test/live/one.ts?token=a
+#EXTINF:-1 group-title="Live",Live Two
+http://s.test/live/two.ts?token=a
+#EXTINF:-1 group-title="Misc",Untagged
+http://s.test/misc/untagged.ts?token=a
+#EXTINF:-1 tvg-type="live" group-title="Live",Tagged Live
+http://s.test/live/tagged.ts?token=a
+#EXTINF:-1 tvg-type="movie" tvg-logo="http://img.test/m1.png" group-title="Action",Film One
+http://s.test/movie/m1.mp4?token=a
+#EXTINF:-1 tvg-type="Movie" group-title="Drama",Film Two
+http://s.test/movie/m2.mp4?token=a
+#EXTINF:-1 tvg-type="series" tvg-logo="http://img.test/a21.png" group-title="Alpha",Alpha S02E01
+http://s.test/series/a21.mp4?token=a
+#EXTINF:-1 tvg-type="series" group-title="Alpha",Alpha S01E02
+http://s.test/series/a12.mp4?token=a
+#EXTINF:-1 tvg-type="series" tvg-logo="http://img.test/a11.png" group-title="Alpha",Alpha S01E01
+http://s.test/series/a11.mp4?token=a
+#EXTINF:-1 tvg-type="series" group-title="Alpha",Alpha Special
+http://s.test/series/special.mp4?token=a

@@ -25,6 +25,11 @@ class M3uParserTest {
 
     private fun single(text: String) = parse(text).second.single()
 
+    @Test fun readsTvgType() {
+        val e = single("#EXTINF:-1 tvg-type=\"movie\" group-title=\"Action\",Film\nhttp://h/1.mkv\n")
+        assertEquals("movie", e.type)
+    }
+
     @Test fun catchupAttributesTolerant() {
         val e = single("#EXTINF:-1 catchup=\"XC\" catchup-days=\"7d\",A\nhttp://example.test/a\n")
         assertEquals("XC", e.catchup)

@@ -1,5 +1,6 @@
 package io.github.loopholetv.ui.nav
 
+import android.os.Bundle
 import java.net.URLEncoder
 import java.time.Instant
 import android.app.Activity
@@ -48,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.navigation.NavHostController
 import androidx.navigation.NavOptions
@@ -61,17 +63,30 @@ import io.github.loopholetv.ui.guide.GuideScreen
 import io.github.loopholetv.ui.onboarding.AddPlaylistScreen
 import io.github.loopholetv.ui.player.KeepScreenOnWhilePlaying
 import io.github.loopholetv.ui.player.PlayerScreen
+import io.github.loopholetv.ui.vod.VodPlayerScreen
+import io.github.loopholetv.data.vod.VodKind
+import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.ui.search.SearchScreen
 import io.github.loopholetv.ui.settings.SettingsPanel
 import io.github.loopholetv.setup.SetupState
 import io.github.loopholetv.ui.setup.SetupOverlay
 import io.github.loopholetv.ui.theme.Tokens
+import io.github.loopholetv.ui.vod.FilmScreen
+import io.github.loopholetv.ui.vod.MoviesScreen
+import io.github.loopholetv.ui.vod.ShowScreen
+import io.github.loopholetv.ui.vod.SeriesScreen
 
 object Routes {
     const val ONBOARDING = "onboarding"
     const val GUIDE = "guide"
     const val SETTINGS = "settings"
     const val SEARCH = "search"
+    const val MOVIES = "movies"
+    const val SERIES = "series"
+    /** A film's page; the key (which may hold slashes) is URL-encoded in the concrete route. */
+    const val FILM = "film/{playlistId}/{key}"
+    /** A show's page; the key is encoded like a film's. */
+    const val SHOW = "show/{playlistId}/{key}"
     const val PLAYER = "player/{channelId}?scope={scope}&archiveFrom={archiveFrom}"
     /** The full-screen add/edit playlist form opened from Settings; `edit` is a playlist id. */
     const val PLAYLIST_FORM = "playlist-form?edit={edit}"
@@ -81,11 +96,40 @@ object Routes {
     const val CAST_FOLLOW = "cast/follow"
     /** Copying another TV's setup onto this one, from the first-start screen. */
     const val SETUP_COPY_FROM = "setup/copy-from"
+    /** Full-screen playback of a film or episode; `start` is where it begins, in ms. */
+    const val VOD_PLAYER = "vod/play/{kind}/{playlistId}/{key}?start={start}"
 
     const val ARG_CHANNEL_ID = "channelId"
     const val ARG_SCOPE = "scope"
     const val ARG_ARCHIVE_FROM = "archiveFrom"
     const val ARG_EDIT = "edit"
+    const val ARG_KIND = "kind"
+    const val ARG_PLAYLIST_ID = "playlistId"
+    const val ARG_KEY = "key"
+    const val ARG_START = "start"
+
+    val vodPlayerArguments = listOf(
+        navArgument(ARG_KIND) { type = NavType.StringType },
+        navArgument(ARG_PLAYLIST_ID) { type = NavType.LongType },
+        navArgument(ARG_KEY) { type = NavType.StringType },
+        navArgument(ARG_START) { type = NavType.LongType; defaultValue = 0L },
+    )
+
+    val vodPageArguments = listOf(
+        navArgument(ARG_PLAYLIST_ID) { type = NavType.LongType },
+        navArgument(ARG_KEY) { type = NavType.StringType },
+    )
+
+    fun film(playlistId: Long, key: String): String = "film/$playlistId/${encodeKey(key)}"
+
+    fun show(playlistId: Long, key: String): String = "show/$playlistId/${encodeKey(key)}"
+
+    /** Encodes a route segment or query value (spaces as %20, which navigation decodes back). */
+    private fun encodeKey(key: String): String = URLEncoder.encode(key, "UTF-8").replace("+", "%20")
+
+    /** Concrete film player route; the key (which may hold slashes) is URL-encoded. */
+    fun vodPlayer(ref: VodRef, startMs: Long): String =
+        "vod/play/${ref.kind.name}/${ref.playlistId}/${encodeKey(ref.key)}?start=$startMs"
 
     /** The player destination's arguments; `archiveFrom` is epoch seconds, [NO_ARCHIVE] for live. */
     val playerArguments = listOf(
@@ -105,12 +149,19 @@ object Routes {
     fun player(channelId: Long, scope: ChannelScope, archiveFrom: Instant? = null): String {
         val query = buildList {
             if (scope != ChannelScope.All) {
-                add("scope=${URLEncoder.encode(scope.toArg(), "UTF-8").replace("+", "%20")}")
+                add("scope=${encodeKey(scope.toArg())}")
             }
             if (archiveFrom != null) add("archiveFrom=${archiveFrom.epochSecond}")
         }
         return "player/$channelId" + if (query.isEmpty()) "" else query.joinToString("&", prefix = "?")
     }
+}
+
+/** The film or episode a [Routes.VOD_PLAYER] entry plays; null when its arguments are missing or unknown. */
+fun vodRefFromArgs(args: Bundle?): VodRef? {
+    val kind = args?.getString(Routes.ARG_KIND)?.let { name -> VodKind.entries.firstOrNull { it.name == name } } ?: return null
+    val key = args.getString(Routes.ARG_KEY) ?: return null
+    return VodRef(kind, args.getLong(Routes.ARG_PLAYLIST_ID), key)
 }
 
 /** The player's `archiveFrom` argument: [NO_ARCHIVE] (Navigation can't make a Long nullable) means live. */
@@ -182,15 +233,22 @@ fun isFirstStartRoute(route: String?): Boolean =
     route == null || route == Routes.ONBOARDING || route == Routes.SETUP_COPY_FROM
 
 /**
- * Holds joining a cast on its own ([hold] true) while [routes] is on a first-start screen, or
+ * Where this TV must not join a cast on its own: the first-start screens, and a film or episode
+ * playing (a stream from the provider is never shared, and following a cast would cut it off).
+ */
+fun holdsAutoJoin(route: String?): Boolean = isFirstStartRoute(route) || route == Routes.VOD_PLAYER
+
+/**
+ * Holds joining a cast on its own ([hold] true) while [routes] is on a screen [holdsOn] names, or
  * while a setup copy is [copying] on any screen (a following TV would cover the copy's screens).
  */
 suspend fun holdAutoJoin(
     routes: kotlinx.coroutines.flow.Flow<String?>,
     copying: kotlinx.coroutines.flow.Flow<Boolean>,
+    holdsOn: (String?) -> Boolean = ::isFirstStartRoute,
     hold: (Boolean) -> Unit,
 ) {
-    kotlinx.coroutines.flow.combine(routes.map(::isFirstStartRoute), copying) { firstStart, copy -> firstStart || copy }
+    kotlinx.coroutines.flow.combine(routes.map(holdsOn), copying) { firstStart, copy -> firstStart || copy }
         .distinctUntilChanged()
         .collect(hold)
 }
@@ -230,6 +288,7 @@ fun AppNav(
         holdAutoJoin(
             navController.currentBackStackEntryFlow.map { it.destination.route },
             container.setup.state.map { it !is SetupState.Idle },
+            ::holdsAutoJoin,
         ) { container.autoJoinHold.set(it) }
     }
     val toastContext = LocalContext.current
@@ -320,6 +379,8 @@ fun AppNav(
                     onSettings = { navController.navigate(Routes.SETTINGS) },
                     onSearch = { navController.navigate(Routes.SEARCH) { launchSingleTop = true } },
                     onTvs = { navController.navigate(Routes.TVS) { launchSingleTop = true } },
+                    onMovies = { navController.navigate(Routes.MOVIES) { launchSingleTop = true } },
+                    onSeries = { navController.navigate(Routes.SERIES) { launchSingleTop = true } },
                     onCopyFromAnotherTv = { navController.openCopyFrom() },
                 )
             }
@@ -328,9 +389,60 @@ fun AppNav(
                 CastFollowScreen(onExit = { navController.leaveFollow() })
             }
             // Full screen (not a dialog): the player opened from a result pops back here.
-            composable(Routes.SEARCH) {
+            composable(Routes.SEARCH) { entry ->
                 SearchScreen(
                     onPlayChannel = { navController.navigate(Routes.player(it, ChannelScope.All)) },
+                    // Only while this entry is resumed: a quick double OK must not push two pages.
+                    onOpenFilm = { p, key ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.film(p, key)) { launchSingleTop = true }
+                        }
+                    },
+                    onOpenShow = { p, key ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.show(p, key)) { launchSingleTop = true }
+                        }
+                    },
+                    onBack = dropUnlessResumed { navController.popBackStack() },
+                )
+            }
+            composable(Routes.MOVIES) {
+                MoviesScreen(
+                    onOpenFilm = { p, key -> navController.navigate(Routes.film(p, key)) { launchSingleTop = true } },
+                    onBack = dropUnlessResumed { navController.popBackStack() },
+                )
+            }
+            composable(Routes.SERIES) {
+                SeriesScreen(
+                    onOpenShow = { p, key -> navController.navigate(Routes.show(p, key)) { launchSingleTop = true } },
+                    onBack = dropUnlessResumed { navController.popBackStack() },
+                )
+            }
+            composable(Routes.FILM, arguments = Routes.vodPageArguments) { entry ->
+                val args = entry.arguments
+                FilmScreen(
+                    playlistId = args?.getLong(Routes.ARG_PLAYLIST_ID) ?: 0L,
+                    key = args?.getString(Routes.ARG_KEY).orEmpty(),
+                    // Only while this entry is resumed: a quick double OK must not push two players.
+                    onPlay = { ref, ms ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.vodPlayer(ref, ms))
+                        }
+                    },
+                    onBack = dropUnlessResumed { navController.popBackStack() },
+                )
+            }
+            composable(Routes.SHOW, arguments = Routes.vodPageArguments) { entry ->
+                val args = entry.arguments
+                ShowScreen(
+                    playlistId = args?.getLong(Routes.ARG_PLAYLIST_ID) ?: 0L,
+                    key = args?.getString(Routes.ARG_KEY).orEmpty(),
+                    // Only while this entry is resumed: a quick double OK must not push two players.
+                    onPlay = { ref, ms ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.vodPlayer(ref, ms))
+                        }
+                    },
                     onBack = dropUnlessResumed { navController.popBackStack() },
                 )
             }
@@ -347,6 +459,19 @@ fun AppNav(
                     // A dialog destination: the video keeps playing underneath.
                     onSettings = dropUnlessResumed { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
                 )
+            }
+            composable(Routes.VOD_PLAYER, arguments = Routes.vodPlayerArguments) { entry ->
+                val ref = vodRefFromArgs(entry.arguments)
+                if (ref == null) {
+                    LaunchedEffect(Unit) { navController.popBackStack() }
+                } else {
+                    VodPlayerScreen(
+                        ref = ref,
+                        startMs = entry.arguments?.getLong(Routes.ARG_START) ?: 0L,
+                        // Not only while resumed: a film that ends in the picture-in-picture window leaves too.
+                        onExit = { if (navController.currentDestination?.route == Routes.VOD_PLAYER) navController.popBackStack() },
+                    )
+                }
             }
             // A dialog destination keeps the previous screen composed underneath; Back pops it.
             dialog(

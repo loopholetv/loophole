@@ -43,7 +43,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.material3.Button
@@ -55,13 +54,16 @@ import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
-import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ProgrammeHit
 import io.github.loopholetv.data.db.displayLogo
 import io.github.loopholetv.data.db.displayName
+import io.github.loopholetv.data.vod.FilmCard
+import io.github.loopholetv.data.vod.ShowCard
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
+import io.github.loopholetv.ui.common.StopPlaybackOnResume
+import io.github.loopholetv.ui.common.rememberAppPlayback
 import io.github.loopholetv.ui.guide.GuideFormat
 import io.github.loopholetv.ui.guide.rememberGuideFormat
 import io.github.loopholetv.ui.onboarding.Field
@@ -70,14 +72,9 @@ import io.github.loopholetv.ui.theme.Tokens
 import kotlinx.coroutines.delay
 import java.time.Instant
 
-/**
- * Search showing (opened from the rail over a guide preview, or back from a player opened here)
- * never has a stream playing behind it. Back to the guide resumes its preview
- * (GuideViewModel.onScreenStarted, Idle branch).
- */
-internal fun stopsPlaybackOnSearchResume(state: PlaybackState): Boolean = state !is PlaybackState.Idle
-
 private fun channelKey(id: Long) = "c:$id"
+private fun filmKey(f: FilmCard) = "f:${f.playlistId}:${f.key}"
+private fun showKey(s: ShowCard) = "s:${s.playlistId}:${s.key}"
 private fun programmeKey(hit: ProgrammeHit) = "p:${hit.programme.id}"
 
 /**
@@ -90,6 +87,8 @@ private fun programmeKey(hit: ProgrammeHit) = "p:${hit.programme.id}"
 @Composable
 fun SearchScreen(
     onPlayChannel: (channelId: Long) -> Unit,
+    onOpenFilm: (playlistId: Long, key: String) -> Unit,
+    onOpenShow: (playlistId: Long, key: String) -> Unit,
     onBack: () -> Unit,
     vm: SearchViewModel = viewModel(factory = SearchViewModel.Factory),
     playback: Playback = rememberAppPlayback(),
@@ -128,10 +127,7 @@ fun SearchScreen(
     }
     // No stream behind Search, whether the guide preview (opened from the rail) or a player
     // opened from here (results reappearing).
-    LifecycleResumeEffect(playback) {
-        if (stopsPlaybackOnSearchResume(playback.state.value)) playback.stop()
-        onPauseOrDispose { }
-    }
+    StopPlaybackOnResume(playback)
     BackHandler(enabled = resultsFocused) { field.tryFocus() }
     BackHandler(enabled = !resultsFocused) { onBack() }
 
@@ -154,7 +150,7 @@ fun SearchScreen(
         Text("Search", style = MaterialTheme.typography.headlineMedium, color = Tokens.OnBackground)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Field(
-                label = "Search channels and programmes", value = query, onChange = vm::setQuery,
+                label = "Search channels, programmes, films and shows", value = query, onChange = vm::setQuery,
                 modifier = Modifier.weight(1f).focusRequester(field), ime = ImeAction.Search,
                 keyboardType = KeyboardType.Text, typing = typing, imeVisible = imeVisible,
                 onActivate = startTyping, busy = false, onDone = stopTyping,
@@ -176,6 +172,8 @@ fun SearchScreen(
                 ui = ui, now = now, format = format, requester = requester,
                 onChannel = { c -> lastOpenedKey = channelKey(c.id); onPlayChannel(c.id) },
                 onProgramme = open,
+                onFilm = { f -> lastOpenedKey = filmKey(f); onOpenFilm(f.playlistId, f.key) },
+                onShow = { sh -> lastOpenedKey = showKey(sh); onOpenShow(sh.playlistId, sh.key) },
             )
         }
     }
@@ -183,12 +181,6 @@ fun SearchScreen(
     details?.let { hit ->
         ProgrammeDetailsDialog(hit, format, onClose = { details = null; refocus = programmeKey(hit) })
     }
-}
-
-@Composable
-private fun rememberAppPlayback(): Playback {
-    val context = LocalContext.current
-    return remember(context) { (context.applicationContext as LoopholeApp).container.playback }
 }
 
 /** Mic button, only when a speech recogniser exists (hidden on most Fire TVs). */
@@ -216,6 +208,8 @@ private fun ColumnScope.ResultsContent(
     requester: (String) -> FocusRequester,
     onChannel: (ChannelEntity) -> Unit,
     onProgramme: (ProgrammeHit) -> Unit,
+    onFilm: (FilmCard) -> Unit,
+    onShow: (ShowCard) -> Unit,
 ) {
     when (ui) {
         SearchUi.Hint -> Message("Type at least 2 letters")
@@ -227,6 +221,22 @@ private fun ColumnScope.ResultsContent(
                 ui.channels.forEach { c ->
                     key(channelKey(c.id)) {
                         ChannelResult(c, Modifier.focusRequester(requester(channelKey(c.id)))) { onChannel(c) }
+                    }
+                }
+            }
+            if (ui.films.isNotEmpty()) {
+                SectionTitle("Films")
+                ui.films.forEach { f ->
+                    key(filmKey(f)) {
+                        TitleResult(f.name, null, f.logo, Modifier.focusRequester(requester(filmKey(f)))) { onFilm(f) }
+                    }
+                }
+            }
+            if (ui.shows.isNotEmpty()) {
+                SectionTitle("Shows")
+                ui.shows.forEach { sh ->
+                    key(showKey(sh)) {
+                        TitleResult(sh.name, sh.playlistName, sh.logo, Modifier.focusRequester(requester(showKey(sh)))) { onShow(sh) }
                     }
                 }
             }
@@ -271,6 +281,20 @@ private fun ChannelResult(channel: ChannelEntity, modifier: Modifier, onClick: (
             }
         },
         headlineContent = { Text(channel.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        modifier = modifier.fillMaxWidth(),
+        colors = resultColors,
+        shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),
+    )
+}
+
+@Composable
+private fun TitleResult(name: String, secondary: String?, logo: String?, modifier: Modifier, onClick: () -> Unit) {
+    ListItem(
+        selected = false,
+        onClick = onClick,
+        leadingContent = { ChannelLogo(logo) },
+        headlineContent = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        supportingContent = secondary?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         modifier = modifier.fillMaxWidth(),
         colors = resultColors,
         shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),

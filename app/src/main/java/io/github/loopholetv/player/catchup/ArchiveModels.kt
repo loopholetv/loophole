@@ -1,6 +1,7 @@
 package io.github.loopholetv.player.catchup
 
 import io.github.loopholetv.data.db.ChannelEntity
+import io.github.loopholetv.data.vod.VodRef
 import java.time.Instant
 
 /** The guide-shown start and end of a programme to replay. */
@@ -22,6 +23,9 @@ sealed interface PlayMode {
 
     /** Following another TV's cast on the home network: no channel, and nothing goes through the resolver. */
     data object Cast : PlayMode
+
+    /** A film or episode: [durationMs] is null while unknown; [ended] once it played to its end. */
+    data class Vod(val ref: VodRef, val durationMs: Long?, val ended: Boolean) : PlayMode
 }
 
 /** A guide programme in shown times; a null [title] means "No information". */

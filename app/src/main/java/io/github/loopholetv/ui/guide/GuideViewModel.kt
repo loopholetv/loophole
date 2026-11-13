@@ -251,6 +251,9 @@ class GuideViewModel(
     playlistsOn: Flow<Int> = flowOf(1),
     /** Whether any playlist exists at all. */
     playlistsExist: Flow<Boolean> = flowOf(true),
+    /** Whether any film / show is available to browse (the rail's Movies / Series). */
+    hasFilms: Flow<Boolean> = flowOf(false),
+    hasShows: Flow<Boolean> = flowOf(false),
     /** Set when the player stopped on purpose (external player, sleep timer): come back idle. */
     private val previewHold: PreviewHold = PreviewHold(),
     /** Fires when the sleep timer has stopped playback. */
@@ -296,6 +299,13 @@ class GuideViewModel(
     /** [groups] with the playlist headings. */
     val groupEntries: StateFlow<List<GroupEntry>> = groups.map(::withHeadings)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** The side rail's entries: Movies and Series only while there are films / shows. */
+    val railItems: StateFlow<List<RailItem>> = combine(hasFilms, hasShows) { films, shows ->
+        RailItem.entries.filter { (it != RailItem.MOVIES || films) && (it != RailItem.SERIES || shows) }
+    }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, RailItem.entries.filter { it != RailItem.MOVIES && it != RailItem.SERIES })
 
     /** Playlists exist but every one is turned off: the grid says so. */
     val allPlaylistsOff: StateFlow<Boolean> = combine(playlistsExist, playlistsOn) { exist, on -> exist && on == 0 }
@@ -1006,6 +1016,8 @@ class GuideViewModel(
                     edits = c.channelEdits.asEditActions(),
                     playlistsOn = playlists.map { list -> list.count { it.enabled } },
                     playlistsExist = playlists.map { it.isNotEmpty() },
+                    hasFilms = c.vod.hasFilms,
+                    hasShows = c.vod.hasShows,
                     previewHold = c.previewHold,
                     sleepExpired = c.sleepTimer.expired,
                     keyBindings = c.settingsStore.settings.map { it.remote.bindings }.distinctUntilChanged(),

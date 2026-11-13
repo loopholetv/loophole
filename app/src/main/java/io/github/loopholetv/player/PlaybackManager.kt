@@ -33,6 +33,7 @@ import io.github.loopholetv.data.settings.normaliseAudioDelay
 import io.github.loopholetv.data.stalker.StalkerAuthException
 import io.github.loopholetv.data.stalker.StalkerLinkException
 import io.github.loopholetv.data.catchup.catchup
+import io.github.loopholetv.data.vod.VodPlayable
 import io.github.loopholetv.player.catchup.ArchiveRequest
 import io.github.loopholetv.player.catchup.PlayMode
 import io.github.loopholetv.player.engine.EngineParts
@@ -142,12 +143,21 @@ interface Playback {
      */
     fun reopen() {}
 
+    /**
+     * Plays a film or episode from [startMs]: releases the current stream first, then opens [item]'s
+     * stream. [state] carries [VOD_CHANNEL_ID] meanwhile and [mode] is [PlayMode.Vod]. Main thread only.
+     */
+    fun playVod(item: VodPlayable, startMs: Long) {}
+
     /** What the player is decoding right now (the stream info card); null when not known. Main thread only. */
     fun streamSnapshot(): StreamSnapshot? = null
 }
 
 /** The channel id [PlaybackState] carries while following another TV's cast. */
 const val CAST_CHANNEL_ID = -2L
+
+/** The channel id [PlaybackState] carries while a film or episode plays. */
+const val VOD_CHANNEL_ID = -3L
 
 /**
  * Busy-style HTTP statuses a provider may answer while it still counts a connection that was just
@@ -188,7 +198,8 @@ private val NOT_PAUSED: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow
  * A live open that fails in a way a fresh connection can fix (an empty or cut-off body, a dropped
  * connection, a server error), or ends, before it has played for [START_GRACE_MS], is released and
  * resolved again after each of [START_RETRY_DELAYS_MS], staying Buffering, before it becomes an error.
- * So is one that has delivered no data at all after [STALL_TIMEOUT_MS], once per open.
+ * So is one that has delivered no data at all after [STALL_TIMEOUT_MS], once per open. A film or
+ * episode ([playVod]) gets the same start retries for failures, but one that ends has simply finished.
  *
  * [playCast] follows another TV's cast through its own [castHttp] client, with this TV's engine and
  * track settings but no resolver, keep-alive, re-mint, switch retry or HLS fallback. A cast stream that
@@ -229,6 +240,10 @@ class PlaybackManager internal constructor(
     override val state: StateFlow<PlaybackState> = _state.asStateFlow()
 
     private var current: ChannelEntity? = null
+
+    /** The film or episode playing in [PlayMode.Vod] (then [current] is null), and where its open starts. */
+    private var currentVod: VodPlayable? = null
+    private var vodStartMs = 0L
 
     /** What [current] plays; null while it is being resolved. Never re-derived from `streamUrl`. */
     private var resolved: ResolvedStream? = null
@@ -320,6 +335,11 @@ class PlaybackManager internal constructor(
         }
         override fun onPlayerError(error: PlaybackException) = refreshState()
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            val vod = _mode.value as? PlayMode.Vod
+            if (vod != null) {
+                if (currentVod != null && resolved != null) refreshVodMode(vod)
+                return
+            }
             val archive = _mode.value as? PlayMode.Archive ?: return
             if (current?.id == archive.channelId && resolved != null) refreshArchiveMode(archive)
         }
@@ -356,7 +376,7 @@ class PlaybackManager internal constructor(
             return
         }
 
-        if (fromArchive) pendingEvict = true
+        if (fromArchive || _mode.value is PlayMode.Vod) pendingEvict = true
         val generation = beginOpen(channel)
         _mode.value = PlayMode.Live
         // Leaving an archive also closes its idle connections before the live link is resolved, even
@@ -382,7 +402,7 @@ class PlaybackManager internal constructor(
      * connections evicted before the cast opens; the engine and track settings are this TV's own.
      */
     override fun playCast(url: String, hls: Boolean) {
-        if (_mode.value is PlayMode.Archive) pendingEvict = true
+        if (_mode.value is PlayMode.Archive || _mode.value is PlayMode.Vod) pendingEvict = true
         prefsJob?.cancel()
         prefsJob = null
         val generation = beginOpen(null)
@@ -390,6 +410,20 @@ class PlaybackManager internal constructor(
         castHls = hls
         _mode.value = PlayMode.Cast
         startCast(url, hls, generation)
+    }
+
+    /**
+     * Plays [item] from [startMs]: always a reconnect. The old stream is released and idle connections
+     * evicted before the film's stream is resolved; no keep-alive runs and nothing is relayed.
+     */
+    override fun playVod(item: VodPlayable, startMs: Long) {
+        prefsJob?.cancel()
+        prefsJob = null
+        val generation = beginOpen(null, stateId = VOD_CHANNEL_ID)
+        currentVod = item
+        vodStartMs = startMs.coerceAtLeast(0)
+        _mode.value = PlayMode.Vod(item.ref, durationMs = null, ended = false)
+        startVodResolve(item, generation)
     }
 
     /**
@@ -418,15 +452,17 @@ class PlaybackManager internal constructor(
 
     /**
      * Releases the old stream first (one connection per account) and resets the per-play state for
-     * [channel] (null: a cast); returns the new play's generation. Nothing is resolved here.
+     * [channel] (null: a cast, or a film with [stateId] [VOD_CHANNEL_ID]); returns the new play's
+     * generation. Nothing is resolved here.
      */
-    private fun beginOpen(channel: ChannelEntity?): Long {
+    private fun beginOpen(channel: ChannelEntity?, stateId: Long = channel?.id ?: CAST_CHANNEL_ID): Long {
         noteRelease()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         cancelJobs()
         val generation = ++playGeneration
         current = channel
+        currentVod = null
         resolved = null
         castUrl = null
         castLoaded = false
@@ -436,7 +472,7 @@ class PlaybackManager internal constructor(
         audioFallbackActive = false
         liveWindowRecoveries.clear()
         _tracks.value = PlayerTracks.NONE
-        _state.value = PlaybackState.Buffering(channel?.id ?: CAST_CHANNEL_ID)
+        _state.value = PlaybackState.Buffering(stateId)
         exoPlayer.playWhenReady = true
         openAfterSwitch = lastReleaseAtMs?.let { clock() - it < SWITCH_WINDOW_MS } == true
         switchRetries = 0
@@ -554,6 +590,36 @@ class PlaybackManager internal constructor(
             val hls = isHlsUrl(stream.url.toUri())
             _mode.value = PlayMode.Archive(channel.id, request, hls = hls)
             load(channel, stream, asHls = hls)
+        }
+    }
+
+    /**
+     * Resolves and loads [item] from [vodStartMs] once idle connections are evicted, with the playback
+     * settings read as [startResolve] reads them and no per-channel overrides. [forceHls] keeps a
+     * reopen on HLS when the previous open needed the fallback; [newPlay] is false for a retry of the
+     * same film, which keeps the current track choices.
+     */
+    private fun startVodResolve(item: VodPlayable, generation: Long, forceHls: Boolean = false, newPlay: Boolean = true) {
+        val keepChoices = restartChoices
+        restartChoices = null
+        resolveJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (!evictIdle(generation)) return@launch
+            val stream = try {
+                resolver.resolveVod(item)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (generation == playGeneration) _state.value = PlaybackState.Error(VOD_CHANNEL_ID, vodError(item))
+                return@launch
+            }
+            val read = readOr(PlaybackSettings()) { awaitSettings() }
+            if (generation != playGeneration) return@launch
+            val s = if (settingsLive) latestSettings ?: read else read
+            applyEngine(s, ChannelPlaybackPrefs.NONE, generation)
+            if (newPlay) applyChannelTracks(s, keepChoices)
+            remintable = false
+            resolved = stream
+            loadVod(stream, vodStartMs, asHls = forceHls || isHlsUrl(stream.url.toUri()))
         }
     }
 
@@ -728,8 +794,12 @@ class PlaybackManager internal constructor(
     override fun positionMs(): Long = exoPlayer.currentPosition
 
     override fun seekWithin(positionMs: Long) {
-        val archive = _mode.value as? PlayMode.Archive ?: return
-        if (!archive.seekable || resolved == null) return
+        val seekable = when (val mode = _mode.value) {
+            is PlayMode.Archive -> mode.seekable
+            is PlayMode.Vod -> exoPlayer.isCurrentMediaItemSeekable
+            else -> false
+        }
+        if (!seekable || resolved == null) return
         exoPlayer.seekTo(positionMs.coerceAtLeast(0))
     }
 
@@ -770,7 +840,11 @@ class PlaybackManager internal constructor(
     private fun refreshTracks() {
         // Nothing playing, or the new channel is still resolving: late events from the previous
         // stream must not publish its tracks or frame rate for the new one.
-        val loaded = if (_mode.value is PlayMode.Cast) castLoaded else current != null && resolved != null
+        val loaded = when (_mode.value) {
+            is PlayMode.Cast -> castLoaded
+            is PlayMode.Vod -> currentVod != null && resolved != null
+            else -> current != null && resolved != null
+        }
         if (!loaded) {
             _tracks.value = PlayerTracks.NONE
             return
@@ -830,9 +904,20 @@ class PlaybackManager internal constructor(
                 exoPlayer.currentTracks.isEmpty && exoPlayer.totalBufferedDuration <= 0L
             if (stalled && startRetries < START_RETRY_DELAYS_MS.size) {
                 stallRetried = true
-                retryStart(channel, keepHls = currentIsHls)
+                retryStart(keepHls = currentIsHls)
             }
         }
+    }
+
+    /** Loads (or reloads) the film's [stream] at [startMs]; no stall watch, which is for live opens only. */
+    private fun loadVod(stream: ResolvedStream, startMs: Long, asHls: Boolean) {
+        currentIsHls = asHls
+        val builder = MediaItem.Builder().setUri(stream.url.toUri()).setMediaId(VOD_CHANNEL_ID.toString())
+        if (asHls) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        val source = AudioDelayMediaSource(mediaSourceFactory(stream).createMediaSource(builder.build()), engine.audioDelay)
+        exoPlayer.setMediaSource(source, startMs)
+        exoPlayer.prepare()
+        _state.value = PlaybackState.Buffering(VOD_CHANNEL_ID)
     }
 
     /** Loads (or reloads) the cast through [castClient]; the mime type says TS or HLS, never the URL shape. */
@@ -867,12 +952,13 @@ class PlaybackManager internal constructor(
 
     override fun stop() {
         noteRelease()
-        if (_mode.value is PlayMode.Archive) pendingEvict = true
+        if (_mode.value is PlayMode.Archive || _mode.value is PlayMode.Vod) pendingEvict = true
         prefsJob?.cancel()
         prefsJob = null
         cancelJobs()
         playGeneration++
         current = null
+        currentVod = null
         resolved = null
         castUrl = null
         castLoaded = false
@@ -892,6 +978,7 @@ class PlaybackManager internal constructor(
         exoPlayer.removeListener(listener)
         exoPlayer.release()
         current = null
+        currentVod = null
         resolved = null
         castUrl = null
         castLoaded = false
@@ -902,6 +989,7 @@ class PlaybackManager internal constructor(
 
     private fun refreshState() {
         if (_mode.value is PlayMode.Cast) return refreshCastState()
+        if (_mode.value is PlayMode.Vod) return refreshVodState()
         val channel = current ?: return
         // Still resolving (or re-minting): the player holds nothing of this play yet.
         val stream = resolved ?: return
@@ -916,7 +1004,7 @@ class PlaybackManager internal constructor(
         }
         // A live stream that ends as it starts was most likely cut off by the provider: open it again.
         if (error == null && archive == null && exoPlayer.playbackState == Player.STATE_ENDED && shouldRetryStart(null)) {
-            retryStart(channel, keepHls = currentIsHls)
+            retryStart(keepHls = currentIsHls)
             return
         }
         _state.value = when {
@@ -933,6 +1021,69 @@ class PlaybackManager internal constructor(
             else -> _state.value
         }
     }
+
+    /**
+     * A film's state: the live rules without a live-window recovery, and one that plays to its end is
+     * not a failure (the mode says it ended) and is never reopened.
+     */
+    private fun refreshVodState() {
+        val item = currentVod ?: return
+        // Still resolving or waiting to retry: the player holds nothing of this open yet.
+        val stream = resolved ?: return
+        (_mode.value as? PlayMode.Vod)?.let(::refreshVodMode)
+        val error = exoPlayer.playerError
+        if (error != null && recoverVod(stream, error)) return
+        val ready = exoPlayer.isPlaying || exoPlayer.playbackState == Player.STATE_READY
+        if (error == null && ready) {
+            openAfterSwitch = false
+            if (firstReadyAtMs == null) firstReadyAtMs = clock()
+        }
+        _state.value = when {
+            error != null -> PlaybackState.Error(VOD_CHANNEL_ID, errorMessage(item.title, error))
+            exoPlayer.playbackState == Player.STATE_BUFFERING -> PlaybackState.Buffering(VOD_CHANNEL_ID)
+            ready -> PlaybackState.Playing(VOD_CHANNEL_ID, streamTags(exoPlayer.videoFormat, exoPlayer.audioFormat))
+            exoPlayer.playbackState == Player.STATE_ENDED -> PlaybackState.Buffering(VOD_CHANNEL_ID)
+            else -> _state.value
+        }
+    }
+
+    /** Publishes the film's length once known, and whether it played to its end. */
+    private fun refreshVodMode(vod: PlayMode.Vod) {
+        val updated = vod.copy(
+            durationMs = exoPlayer.duration.takeIf { it != C.TIME_UNSET },
+            ended = exoPlayer.playbackState == Player.STATE_ENDED,
+        )
+        if (updated != vod) _mode.value = updated
+    }
+
+    /**
+     * The fixes a film gets: hardware audio from where it is, the HLS fallback, and the switch and
+     * start retries, which open it again where it started. Returns true when playback was restarted.
+     */
+    private fun recoverVod(stream: ResolvedStream, error: PlaybackException): Boolean = when {
+        !audioFallbackActive && engine.codecPolicy.audio == DecoderChoice.SOFTWARE && error.isAudioRendererError() -> {
+            audioFallbackActive = true
+            engine.codecPolicy.audio = DecoderChoice.HARDWARE
+            loadVod(stream, exoPlayer.currentPosition.coerceAtLeast(0), asHls = currentIsHls)
+            true
+        }
+        !currentIsHls && !hlsFallbackTried && error.hasCause<UnrecognizedInputFormatException>() -> {
+            hlsFallbackTried = true
+            loadVod(stream, vodStartMs, asHls = true)
+            true
+        }
+        shouldRetrySwitch(error) -> {
+            retrySwitch()
+            true
+        }
+        shouldRetryStart(error) -> {
+            retryStart(keepHls = currentIsHls && error.errorCode != PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED)
+            true
+        }
+        else -> false
+    }
+
+    private fun vodError(item: VodPlayable) = cantPlayMessage(item.title)
 
     private fun refreshCastState() {
         // Still evicting or reading settings: the player holds nothing of this cast yet.
@@ -1015,25 +1166,26 @@ class PlaybackManager internal constructor(
         }
         // The provider may still count the stream just released: wait and open again.
         shouldRetrySwitch(error) -> {
-            retrySwitch(channel)
+            retrySwitch()
             true
         }
         // A live open that failed as it started: a fresh connection usually works.
         shouldRetryStart(error) -> {
             // A fallback playlist that wasn't one says nothing about the stream: sniff it afresh.
-            retryStart(channel, keepHls = currentIsHls && error.errorCode != PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED)
+            retryStart(keepHls = currentIsHls && error.errorCode != PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED)
             true
         }
         else -> false
     }
 
     /**
-     * Whether a live open that failed with [error] (null: it ended) is worth opening again: it has not
-     * played for [START_GRACE_MS] yet, start retries remain, the switch backoff has not already given up
-     * on it, and the failure is one a new connection can fix.
+     * Whether a live or film open that failed with [error] (null: it ended) is worth opening again: it
+     * has not played for [START_GRACE_MS] yet, start retries remain, the switch backoff has not already
+     * given up on it, and the failure is one a new connection can fix.
      */
     private fun shouldRetryStart(error: PlaybackException?): Boolean {
-        if (_mode.value !is PlayMode.Live || startRetries >= START_RETRY_DELAYS_MS.size) return false
+        val mode = _mode.value
+        if ((mode !is PlayMode.Live && mode !is PlayMode.Vod) || startRetries >= START_RETRY_DELAYS_MS.size) return false
         if (switchRetries >= SWITCH_RETRY_DELAYS_MS.size) return false
         val readyAt = firstReadyAtMs
         if (readyAt != null && clock() - readyAt >= START_GRACE_MS) return false
@@ -1053,10 +1205,14 @@ class PlaybackManager internal constructor(
     }
 
     /**
-     * Releases the failed live open, stays Buffering, and after the next start backoff resolves and
-     * loads the channel again, as Try again would. A newer play or stop cancels the wait.
+     * Releases the failed open, stays Buffering, and after the next start backoff resolves and loads
+     * what it opened (the live channel, or the film from where it started) again, as Try again would.
+     * A newer play or stop cancels the wait.
      */
-    private fun retryStart(channel: ChannelEntity, keepHls: Boolean) {
+    private fun retryStart(keepHls: Boolean) {
+        val vod = currentVod
+        val channel = current
+        if (vod == null && channel == null) return
         val wait = START_RETRY_DELAYS_MS[startRetries++]
         val generation = ++playGeneration
         resolved = null
@@ -1065,11 +1221,15 @@ class PlaybackManager internal constructor(
         exoPlayer.clearMediaItems()
         firstReadyAtMs = null
         hlsFallbackTried = keepHls
-        _state.value = PlaybackState.Buffering(channel.id)
+        _state.value = PlaybackState.Buffering(channel?.id ?: VOD_CHANNEL_ID)
         resolveJob = scope.launch {
             retryDelay(wait)
             if (generation != playGeneration) return@launch
-            startResolve(channel, generation, forceHls = keepHls, newChannel = false, evictFirst = true)
+            if (vod != null) {
+                startVodResolve(vod, generation, forceHls = keepHls, newPlay = false)
+            } else if (channel != null) {
+                startResolve(channel, generation, forceHls = keepHls, newChannel = false, evictFirst = true)
+            }
         }
     }
 
@@ -1086,9 +1246,12 @@ class PlaybackManager internal constructor(
 
     /**
      * Releases the refused stream, stays Buffering, and after the next backoff delay resolves and loads
-     * the same live channel or archive request again. A newer play or stop cancels the wait.
+     * the same live channel, archive request or film again. A newer play or stop cancels the wait.
      */
-    private fun retrySwitch(channel: ChannelEntity) {
+    private fun retrySwitch() {
+        val vod = currentVod
+        val channel = current
+        if (vod == null && channel == null) return
         val wait = SWITCH_RETRY_DELAYS_MS[switchRetries++]
         val archive = _mode.value as? PlayMode.Archive
         val wasHls = currentIsHls
@@ -1099,14 +1262,15 @@ class PlaybackManager internal constructor(
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         hlsFallbackTried = wasHls
-        _state.value = PlaybackState.Buffering(channel.id)
+        _state.value = PlaybackState.Buffering(channel?.id ?: VOD_CHANNEL_ID)
         resolveJob = scope.launch {
             retryDelay(wait)
             if (generation != playGeneration) return@launch
-            if (archive != null) {
-                startArchiveResolve(channel, archive.request, generation, newChannel = false)
-            } else {
-                startResolve(channel, generation, forceHls = wasHls, newChannel = false, evictFirst = true)
+            when {
+                vod != null -> startVodResolve(vod, generation, forceHls = wasHls, newPlay = false)
+                channel == null -> return@launch
+                archive != null -> startArchiveResolve(channel, archive.request, generation, newChannel = false)
+                else -> startResolve(channel, generation, forceHls = wasHls, newChannel = false, evictFirst = true)
             }
         }
     }

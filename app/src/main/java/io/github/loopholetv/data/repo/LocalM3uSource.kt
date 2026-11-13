@@ -184,7 +184,7 @@ internal class LocalM3uSource(
     @Volatile private var temp: File? = null
     @Volatile private var complete = false
 
-    override suspend fun stream(emit: (ImportedChannel) -> Unit): String = withContext(Dispatchers.IO) {
+    override suspend fun stream(emit: (ImportItem) -> Unit): String = withContext(Dispatchers.IO) {
         val (tempFile, out) = copies?.newTemp() ?: (null to null)
         temp = tempFile
         // A failing copy (full disk) only stops the copying; the import goes on from the file.
@@ -206,10 +206,10 @@ internal class LocalM3uSource(
         header.epgUrls.joinToString("\n")
     }
 
-    private fun parse(input: InputStream, emit: (ImportedChannel) -> Unit) =
+    private fun parse(input: InputStream, emit: (ImportItem) -> Unit) =
         M3uParser.parse(input) { entry ->
             rawEntries++
-            entry.toImported()?.let(emit)
+            entry.toImportItem()?.let(emit)
         }
 
     override fun noChannelsError(): ImportError =

@@ -379,7 +379,31 @@ class MigrationTest {
         }
     }
 
-    @Test fun migrate1To6ViaAllMigrations() = runTest {
+    @Test fun migrate6To7AddsVodTables() = runTest {
+        helper.createDatabase(DB, 6).use { v6 ->
+            v6.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
+            v6.execSQL(
+                """INSERT INTO channels (id, playlistId, `key`, number, name, streamUrl, groupTitle, groupOrder,
+                   sortOrder) VALUES (1, 7, 'k', 4, 'Ch', 'http://s.example.test/1', 'G', 0, 0)""",
+            )
+        }
+
+        // Validates the migrated schema against the exported schema 7.json.
+        helper.runMigrationsAndValidate(DB, 7, true, MIGRATION_6_7).close()
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            assertEquals("Ch", db.channelDao().byId(1)!!.name)
+            assertTrue(db.vodWriteDao().filmKeys(7).isEmpty())
+            assertTrue(db.vodWriteDao().episodeKeys(7).isEmpty())
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun migrate1To7ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 1).use { v1 ->
             v1.execSQL(
                 """INSERT INTO playlists (id, name, type, epgUrlsFromSource, manualEpgUrl)
@@ -391,7 +415,7 @@ class MigrationTest {
             )
         }
 
-        helper.runMigrationsAndValidate(DB, 6, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(DB, 7, true, *ALL_MIGRATIONS).close()
 
         val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
             .addMigrations(*ALL_MIGRATIONS)
@@ -415,7 +439,7 @@ class MigrationTest {
         }
     }
 
-    @Test fun migrate2To6ViaAllMigrations() = runTest {
+    @Test fun migrate2To7ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 2).use { v2 ->
             v2.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
             v2.execSQL(
@@ -428,7 +452,7 @@ class MigrationTest {
             )
         }
 
-        helper.runMigrationsAndValidate(DB, 6, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(DB, 7, true, *ALL_MIGRATIONS).close()
 
         val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
             .addMigrations(*ALL_MIGRATIONS)

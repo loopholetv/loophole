@@ -31,6 +31,7 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.loopholetv.setup.SetupController
 import io.github.loopholetv.setup.SetupState
 import io.github.loopholetv.setup.SetupView
+import io.github.loopholetv.ui.guide.RailItem
 import io.github.loopholetv.ui.guide.SideRail
 import io.github.loopholetv.ui.theme.LoopholeTheme
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,7 +75,7 @@ class SetupFocusBackTest {
                 LaunchedEffect(Unit) { grid.requestFocus() }
                 Box(Modifier.fillMaxSize().onFocusChanged { screenFocused.value = it.hasFocus }) {
                     Row(Modifier.fillMaxSize()) {
-                        SideRail(onSelect = {}, onFocused = {})
+                        SideRail(items = RailItem.entries.filter { it != RailItem.MOVIES && it != RailItem.SERIES }, onSelect = {}, onFocused = {})
                         Box(Modifier.size(200.dp).testTag(GRID).focusRequester(grid).focusable())
                     }
                 }

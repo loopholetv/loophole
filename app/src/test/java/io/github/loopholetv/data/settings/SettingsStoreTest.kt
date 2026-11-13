@@ -368,4 +368,17 @@ class SettingsStoreTest {
         val ids = List(8) { async { store.castSelfId() } }.awaitAll()
         assertEquals(1, ids.toSet().size)
     }
+
+    @Test
+    fun fillFlagKeepsTheSkippedPlaylists() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        assertEquals(false, store.isFilled())
+        assertEquals(emptySet<Long>(), store.skipped())
+
+        store.markFilled(setOf(4L, 7L))
+        store.clearSkipped(4L)
+
+        assertEquals(true, store.isFilled())
+        assertEquals(setOf(7L), store.skipped())
+    }
 }

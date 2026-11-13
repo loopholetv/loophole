@@ -31,6 +31,9 @@ fun errorMessage(channelName: String, error: PlaybackException): String {
     return "$channelName: $reason"
 }
 
+/** The message for a stream that failed for no particular reason. */
+fun cantPlayMessage(name: String): String = "$name: $GENERIC"
+
 private fun isUnreachable(t: Throwable): Boolean =
     t is UnknownHostException || t is SocketTimeoutException || t is ConnectException || t is NoRouteToHostException
 

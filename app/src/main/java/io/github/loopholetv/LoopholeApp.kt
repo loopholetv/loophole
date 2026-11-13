@@ -48,7 +48,11 @@ open class LoopholeApp : Application(), RefreshRunnerProvider {
 
     /** Started from MainActivity once it has confirmed a playlist exists. */
     val startupRefresher: StartupRefresher by lazy {
-        StartupRefresher(container.refreshCoordinator, applicationScope)
+        StartupRefresher(
+            container.refreshCoordinator,
+            applicationScope,
+            container.vodFill,
+        )
     }
 
     override fun onCreate() {

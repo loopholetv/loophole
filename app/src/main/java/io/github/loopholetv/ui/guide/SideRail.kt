@@ -69,6 +69,16 @@ enum class RailItem(val label: String, val path: String) {
         "M21,3H3c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h5v2h8v-2h5c1.1,0 1.99,-0.9 1.99,-2L23,5c0,-1.1 -0.9,-2 -2,-2z" +
             "M21,17H3V5h18v12z",
     ),
+    MOVIES(
+        "Movies",
+        "M18,4l2,4h-3l-2,-4h-2l2,4h-3l-2,-4H8l2,4H7L5,4H4c-1.1,0 -1.99,0.9 -1.99,2L2,18c0,1.1 0.9,2 2,2h16" +
+            "c1.1,0 2,-0.9 2,-2V4h-4z",
+    ),
+    SERIES(
+        "Series",
+        "M21,6h-7.59l3.29,-3.29L16,2l-4,4 -4,-4 -0.71,0.71L10.59,6H3c-1.1,0 -2,0.89 -2,2v12c0,1.1 0.9,2 2,2h18" +
+            "c1.1,0 2,-0.9 2,-2V8c0,-1.11 -0.9,-2 -2,-2zM21,20H3V8h18v12zM9,10v8l7,-4z",
+    ),
     // A TV with waves in the corner: the other TVs in the house.
     TVS(
         "TVs",
@@ -105,6 +115,8 @@ enum class RailItem(val label: String, val path: String) {
  */
 @Composable
 fun SideRail(
+    /** The entries to show, in order; the Movies and Series entries only when there is something to browse. */
+    items: List<RailItem>,
     onSelect: (RailItem) -> Unit,
     onFocused: () -> Unit,
     modifier: Modifier = Modifier,
@@ -138,7 +150,7 @@ fun SideRail(
     ) {
         RailLogo(expanded)
         Spacer(Modifier.height(10.dp))
-        for (item in RailItem.entries) {
+        for (item in items) {
             RailButton(
                 item = item,
                 current = item == RailItem.TV,
@@ -148,8 +160,8 @@ fun SideRail(
                     .then(if (item == RailItem.TV) Modifier.focusRequester(tv) else Modifier)
                     // Up/Down stop at the ends of the rail instead of escaping into the guide.
                     .focusProperties {
-                        if (item == RailItem.entries.first()) up = FocusRequester.Cancel
-                        if (item == RailItem.entries.last()) down = FocusRequester.Cancel
+                        if (item == items.first()) up = FocusRequester.Cancel
+                        if (item == items.last()) down = FocusRequester.Cancel
                     },
             )
             if (item == RailItem.SEARCH) Spacer(Modifier.height(12.dp))

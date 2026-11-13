@@ -8,7 +8,12 @@ import androidx.navigation.createGraph
 import androidx.test.core.app.ApplicationProvider
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.channelScopeFromArg
+import io.github.loopholetv.data.vod.VodKind
+import io.github.loopholetv.data.vod.VodRef
 import java.net.URLDecoder
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -232,5 +237,66 @@ class StartDestinationTest {
         assertFalse(isFirstStartRoute(Routes.GUIDE))
         assertFalse(isFirstStartRoute(Routes.PLAYER))
         assertFalse(isFirstStartRoute(Routes.TVS))
+    }
+
+    @Test
+    fun vodPlayerRouteRoundTripsKeyWithSlashesAndQuery() {
+        val ref = VodRef(VodKind.EPISODE, 7, "Show/S01 E02+x?&#%")
+        val route = Routes.vodPlayer(ref, 95_000)
+        assertEquals("vod/play/EPISODE/7/Show%2FS01%20E02%2Bx%3F%26%23%25?start=95000", route)
+
+        val nav = NavHostController(ApplicationProvider.getApplicationContext())
+        nav.navigatorProvider.addNavigator(ComposeNavigator())
+        nav.graph = nav.createGraph(startDestination = "start") {
+            composable("start") {}
+            composable(Routes.VOD_PLAYER, arguments = Routes.vodPlayerArguments) {}
+        }
+        nav.navigate(route)
+        val entry = nav.currentBackStackEntry!!
+        assertEquals(Routes.VOD_PLAYER, entry.destination.route)
+        assertEquals(ref, vodRefFromArgs(entry.arguments))
+        assertEquals(95_000L, entry.arguments!!.getLong(Routes.ARG_START))
+    }
+
+    @Test
+    fun filmAndShowRoutesRoundTripKeysWithSlashes() {
+        val key = "Show/S01 E02+x?&#%"
+        assertEquals("film/7/Show%2FS01%20E02%2Bx%3F%26%23%25", Routes.film(7, key))
+        assertEquals("show/7/Show%2FS01%20E02%2Bx%3F%26%23%25", Routes.show(7, key))
+
+        val nav = NavHostController(ApplicationProvider.getApplicationContext())
+        nav.navigatorProvider.addNavigator(ComposeNavigator())
+        nav.graph = nav.createGraph(startDestination = "start") {
+            composable("start") {}
+            composable(Routes.FILM, arguments = Routes.vodPageArguments) {}
+            composable(Routes.SHOW, arguments = Routes.vodPageArguments) {}
+        }
+        nav.navigate(Routes.film(7, key))
+        assertEquals(Routes.FILM, nav.currentBackStackEntry!!.destination.route)
+        assertEquals(7L, nav.currentBackStackEntry!!.arguments!!.getLong(Routes.ARG_PLAYLIST_ID))
+        assertEquals(key, nav.currentBackStackEntry!!.arguments!!.getString(Routes.ARG_KEY))
+        nav.navigate(Routes.show(7, key))
+        assertEquals(Routes.SHOW, nav.currentBackStackEntry!!.destination.route)
+        assertEquals(key, nav.currentBackStackEntry!!.arguments!!.getString(Routes.ARG_KEY))
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun vodPlayerHoldsAutoJoin() = runTest {
+        assertTrue(holdsAutoJoin(Routes.VOD_PLAYER))
+        assertTrue(holdsAutoJoin(Routes.ONBOARDING))
+        assertTrue(holdsAutoJoin(null))
+        assertFalse(holdsAutoJoin(Routes.PLAYER))
+        assertFalse(isFirstStartRoute(Routes.VOD_PLAYER))
+        val route = kotlinx.coroutines.flow.MutableStateFlow<String?>(Routes.GUIDE)
+        val holds = mutableListOf<Boolean>()
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            holdAutoJoin(route, kotlinx.coroutines.flow.flowOf(false), ::holdsAutoJoin) { holds += it }
+        }
+        route.value = Routes.VOD_PLAYER
+        runCurrent()
+        route.value = Routes.GUIDE
+        runCurrent()
+        assertEquals(listOf(false, true, false), holds)
     }
 }

@@ -112,6 +112,9 @@ fun GuideScreen(
     onPlayArchive: (channelId: Long, scope: ChannelScope, from: Instant) -> Unit = { _, _, _ -> },
     /** The side menu's TVs: the other TVs on the home network. */
     onTvs: () -> Unit = {},
+    /** The side menu's Movies and Series. */
+    onMovies: () -> Unit = {},
+    onSeries: () -> Unit = {},
     /** "Copy from another TV" under the no-playlist hint: the TV picker. */
     onCopyFromAnotherTv: () -> Unit = {},
 ) {
@@ -123,6 +126,7 @@ fun GuideScreen(
     }.collectAsStateWithLifecycle(SubtitleStyle())
     val format = rememberGuideFormat()
 
+    val railItems by vm.railItems.collectAsStateWithLifecycle()
     val groups by vm.groups.collectAsStateWithLifecycle()
     val groupEntries by vm.groupEntries.collectAsStateWithLifecycle()
     val allPlaylistsOff by vm.allPlaylistsOff.collectAsStateWithLifecycle()
@@ -721,6 +725,7 @@ fun GuideScreen(
             }
         }
         SideRail(
+            items = railItems,
             onFocused = vm::commitPendingGroup,
             // Right from any rail item enters the grid like TV does (never focus search to the preview).
             onRight = { if (channels.itemCount > 0) focusGrid() else focusEmptyList() },
@@ -732,6 +737,8 @@ fun GuideScreen(
                     RailItem.SETTINGS -> onSettings()
                     RailItem.SEARCH -> onSearch()
                     RailItem.TVS -> onTvs()
+                    RailItem.MOVIES -> onMovies()
+                    RailItem.SERIES -> onSeries()
                     else -> Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
                 }
             },

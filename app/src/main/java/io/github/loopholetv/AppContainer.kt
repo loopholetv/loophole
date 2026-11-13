@@ -17,7 +17,10 @@ import io.github.loopholetv.data.repo.HistoryRepository
 import io.github.loopholetv.data.repo.PlaylistRepository
 import io.github.loopholetv.data.repo.ScopedChannels
 import io.github.loopholetv.data.repo.RefreshCoordinator
+import io.github.loopholetv.data.repo.VodFill
 import io.github.loopholetv.data.settings.SettingsStore
+import io.github.loopholetv.data.vod.VodProgressRepository
+import io.github.loopholetv.data.vod.VodRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -157,12 +160,19 @@ class AppContainer(context: Context) {
 
     val history: HistoryRepository by lazy { HistoryRepository(db) }
 
+    val vodProgress: VodProgressRepository by lazy { VodProgressRepository(db.vodProgressDao()) { java.time.Instant.now() } }
+
+    val vod: VodRepository by lazy { VodRepository(db) { java.time.Instant.now() } }
+
     val scopedChannels: ScopedChannels by lazy { ScopedChannels(db.channelDao(), db.favouriteDao()) }
 
     /** Background/startup updates through the shared repositories (same Mutexes as Settings). */
     val refreshCoordinator: RefreshCoordinator by lazy {
         RefreshCoordinator(playlistRepository, epgRepository, settingsStore)
     }
+
+    /** The one-off film and show fill after the update, and its catch-up when a skipped playlist is turned on. */
+    val vodFill: VodFill by lazy { VodFill(playlistRepository, refreshCoordinator, settingsStore) }
 
     /** WorkManager comes from its default App Startup initializer. */
     val refreshScheduler: RefreshScheduler by lazy { RefreshScheduler(WorkManager.getInstance(appContext)) }

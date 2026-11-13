@@ -74,12 +74,12 @@ internal class EpgUiBuilder(
     }
 }
 
-/** Builds a Playlists row: "<N> channels · On|Off · <last update or error>". */
+/** Builds a Playlists row: "<N> channels · <N> films · <N> shows · On|Off · <last update or error>". */
 internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
     private val updated = DateTimeFormatter.ofPattern("d MMM HH:mm", locale).withZone(zone)
 
-    fun row(p: PlaylistEntity, count: Int, op: PlaylistOp): PlaylistRowUi {
-        val (status, isError) = status(p, op)
+    fun row(p: PlaylistEntity, count: Int, op: PlaylistOp, films: Int = 0, shows: Int = 0): PlaylistRowUi {
+        val (status, isError) = status(p, op, films, shows)
         return PlaylistRowUi(
             id = p.id,
             name = p.name,
@@ -91,15 +91,15 @@ internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
             updateOnStart = p.updateOnStart,
             statusText = status,
             statusIsError = isError,
-            secondaryText = "${channelsGrouped(count, locale)} · ${onOff(p.enabled)} · $status",
+            secondaryText = "${contentCounts(count, films, shows, locale)} · ${onOff(p.enabled)} · $status",
         )
     }
 
     /** The status text, and whether it reports a failure (shown in the error colour). */
-    private fun status(p: PlaylistEntity, op: PlaylistOp): Pair<String, Boolean> {
+    private fun status(p: PlaylistEntity, op: PlaylistOp, films: Int, shows: Int): Pair<String, Boolean> {
         val stored = p.lastError?.trim()?.takeIf { it.isNotEmpty() }
         return when {
-            op is PlaylistOp.Updating -> "Updating… ${channelsGrouped(op.count, locale)}" to false
+            op is PlaylistOp.Updating -> "Updating… ${contentCounts(op.count, films, shows, locale)}" to false
             op is PlaylistOp.Failed -> op.message to true
             // Stored errors are raw (redacted) import messages: only fixed copy is shown. The last-good-copy
             // notice reports a success; the portal's messages are fixed copy. A failed source
