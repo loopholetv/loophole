@@ -55,12 +55,13 @@ sealed interface SettingsPage {
     data object Epg : SettingsPage { override val key = "epg" }
     data object Playback : SettingsPage { override val key = "playback" }
     data object Remote : SettingsPage { override val key = "remote" }
+    data object Phone : SettingsPage { override val key = "phone" }
     /** The buttons set up for [context], one row each. */
     data class RemoteButtons(val context: BindingContext) : SettingsPage { override val key = "remoteButtons:${context.key}" }
     data object About : SettingsPage { override val key = "about" }
 
     companion object {
-        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Remote, About).associateBy { it.key }
+        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Remote, Phone, About).associateBy { it.key }
 
         /** Unknown or malformed keys give [Sections]. */
         fun fromKey(key: String): SettingsPage {
@@ -89,6 +90,7 @@ private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     SettingsPage.Epg -> "EPG"
     SettingsPage.Playback -> "Playback"
     SettingsPage.Remote -> "Remote control"
+    SettingsPage.Phone -> "Phone page"
     is SettingsPage.RemoteButtons -> context.title
     SettingsPage.About -> "About"
 }
@@ -106,6 +108,8 @@ private const val COMING_LATER = "Coming in a later update"
 fun SettingsPanel(
     onAddPlaylist: () -> Unit = {},
     onEditPlaylist: (playlistId: Long) -> Unit = {},
+    /** Phone page → "Show QR code": the full-screen "Set up from your phone". */
+    onShowPhoneQr: () -> Unit = {},
     vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory),
 ) {
     val ui by vm.state.collectAsStateWithLifecycle()
@@ -199,6 +203,7 @@ fun SettingsPanel(
                 SettingsPage.Playback -> PlaybackPage(ui, vm, focusKey, consumeFocus, vm.pipSupported)
                 SettingsPage.Remote -> RemotePage(ui, vm, focusKey, consumeFocus, onOpen = { c -> go(SettingsPage.RemoteButtons(c), null) })
                 is SettingsPage.RemoteButtons -> RemoteButtonsPage(p.context, ui, vm, focusKey, consumeFocus)
+                SettingsPage.Phone -> PhonePage(ui, vm, onShowQr = onShowPhoneQr)
                 SettingsPage.About -> AboutPage()
             }
         }
@@ -215,7 +220,7 @@ internal fun playlistRowKey(id: Long) = "row:$id"
 internal fun PillButton(label: String, modifier: Modifier = Modifier, onFocus: () -> Unit = {}, onClick: () -> Unit) =
     OnboardingPillButton(label, selected = false, modifier = modifier, containerColor = Tokens.Surface, onFocus = onFocus, onClick = onClick)
 
-private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Remote, SettingsPage.About)
+private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Remote, SettingsPage.Phone, SettingsPage.About)
 
 @Composable
 private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
@@ -227,7 +232,8 @@ private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
         SectionItem("EPG", requesters.getValue(SettingsPage.Epg)) { onOpen(SettingsPage.Epg) }
         SectionItem("Playback", requesters.getValue(SettingsPage.Playback)) { onOpen(SettingsPage.Playback) }
         SectionItem("Remote control", requesters.getValue(SettingsPage.Remote)) { onOpen(SettingsPage.Remote) }
-        // Not focusable: D-pad moves straight from Remote control to About.
+        SectionItem("Phone page", requesters.getValue(SettingsPage.Phone)) { onOpen(SettingsPage.Phone) }
+        // Not focusable: D-pad moves straight from Phone page to About.
         DISABLED_SECTIONS.forEach { DisabledSection(it) }
         SectionItem("About", requesters.getValue(SettingsPage.About)) { onOpen(SettingsPage.About) }
     }

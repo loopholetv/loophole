@@ -399,6 +399,17 @@ data class EditorChannelRow(
     val hidden: Boolean,
 )
 
+/**
+ * A channel in the phone page's list: [hidden] is the channel's own edit and [customName] its
+ * rename (null when it isn't renamed), both from `channel_prefs`; [favourite] is a favourites row.
+ */
+data class PhoneChannelRow(
+    @Embedded val channel: ChannelEntity,
+    val hidden: Boolean,
+    val favourite: Boolean,
+    @ColumnInfo(name = "prefName") val customName: String?,
+)
+
 /** Projection: number of channels in a playlist. */
 data class PlaylistChannelCount(val playlistId: Long, val count: Int)
 

@@ -60,6 +60,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.dialog
 import androidx.navigation.navArgument
 import io.github.loopholetv.ui.guide.GuideScreen
+import io.github.loopholetv.phone.PhoneJob
+import io.github.loopholetv.phone.PhoneJobKind
+import io.github.loopholetv.phone.PhoneJobPhase
+import io.github.loopholetv.ui.phone.PhoneSetupScreen
 import io.github.loopholetv.ui.onboarding.AddPlaylistScreen
 import io.github.loopholetv.ui.player.KeepScreenOnWhilePlaying
 import io.github.loopholetv.ui.player.PlayerScreen
@@ -96,6 +100,10 @@ object Routes {
     const val CAST_FOLLOW = "cast/follow"
     /** Copying another TV's setup onto this one, from the first-start screen. */
     const val SETUP_COPY_FROM = "setup/copy-from"
+    /** "Set up from your phone" opened from the first-start screen. */
+    const val SETUP_PHONE = "setup/phone"
+    /** "Set up from your phone" opened from Settings, over the panel. */
+    const val PHONE_SETUP = "phone-setup"
     /** Full-screen playback of a film or episode; `start` is where it begins, in ms. */
     const val VOD_PLAYER = "vod/play/{kind}/{playlistId}/{key}?start={start}"
 
@@ -230,7 +238,39 @@ fun shouldGoToOnboarding(playlistCount: Int, currentRoute: String?, skipped: Boo
  * (null) counts too, since the first screen may be one of them.
  */
 fun isFirstStartRoute(route: String?): Boolean =
-    route == null || route == Routes.ONBOARDING || route == Routes.SETUP_COPY_FROM
+    route == null || route == Routes.ONBOARDING || route == Routes.SETUP_COPY_FROM || route == Routes.SETUP_PHONE
+
+/** What the TV does about a playlist load started from the phone. */
+enum class PhoneHandoff { NONE, OPEN_PHONE_SCREEN, GO_TO_GUIDE }
+
+/**
+ * On a first-start screen, a playlist the phone is adding shows its progress on the phone screen,
+ * and the guide opens once it has loaded. Anywhere else, and for edits and refreshes, the TV stays
+ * where it is. [route] null means no destination yet, which never navigates.
+ */
+fun phoneHandoff(route: String?, job: PhoneJob?): PhoneHandoff {
+    if (route == null || job == null || job.kind != PhoneJobKind.ADD || !isFirstStartRoute(route)) return PhoneHandoff.NONE
+    return when (job.phase) {
+        is PhoneJobPhase.Done -> PhoneHandoff.GO_TO_GUIDE
+        is PhoneJobPhase.Failed -> PhoneHandoff.NONE
+        is PhoneJobPhase.LoadingChannels, is PhoneJobPhase.LoadingGuide ->
+            if (route == Routes.SETUP_PHONE) PhoneHandoff.NONE else PhoneHandoff.OPEN_PHONE_SCREEN
+    }
+}
+
+/**
+ * [phoneHandoff], at most once per job and step: leaving the phone screen while the job loads
+ * doesn't send the TV back, and a finished job seen again doesn't move it.
+ */
+class PhoneHandoffOnce {
+    private val done = HashSet<Pair<Long, PhoneHandoff>>()
+
+    fun next(route: String?, job: PhoneJob?): PhoneHandoff {
+        val step = phoneHandoff(route, job)
+        if (step == PhoneHandoff.NONE || job == null) return PhoneHandoff.NONE
+        return if (done.add(job.id to step)) step else PhoneHandoff.NONE
+    }
+}
 
 /**
  * Where this TV must not join a cast on its own: the first-start screens, and a film or episode
@@ -291,6 +331,19 @@ fun AppNav(
             ::holdsAutoJoin,
         ) { container.autoJoinHold.set(it) }
     }
+    // A phone adding a playlist during first start: its progress shows here, then the guide opens.
+    LaunchedEffect(navController, container) {
+        val once = PhoneHandoffOnce()
+        combine(container.phoneJobs.current, navController.currentBackStackEntryFlow.map { it.destination.route }) { job, route ->
+            once.next(route, job)
+        }.collect { step ->
+            when (step) {
+                PhoneHandoff.OPEN_PHONE_SCREEN -> navController.navigate(Routes.SETUP_PHONE) { launchSingleTop = true }
+                PhoneHandoff.GO_TO_GUIDE -> navController.returnToGuide()
+                PhoneHandoff.NONE -> Unit
+            }
+        }
+    }
     val toastContext = LocalContext.current
     // Messages about casts (ended, lost, can't play...), wherever the app is.
     LaunchedEffect(cast, toastContext) {
@@ -350,7 +403,12 @@ fun AppNav(
                         }
                     },
                     onCopyFromAnotherTv = { navController.openCopyFrom() },
+                    onSetUpFromPhone = { navController.navigate(Routes.SETUP_PHONE) { launchSingleTop = true } },
                 )
+            }
+            // Done and Back return to the first-start screen; a playlist the phone adds opens the guide.
+            composable(Routes.SETUP_PHONE) {
+                PhoneSetupScreen(onDone = dropUnlessResumed { navController.popBackStack() })
             }
             // Back returns to where it opened (first start, or the guide with no playlist); the copy
             // itself shows in the setup screens.
@@ -483,6 +541,7 @@ fun AppNav(
                     SettingsPanel(
                         onAddPlaylist = { navController.navigate(Routes.playlistForm()) { launchSingleTop = true } },
                         onEditPlaylist = { navController.navigate(Routes.playlistForm(it)) { launchSingleTop = true } },
+                        onShowPhoneQr = { navController.navigate(Routes.PHONE_SETUP) { launchSingleTop = true } },
                     )
                 }
             }
@@ -493,6 +552,13 @@ fun AppNav(
                 SettingsPanelHost {
                     TvsPanel(onClose = dropUnlessResumed { navController.popBackStack() })
                 }
+            }
+            // Over Settings like the playlist form, so Done and Back return to the Phone page.
+            dialog(
+                Routes.PHONE_SETUP,
+                dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            ) {
+                PhoneSetupScreen(onDone = dropUnlessResumed { navController.popBackStack() })
             }
             // A full-screen dialog over Settings (not a composable: navigating to one pops every dialog),
             // so Settings stays open underneath, on the page it was on.

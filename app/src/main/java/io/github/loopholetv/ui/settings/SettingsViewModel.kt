@@ -24,6 +24,8 @@ import io.github.loopholetv.data.settings.effectivePastDays
 import io.github.loopholetv.data.settings.isRemappable
 import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.xtream.XtreamCredentials
+import io.github.loopholetv.phone.PhoneJob
+import io.github.loopholetv.phone.PhoneJobPhase
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.asSetting
 import io.github.loopholetv.player.parseUdpProxy
@@ -101,7 +103,22 @@ data class SettingsUi(
     val tvName: String = "",
     /** The update found by "Check for updates" and its next step; null when none is on offer. */
     val updateCard: UpdateCardUi? = null,
+    /** Phones paired with the phone page. */
+    val pairedPhones: Int = 0,
+    /** Shown on "Forget paired phones" after forgetting them failed; null otherwise. */
+    val forgetPhonesError: String? = null,
 )
+
+const val FORGET_PHONES_FAILED = "Couldn't forget paired phones. Try again."
+
+/** "2 phones paired", "1 phone paired", "No phones paired". */
+fun pairedPhonesText(count: Int): String = when (count) {
+    0 -> "No phones paired"
+    1 -> "1 phone paired"
+    else -> "$count phones paired"
+}
+
+private data class PhoneState(val job: PhoneJob? = null, val paired: Int = 0)
 
 private data class UpdateAll(val playlistId: Long? = null, val count: Int = 0)
 
@@ -116,6 +133,7 @@ private data class Ops(
     val udpProxyError: String? = null,
     val confirmRemoveSource: Long? = null,
     val maxCatchupDays: Int? = null,
+    val forgetPhonesFailed: Boolean = false,
 )
 
 /** Films and shows a playlist holds. */
@@ -167,6 +185,10 @@ class SettingsViewModel(
     private val maxCatchupDays: suspend () -> Int? = { null },
     /** The name used when none is set. */
     private val defaultTvName: String = "Loophole TV",
+    /** The playlist load started from the phone (running, or just finished); its row shows it. */
+    phoneJob: Flow<PhoneJob?> = flowOf(null),
+    pairedPhones: Flow<Int> = flowOf(0),
+    private val forgetPairedPhones: suspend () -> Unit = {},
 ) : ViewModel() {
     private val work: CoroutineScope get() = workScope ?: viewModelScope
     private val ops = MutableStateFlow(Ops())
@@ -183,11 +205,16 @@ class SettingsViewModel(
 
     private val counts = combine(channelCounts, vodCounts) { channels, vod -> channels to vod }
 
-    val state: StateFlow<SettingsUi> = combine(playlists, counts, perPlaylist, ops, settings) { list, (channels, vod), epg, o, opts ->
+    private val phone = combine(phoneJob, pairedPhones) { job, paired -> PhoneState(job, paired) }
+
+    private val opsAndPhone = combine(ops, phone) { o, p -> o to p }
+
+    val state: StateFlow<SettingsUi> = combine(playlists, counts, perPlaylist, opsAndPhone, settings) { list, (channels, vod), epg, (o, phoneNow), opts ->
         val names = list.associate { it.id to it.name }
         val rows = list.map {
             val v = vod[it.id] ?: VodCounts()
-            rowText.row(it, channels[it.id] ?: 0, o.playlist[it.id] ?: PlaylistOp.Idle, v.films, v.shows)
+            val count = channels[it.id] ?: 0
+            rowText.row(it, count, rowOp(o.playlist[it.id], phoneNow.job, it.id, count), v.films, v.shows)
         }
         val epgUi = list.map { p -> epgBuilder.build(p, epg[p.id]?.first, epg[p.id]?.second.orEmpty(), p.id in o.epgUpdating) }
         SettingsUi(
@@ -205,8 +232,21 @@ class SettingsViewModel(
             loaded = true,
             tvName = opts.castTvName ?: defaultTvName,
             updateCard = o.updateCard,
+            pairedPhones = phoneNow.paired,
+            forgetPhonesError = if (o.forgetPhonesFailed) FORGET_PHONES_FAILED else null,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUi())
+
+    /** The row's own update wins; otherwise a phone load running on [id] shows as updating. */
+    private fun rowOp(own: PlaylistOp?, job: PhoneJob?, id: Long, channelCount: Int): PlaylistOp {
+        if (own is PlaylistOp.Updating || job?.playlistId != id) return own ?: PlaylistOp.Idle
+        return when (val phase = job.phase) {
+            is PhoneJobPhase.LoadingChannels -> PlaylistOp.Updating(phase.count)
+            // The channels are in: the guide follows as part of the same load.
+            is PhoneJobPhase.LoadingGuide -> PlaylistOp.Updating(channelCount)
+            is PhoneJobPhase.Done, is PhoneJobPhase.Failed -> own ?: PlaylistOp.Idle
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -338,9 +378,9 @@ class SettingsViewModel(
     /** Drops a stale "Use the form …" hint (the proxy dialog is opening again). */
     fun clearUdpProxyError() = ops.update { it.copy(udpProxyError = null) }
 
-    /** Ignored while that playlist is updating. */
+    /** Ignored while that playlist is updating (here or from the phone). */
     fun requestDelete(id: Long) {
-        if (ops.value.playlist[id] is PlaylistOp.Updating) return
+        if (ops.value.playlist[id] is PlaylistOp.Updating || state.value.playlists.firstOrNull { it.id == id }?.busy == true) return
         ops.update { it.copy(confirmDelete = id) }
     }
 
@@ -449,6 +489,35 @@ class SettingsViewModel(
         setRemote { it.copy(bindings = KeyBindings.DEFAULT) }
     }
 
+    private val forgetPrompt = MutableStateFlow(false)
+
+    /** True while "Forget all paired phones?" is waiting for an answer. */
+    val forgetPhonesPrompt: StateFlow<Boolean> = forgetPrompt
+
+    /** Ignored with no phone paired. */
+    fun requestForgetPhones() {
+        if (state.value.pairedPhones > 0) forgetPrompt.value = true
+    }
+
+    fun cancelForgetPhones() { forgetPrompt.value = false }
+
+    fun confirmForgetPhones() {
+        if (!forgetPrompt.value) return
+        forgetPrompt.value = false
+        work.launch {
+            val failed = try {
+                forgetPairedPhones()
+                false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // The phones are still paired: the row says so, and the count stays as it was.
+                true
+            }
+            ops.update { it.copy(forgetPhonesFailed = failed) }
+        }
+    }
+
     fun checkForUpdatesNow() = checkForUpdatesNow.invoke()
 
     /** A step of the update offered by the last check (Update, Install, ...). */
@@ -521,6 +590,9 @@ class SettingsViewModel(
                     pipSupported = c.pipSupported,
                     maxCatchupDays = { c.db.channelDao().maxCatchupDays() },
                     defaultTvName = defaultTvName(app),
+                    phoneJob = c.phoneJobs.current,
+                    pairedPhones = c.settingsStore.pairedCount,
+                    forgetPairedPhones = { c.phonePairing.forgetAll() },
                 ) as T
             }
         }

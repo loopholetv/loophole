@@ -1,6 +1,7 @@
 package io.github.loopholetv.data.repo
 
 import io.github.loopholetv.data.db.AppDatabase
+import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.inMemoryDb
@@ -101,6 +102,53 @@ class ChannelEditsTest {
         assertEquals(listOf("C", "A", "B"), p.order())
         // Numbers never change.
         assertEquals(listOf(1, 2, 3), listOf("A", "B", "C").map { p.channel(it).guideNumber })
+    }
+
+    @Test fun moveToPutsChannelAtIndex() = runTest(timeout = 60.seconds) {
+        p.add(entries("A", "B", "C", "D", "E"))
+        assertTrue(edits.moveTo(p.ref("E"), 1))
+        assertEquals(listOf("A", "E", "B", "C", "D"), p.order())
+        assertEquals(GroupSort.CUSTOM, db.groupPrefsDao().get(p.id, "G")?.sortMode)
+        // A move to its own index changes nothing.
+        assertTrue(edits.moveTo(p.ref("E"), 1))
+        assertEquals(listOf("A", "E", "B", "C", "D"), p.order())
+    }
+
+    @Test fun moveToCountsHiddenRows() = runTest(timeout = 60.seconds) {
+        p.add(entries("A", "B", "C", "D"))
+        edits.setHidden(p.ref("B"), true)
+        assertTrue(edits.moveTo(p.ref("D"), 1))
+        assertEquals(listOf("A", "D", "B", "C"), p.order())
+    }
+
+    @Test fun moveToClampsIndex() = runTest(timeout = 60.seconds) {
+        p.add(entries("A", "B", "C"))
+        assertTrue(edits.moveTo(p.ref("A"), 99))
+        assertEquals(listOf("B", "C", "A"), p.order())
+        assertTrue(edits.moveTo(p.ref("A"), -5))
+        assertEquals(listOf("A", "B", "C"), p.order())
+    }
+
+    @Test fun moveToMissingChannelIsFalse() = runTest(timeout = 60.seconds) {
+        p.add(entries("A", "B"))
+        assertFalse(edits.moveTo(ChannelRef(p.id, "http://stream.example.test/Nope.ts"), 0))
+        assertEquals(listOf("A", "B"), p.order())
+    }
+
+    @Test fun moveGroupToPutsGroupAtIndex() = runTest(timeout = 60.seconds) {
+        p.add(listOf(Entry("A", "G1"), Entry("B", "G2"), Entry("C", "G3"), Entry("D", "G4")))
+        assertTrue(edits.moveGroupTo(p.id, "G4", 0))
+        assertEquals(listOf("G4", "G1", "G2", "G3"), groupOrder())
+        assertFalse(edits.moveGroupTo(p.id, "Nope", 0))
+    }
+
+    @Test fun moveToIsOneTransaction() = runTest(timeout = 60.seconds) {
+        val names = (1..2000).map { "C$it" }
+        p.add(entries(*names.toTypedArray()))
+        val start = System.nanoTime()
+        assertTrue(edits.moveTo(p.ref("C2000"), 0))
+        assertTrue("took ${(System.nanoTime() - start) / 1_000_000} ms", System.nanoTime() - start < 2_000_000_000L)
+        assertEquals("C2000", p.order().first())
     }
 
     @Test fun moveSkipsHiddenNeighbours() = runTest(timeout = 60.seconds) {

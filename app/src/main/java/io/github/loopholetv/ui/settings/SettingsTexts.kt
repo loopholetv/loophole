@@ -1,6 +1,8 @@
 package io.github.loopholetv.ui.settings
 
 import io.github.loopholetv.data.net.UserAgents
+import io.github.loopholetv.data.repo.COPY_NOTICE_PREFIX
+import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
 import io.github.loopholetv.data.settings.AUDIO_DELAY_RANGE_MS
 import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
 import io.github.loopholetv.data.settings.AUDIO_DELAY_STEP_MS
@@ -78,6 +80,23 @@ const val UDP_PROXY_INVALID = "Use the form 192.168.1.1:4022"
 
 internal const val LAST_UPDATE_FAILED = "Last update failed"
 internal const val NOT_UPDATED_YET = "Not updated yet"
+
+/** A playlist's stored status line: [isError] false for the last-good-copy notice, which reports a success. */
+internal data class StoredError(val text: String, val isError: Boolean)
+
+/**
+ * What a playlist's stored error may show, wherever it is shown (Settings, the phone page); null when
+ * there is none. Stored errors are raw (redacted) import messages, so only fixed copy goes out: the
+ * last-good-copy notice, the portal's fixed messages, else [LAST_UPDATE_FAILED].
+ */
+internal fun storedErrorCopy(lastError: String?): StoredError? {
+    val stored = lastError?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    return when {
+        stored.startsWith(COPY_NOTICE_PREFIX) -> StoredError(stored, isError = false)
+        stored in PORTAL_ERROR_COPY -> StoredError(stored, isError = true)
+        else -> StoredError(LAST_UPDATE_FAILED, isError = true)
+    }
+}
 
 /** The text of [value] in [choices], or [fallback] for a value the list doesn't have (never throws). */
 fun <T> choiceText(choices: List<Pair<T, String>>, value: T, fallback: (T) -> String): String =

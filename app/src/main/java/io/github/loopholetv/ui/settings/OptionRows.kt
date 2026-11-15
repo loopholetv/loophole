@@ -35,11 +35,13 @@ private fun OptionItem(
     modifier: Modifier,
     supporting: String? = null,
     supportingIsError: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     ListItem(
         selected = false,
         onClick = onClick,
+        enabled = enabled,
         headlineContent = { Text(label, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         supportingContent = supporting?.let { s ->
             {
@@ -59,6 +61,8 @@ private fun OptionItem(
             contentColor = Tokens.OnBackground,
             focusedContainerColor = Tokens.FocusFill,
             focusedContentColor = Tokens.OnFocus,
+            disabledContainerColor = Tokens.SurfaceRaised,
+            disabledContentColor = Tokens.Muted,
         ),
         shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),
     )
@@ -93,12 +97,13 @@ fun ActionRow(
     supporting: String? = null,
     supportingIsError: Boolean = false,
     trailing: String? = null,
-) = OptionItem(label, trailing, modifier, supporting, supportingIsError, onClick)
+    enabled: Boolean = true,
+) = OptionItem(label, trailing, modifier, supporting, supportingIsError, enabled, onClick)
 
 /** A row showing its value as the second line (long values such as a user agent). */
 @Composable
 fun ValueRow(label: String, value: String, onClick: () -> Unit, modifier: Modifier = Modifier, valueIsError: Boolean = false) =
-    OptionItem(label, null, modifier, value, valueIsError, onClick)
+    OptionItem(label, null, modifier, value, valueIsError, onClick = onClick)
 
 /** Retries [requester] for up to a second (rows may not be laid out on the first frame). */
 internal suspend fun focusSoon(requester: FocusRequester) {

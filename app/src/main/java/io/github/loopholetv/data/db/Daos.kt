@@ -254,6 +254,31 @@ abstract class ChannelDao {
     )
     abstract fun editorChannels(playlistId: Long, title: String): PagingSource<Int, EditorChannelRow>
 
+    /**
+     * One page of [playlistId]'s channels for the phone page, hidden ones too. One [group]: the order
+     * of [editorChannels]; none: group by group in the order of [editorGroups], then as in a group.
+     * A non-null [query] keeps channels whose shown name contains it, ignoring case; `%`, `_` and
+     * `\` in it match themselves.
+     */
+    suspend fun phoneChannels(playlistId: Long, group: String?, query: String?, limit: Int, offset: Int): List<PhoneChannelRow> =
+        phoneChannelPage(playlistId, group, query?.let { "%" + likeEscaped(it) + "%" }, limit, offset)
+
+    @Query(
+        """SELECT c.*, COALESCE(cp.hidden, 0) AS hidden, cp.customName AS prefName,
+                  EXISTS(SELECT 1 FROM favourites f WHERE f.playlistId = c.playlistId AND f.channelKey = c.`key`) AS favourite
+           FROM channels c
+           LEFT JOIN channel_prefs cp ON cp.playlistId = c.playlistId AND cp.channelKey = c.`key`
+           LEFT JOIN group_prefs gp ON gp.playlistId = c.playlistId AND gp.groupTitle = c.groupTitle
+           WHERE c.playlistId = :playlistId
+             AND (:group IS NULL OR c.groupTitle = :group)
+             AND (:pattern IS NULL OR COALESCE(cp.customName, c.name) LIKE :pattern ESCAPE '\')
+           ORDER BY gp.position IS NULL, gp.position, c.groupOrder, c.groupTitle, c.groupRank, c.number, c.id
+           LIMIT :limit OFFSET :offset""",
+    )
+    protected abstract suspend fun phoneChannelPage(
+        playlistId: Long, group: String?, pattern: String?, limit: Int, offset: Int,
+    ): List<PhoneChannelRow>
+
     @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY sortOrder")
     abstract suspend fun channelsOf(playlistId: Long): List<ChannelEntity>
 
@@ -464,3 +489,6 @@ abstract class SetupDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertHistory(rows: List<HistoryEntity>)
 }
+
+private fun likeEscaped(text: String): String =
+    text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

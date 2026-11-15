@@ -15,6 +15,9 @@ import io.github.loopholetv.data.settings.PlayerAction
 import android.view.KeyEvent
 import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.xtream.XtreamCredentials
+import io.github.loopholetv.phone.PhoneJob
+import io.github.loopholetv.phone.PhoneJobKind
+import io.github.loopholetv.phone.PhoneJobPhase
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -103,6 +106,9 @@ class SettingsViewModelTest {
         var updateChecks = 0
         val updateStatus = MutableStateFlow<UpdateStatus>(UpdateStatus.None)
         val performed = mutableListOf<UpdateAction>()
+        val phoneJob = MutableStateFlow<PhoneJob?>(null)
+        val pairedPhones = MutableStateFlow(0)
+        var forgetPhones: suspend () -> Unit = { pairedPhones.value = 0 }
 
         fun vm(pipSupported: Boolean = false) = SettingsViewModel(
             playlists = playlists,
@@ -142,6 +148,9 @@ class SettingsViewModelTest {
             pipSupported = pipSupported,
             maxCatchupDays = { maxCatchupDays },
             defaultTvName = "Default TV",
+            phoneJob = phoneJob,
+            pairedPhones = pairedPhones,
+            forgetPairedPhones = { forgetPhones() },
         )
     }
 
@@ -921,5 +930,71 @@ class SettingsViewModelTest {
         val f = Fakes(emptyList())
         f.settings.value = AppSettings(castTvName = "Den")
         assertEquals("Den", f.vm().state.value.tvName)
+    }
+
+    @Test fun phoneJobShowsUpdatingOnItsRow() = runTest {
+        val f = Fakes(listOf(playlist(1), playlist(2)))
+        val vm = f.vm()
+        f.phoneJob.value = PhoneJob(1, PhoneJobKind.REFRESH, 2, "List 2", PhoneJobPhase.LoadingChannels(250))
+        assertEquals(PlaylistOp.Idle, vm.state.value.playlists[0].op)
+        assertEquals(PlaylistOp.Updating(250), vm.state.value.playlists[1].op)
+        assertEquals("Updating… 250 channels", vm.state.value.playlists[1].statusText)
+        // Busy while the phone's load runs: no delete meanwhile.
+        vm.requestDelete(2)
+        assertNull(vm.state.value.confirmDelete)
+        f.phoneJob.value = f.phoneJob.value!!.copy(phase = PhoneJobPhase.LoadingGuide(10))
+        assertEquals(PlaylistOp.Updating(3), vm.state.value.playlists[1].op)
+        f.phoneJob.value = f.phoneJob.value!!.copy(phase = PhoneJobPhase.Done(2))
+        assertEquals(PlaylistOp.Idle, vm.state.value.playlists[1].op)
+    }
+
+    @Test fun phoneAddShowsUpdatingOnceItHasItsPlaylist() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        f.phoneJob.value = PhoneJob(1, PhoneJobKind.ADD, null, "New", PhoneJobPhase.LoadingChannels(0))
+        assertEquals(PlaylistOp.Idle, vm.state.value.playlists.single().op)
+        f.playlists.value = listOf(playlist(1), playlist(7))
+        f.phoneJob.value = f.phoneJob.value!!.copy(playlistId = 7, phase = PhoneJobPhase.LoadingChannels(40))
+        assertEquals(PlaylistOp.Updating(40), vm.state.value.playlists[1].op)
+    }
+
+    @Test fun forgetPairedPhonesClearsCount() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.pairedPhones.value = 2
+        val vm = f.vm()
+        assertEquals(2, vm.state.value.pairedPhones)
+        assertEquals("2 phones paired", pairedPhonesText(2))
+        assertEquals("1 phone paired", pairedPhonesText(1))
+        assertEquals("No phones paired", pairedPhonesText(0))
+        vm.requestForgetPhones()
+        assertTrue(vm.forgetPhonesPrompt.value)
+        vm.cancelForgetPhones()
+        assertFalse(vm.forgetPhonesPrompt.value)
+        assertEquals(2, vm.state.value.pairedPhones)
+        vm.requestForgetPhones()
+        vm.confirmForgetPhones()
+        assertFalse(vm.forgetPhonesPrompt.value)
+        assertEquals(0, vm.state.value.pairedPhones)
+        // Nothing to forget: no question.
+        vm.requestForgetPhones()
+        assertFalse(vm.forgetPhonesPrompt.value)
+    }
+
+    @Test fun forgetPairedPhonesFailureShowsOnTheRow() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.pairedPhones.value = 2
+        f.forgetPhones = { throw java.io.IOException("disk full") }
+        val vm = f.vm()
+        assertNull(vm.state.value.forgetPhonesError)
+        vm.requestForgetPhones()
+        vm.confirmForgetPhones()
+        assertEquals("Couldn't forget paired phones. Try again.", vm.state.value.forgetPhonesError)
+        assertEquals(2, vm.state.value.pairedPhones)
+        // Trying again and succeeding clears the error.
+        f.forgetPhones = { f.pairedPhones.value = 0 }
+        vm.requestForgetPhones()
+        vm.confirmForgetPhones()
+        assertNull(vm.state.value.forgetPhonesError)
+        assertEquals(0, vm.state.value.pairedPhones)
     }
 }

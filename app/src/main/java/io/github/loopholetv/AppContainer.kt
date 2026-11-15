@@ -23,6 +23,7 @@ import io.github.loopholetv.data.vod.VodProgressRepository
 import io.github.loopholetv.data.vod.VodRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.player.HistoryRecorder
@@ -362,6 +363,78 @@ class AppContainer(context: Context) {
         )
     }
     // --- End of casting between TVs ------------------------------------------------------------
+
+    // --- The phone page --------------------------------------------------------------------------
+
+    /** Pairs phones with this TV through the code on its screen. */
+    val phonePairing: io.github.loopholetv.phone.PhonePairing by lazy {
+        io.github.loopholetv.phone.PhonePairing(settingsStore, System::currentTimeMillis)
+    }
+
+    /**
+     * The phone page, on a server of its own (the casting server keeps its own), up only while
+     * Loophole is on screen. API routes may be added with [io.github.loopholetv.phone.PhoneServer.api]
+     * at any time.
+     */
+    val phoneServer: io.github.loopholetv.phone.PhoneServer by lazy {
+        io.github.loopholetv.phone.PhoneServer(
+            scope = castScope,
+            server = io.github.loopholetv.cast.net.LocalHttpServer(castScope, maxPerRemote = 4),
+            pairing = phonePairing,
+            store = settingsStore,
+            lanAddress = { io.github.loopholetv.cast.net.lanAddress(appContext) },
+            watchNetwork = io.github.loopholetv.cast.defaultNetworkChanges(appContext),
+            asset = { name ->
+                try {
+                    appContext.assets.open(name)
+                } catch (_: java.io.IOException) {
+                    null
+                }
+            },
+            tvName = { settingsStore.current().castTvName ?: io.github.loopholetv.data.settings.defaultTvName(appContext) },
+        ).also {
+            playlistApi.register(it)
+            channelsApi.register(it)
+        }
+    }
+
+    /**
+     * Playlist loads started from the phone, one at a time on the app-wide scope, so a phone
+     * closing its page never cancels one. The TV's own screens observe it.
+     */
+    val phoneJobs: io.github.loopholetv.phone.PhoneJobs by lazy {
+        io.github.loopholetv.phone.PhoneJobs((appContext as LoopholeApp).applicationScope)
+    }
+
+    /** The phone page's playlist routes, through the same calls as the TV's form and Settings. */
+    private val playlistApi: io.github.loopholetv.phone.PlaylistApi by lazy {
+        io.github.loopholetv.phone.PlaylistApi(
+            jobs = phoneJobs,
+            work = (appContext as LoopholeApp).applicationScope,
+            playlists = { playlistRepository.playlists().first() },
+            channelCounts = { db.channelDao().countsByPlaylist().first().associate { it.playlistId to it.count } },
+            playlist = { id -> db.playlistDao().byId(id) },
+            addM3u = { n, u, p -> playlistRepository.addM3u(n, u, p) },
+            addXtream = { n, cr, p -> playlistRepository.addXtream(n, cr, p) },
+            addStalker = { n, cfg, p -> playlistRepository.addStalker(n, cfg, p) },
+            refreshGuide = { id, p -> epgRepository.refresh(id, p) },
+            updateSource = { id, e, p -> refreshCoordinator.updateSource(id, e, p) },
+            refreshPlaylist = { id, p -> refreshCoordinator.refreshPlaylist(id, p, chainEpg = false) },
+            // As Settings' "Update playlist": the guide follows for a turned-on playlist.
+            guideAfterRefresh = { id ->
+                settingsStore.current().epgUpdateOnPlaylistChange && db.playlistDao().byId(id)?.enabled == true
+            },
+            setEnabled = { id, on -> channelEdits.setPlaylistEnabled(id, on) },
+            // A playlist the film and show fill left out while it was off is filled now.
+            afterEnabled = { id -> vodFill.afterEnabled(id) },
+            delete = { id -> playlistRepository.delete(id) },
+        )
+    }
+    /** The phone page's channel and group routes, through the same repositories as the TV's editor. */
+    private val channelsApi: io.github.loopholetv.phone.ChannelsApi by lazy {
+        io.github.loopholetv.phone.ChannelsApi(db, channelEdits, favourites)
+    }
+    // --- End of the phone page -------------------------------------------------------------------
 
     // --- Copying a setup between TVs -----------------------------------------------------------
 

@@ -88,6 +88,8 @@ fun AddPlaylistScreen(
     onSkip: (() -> Unit)? = null,
     /** First start only: copy another TV's setup instead of typing one. */
     onCopyFromAnotherTv: (() -> Unit)? = null,
+    /** First start only: add the playlist from a phone's browser instead. */
+    onSetUpFromPhone: (() -> Unit)? = null,
     // Keyed so an add form and an edit form never share one ViewModel, even in one back-stack entry.
     vm: AddPlaylistViewModel = viewModel(key = "playlist-form-${editId ?: "new"}", factory = AddPlaylistViewModel.factory(editId)),
 ) {
@@ -101,7 +103,7 @@ fun AddPlaylistScreen(
     if (browsing) {
         FileBrowser(onPick = { vm.setFile(it); browsing = false }, onCancel = { browsing = false })
     } else {
-        AddPlaylistContent(ui, vm, chooseFile, onSkip, onCopyFromAnotherTv)
+        AddPlaylistContent(ui, vm, chooseFile, onSkip, onCopyFromAnotherTv, onSetUpFromPhone)
     }
 }
 
@@ -148,6 +150,7 @@ private fun AddPlaylistContent(
     chooseFile: () -> Unit,
     onSkip: (() -> Unit)?,
     onCopyFromAnotherTv: (() -> Unit)?,
+    onSetUpFromPhone: (() -> Unit)?,
 ) {
     val firstField = remember { FocusRequester() }
     // Also re-runs when an edited playlist has loaded (its mode decides the first field).
@@ -217,6 +220,7 @@ private fun AddPlaylistContent(
             if (named) FormField(ctl, "Playlist name", ui.name, vm::setName, last = true)
             Spacer(Modifier.height(4.dp))
             PillButton(if (ui.editing) "Save" else "Add playlist", selected = false, enabled = !ui.busy, onFocus = stopTyping) { vm.submit() }
+            onSetUpFromPhone?.let { PillButton("Set up from your phone", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }
             onCopyFromAnotherTv?.let { PillButton("Copy from another TV", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }
             onSkip?.let { PillButton("Skip for now", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }
             // On a long form (MAC portal) the status sits below the fold: scroll it into view.

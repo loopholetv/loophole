@@ -4,10 +4,8 @@ import io.github.loopholetv.data.db.EpgSourceEntity
 import io.github.loopholetv.data.db.EpgStatusEntity
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
-import io.github.loopholetv.data.repo.COPY_NOTICE_PREFIX
 import io.github.loopholetv.data.repo.EPG_NO_SOURCE
 import io.github.loopholetv.data.repo.PORTAL_EPG_SOURCE
-import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
 import io.github.loopholetv.data.repo.announcedEpgUrls
 import io.github.loopholetv.data.repo.m3uSecrets
 import io.github.loopholetv.data.repo.playlistSecrets
@@ -97,16 +95,13 @@ internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
 
     /** The status text, and whether it reports a failure (shown in the error colour). */
     private fun status(p: PlaylistEntity, op: PlaylistOp, films: Int, shows: Int): Pair<String, Boolean> {
-        val stored = p.lastError?.trim()?.takeIf { it.isNotEmpty() }
+        // Only fixed copy is shown (storedErrorCopy). A failed source edit keeps its new values and
+        // stores its error here, so it never reads as a success.
+        val stored = storedErrorCopy(p.lastError)
         return when {
             op is PlaylistOp.Updating -> "Updating… ${contentCounts(op.count, films, shows, locale)}" to false
             op is PlaylistOp.Failed -> op.message to true
-            // Stored errors are raw (redacted) import messages: only fixed copy is shown. The last-good-copy
-            // notice reports a success; the portal's messages are fixed copy. A failed source
-            // edit keeps its new values and stores its error here, so it never reads as a success.
-            stored != null && stored.startsWith(COPY_NOTICE_PREFIX) -> stored to false
-            stored != null && stored in PORTAL_ERROR_COPY -> stored to true
-            stored != null -> LAST_UPDATE_FAILED to true
+            stored != null -> stored.text to stored.isError
             p.lastRefreshedAt != null -> "Updated ${updated.format(p.lastRefreshedAt)}" to false
             else -> NOT_UPDATED_YET to false
         }

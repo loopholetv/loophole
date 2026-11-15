@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import io.github.loopholetv.phone.PairedPhone
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -380,5 +381,22 @@ class SettingsStoreTest {
 
         assertEquals(true, store.isFilled())
         assertEquals(setOf(7L), store.skipped())
+    }
+
+    @Test
+    fun pairedPhonesAndPortRoundTripOutsideAppSettings() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        assertEquals(emptyList<PairedPhone>(), store.pairedPhones())
+        assertEquals(null, store.phonePort())
+        val phones = listOf(PairedPhone("ab12", "Chrome on Android", 7L))
+        store.savePairedPhones(phones)
+        store.savePhonePort(8123)
+        assertEquals(phones, store.pairedPhones())
+        assertEquals(1, store.pairedCount.first())
+        assertEquals(8123, store.phonePort())
+        store.update { it.copy(confirmExit = !it.confirmExit) }
+        assertEquals(phones, store.pairedPhones())
+        store.savePairedPhones(emptyList())
+        assertEquals(0, store.pairedCount.first())
     }
 }

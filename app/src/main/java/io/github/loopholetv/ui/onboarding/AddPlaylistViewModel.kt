@@ -13,7 +13,6 @@ import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
 import io.github.loopholetv.data.repo.SourceEdit
 import io.github.loopholetv.data.repo.errorCopy
 import io.github.loopholetv.data.repo.localFileDisplayName
-import io.github.loopholetv.data.repo.withHttpScheme
 import io.github.loopholetv.data.stalker.PortalConfig
 import io.github.loopholetv.data.stalker.isInfomirMac
 import io.github.loopholetv.data.stalker.normaliseMac
@@ -108,8 +107,6 @@ internal fun failureCopy(mode: Mode, failure: ImportResult.Failure): String = wh
     mode == Mode.FILE && failure.error == ImportError.Unreachable -> FILE_UNREADABLE
     else -> errorCopy(failure.error)
 }
-
-private fun String.typedOrNull(): String? = trim().ifEmpty { null }
 
 class AddPlaylistViewModel(
     private val addM3u: suspend (name: String, url: String, progress: (Int) -> Unit) -> ImportResult,
@@ -218,57 +215,23 @@ class AddPlaylistViewModel(
         }
     }
 
-    /** The source the form describes, or null when it isn't complete (pure: [submit] reports an invalid MAC). */
-    private fun sourceOf(s: AddPlaylistUi): SourceEdit? = when (s.mode) {
-        Mode.M3U -> s.url.takeIf { it.isNotBlank() }?.let { SourceEdit.M3uUrl(withHttpScheme(it)) }
-        // Wait for the display name, or a content:// pick would be named after its URI segment.
-        Mode.FILE -> s.fileLocation.takeIf { it.isNotBlank() && s.fileName.isNotBlank() }?.let { SourceEdit.LocalFile(it) }
-        Mode.XTREAM ->
-            if (s.server.isBlank() || s.user.isBlank() || s.pass.isBlank()) null
-            else SourceEdit.Xtream(XtreamCredentials(s.server.trim(), s.user.trim(), s.pass))
-        Mode.PORTAL -> {
-            val mac = normaliseMac(s.mac)
-            when {
-                s.portalUrl.isBlank() || mac == null -> null
-                else -> SourceEdit.Portal(
-                    PortalConfig(
-                        portalUrl = s.portalUrl.trim(),
-                        mac = mac,
-                        login = s.portalLogin.typedOrNull(),
-                        password = s.portalPass.takeIf { it.isNotBlank() },
-                        serial = s.serial.typedOrNull(),
-                        deviceId = s.deviceId.typedOrNull(),
-                        deviceId2 = s.deviceId2.typedOrNull(),
-                        signature = s.signature.typedOrNull(),
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun nameFor(s: AddPlaylistUi, source: SourceEdit): String = s.name.trim().ifEmpty {
-        when (source) {
-            is SourceEdit.M3uUrl -> defaultName(source.url)
-            is SourceEdit.LocalFile -> fileBaseName(s.fileName.ifBlank { source.location.substringAfterLast('/') })
-            is SourceEdit.Xtream -> defaultName(s.server)
-            is SourceEdit.Portal -> defaultName(source.cfg.portalUrl)
-        }
-    }
-
     fun submit() {
         val s = _state.value
         if (s.busy) return
-        if (s.mode == Mode.PORTAL && s.portalUrl.isNotBlank() && normaliseMac(s.mac) == null) {
-            _state.update { it.copy(macError = INVALID_MAC, macErrorShown = it.macErrorShown + 1) }
-            return
+        val check = when (val c = checkPlaylistForm(s.toFormInput())) {
+            FormCheck.Incomplete -> return
+            FormCheck.InvalidMac -> {
+                _state.update { it.copy(macError = INVALID_MAC, macErrorShown = it.macErrorShown + 1) }
+                return
+            }
+            is FormCheck.Ok -> c
         }
-        val source = sourceOf(s) ?: return
         _state.update { it.copy(phase = Phase.LoadingChannels(0)) }
         val onProgress = { n: Int -> _state.update { it.copy(phase = Phase.LoadingChannels(n)) } }
         // Not viewModelScope: Back must never cancel an add or edit halfway (see [appScope]).
         (appScope ?: viewModelScope).launch {
             val result = try {
-                run(s, source, onProgress)
+                run(check, onProgress)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -286,19 +249,17 @@ class AddPlaylistViewModel(
         }
     }
 
-    private suspend fun run(s: AddPlaylistUi, source: SourceEdit, onProgress: (Int) -> Unit): ImportResult =
-            if (editId != null) {
-                // The coordinator refreshes the playlist and then its guide.
-                updateSource(editId, source, onProgress)
-            } else {
-                val name = nameFor(s, source)
-                when (source) {
-                    is SourceEdit.M3uUrl -> addM3u(name, source.url, onProgress)
-                    is SourceEdit.LocalFile -> addLocalFile(name, source.location, onProgress)
-                    is SourceEdit.Xtream -> addXtream(name, source.creds, onProgress)
-                    is SourceEdit.Portal -> addStalker(name, source.cfg, onProgress)
-                }
-            }
+    private suspend fun run(check: FormCheck.Ok, onProgress: (Int) -> Unit): ImportResult {
+        val source = check.source
+        // The coordinator refreshes an edited playlist and then its guide.
+        if (editId != null) return updateSource(editId, source, onProgress)
+        return when (source) {
+            is SourceEdit.M3uUrl -> addM3u(check.name, source.url, onProgress)
+            is SourceEdit.LocalFile -> addLocalFile(check.name, source.location, onProgress)
+            is SourceEdit.Xtream -> addXtream(check.name, source.creds, onProgress)
+            is SourceEdit.Portal -> addStalker(check.name, source.cfg, onProgress)
+        }
+    }
 
     private suspend fun loadGuide(playlistId: Long) {
         _state.update { it.copy(phase = Phase.LoadingGuide()) }

@@ -30,8 +30,8 @@ android {
         applicationId = "io.github.loopholetv"
         minSdk = 25
         targetSdk = 37
-        versionCode = 13
-        versionName = "0.8.0"
+        versionCode = 14
+        versionName = "0.9.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -133,6 +133,7 @@ dependencies {
     implementation(libs.androidx.work.runtime)
     implementation(libs.okhttp)
     implementation(libs.moshi)
+    implementation(libs.zxing.core)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
 

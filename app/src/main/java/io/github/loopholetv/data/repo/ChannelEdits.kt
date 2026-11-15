@@ -11,6 +11,8 @@ import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.data.settings.DecoderChoice
+import io.github.loopholetv.util.MAX_NAME_LENGTH
+import io.github.loopholetv.util.takeCodePoints
 
 /** Guide time shift step. */
 const val SHIFT_STEP_MINUTES = 30
@@ -29,10 +31,10 @@ class ChannelEdits(private val db: AppDatabase, private val overlay: ChannelOver
 
     suspend fun setHidden(ref: ChannelRef, hidden: Boolean) = editChannel(ref) { it.copy(hidden = hidden) }
 
-    /** A blank name, or the source name, restores the original. */
+    /** A blank name, or the source name, restores the original; a name keeps its first [MAX_NAME_LENGTH] code points. */
     suspend fun rename(ref: ChannelRef, name: String?) = db.withTransaction {
         val channel = overlayDao.channelByKey(ref.playlistId, ref.key)
-        val custom = name.blankToNull()?.takeIf { it != channel?.name }
+        val custom = name?.takeCodePoints(MAX_NAME_LENGTH).blankToNull()?.takeIf { it != channel?.name }
         val changed = channelPrefs.get(ref.playlistId, ref.key)?.customName != custom
         writeChannelPrefs(ref) { it.copy(customName = custom) }
         overlay.applyChannel(ref.playlistId, ref.key)
@@ -107,15 +109,42 @@ class ChannelEdits(private val db: AppDatabase, private val overlay: ChannelOver
         }
     }
 
+    /**
+     * Moves the channel straight to [toIndex] (0-based, hidden rows counted, clamped) in its group's
+     * `groupRank` order, writing every position that changes and setting the group to
+     * [GroupSort.CUSTOM]. Returns false when the channel is gone.
+     */
+    suspend fun moveTo(ref: ChannelRef, toIndex: Int): Boolean = db.withTransaction {
+        val group = overlayDao.channelByKey(ref.playlistId, ref.key)?.groupTitle
+            ?: return@withTransaction false
+        val rows = overlayDao.rankRows(ref.playlistId, group)
+            .sortedWith(compareBy<ChannelRankRow>({ it.groupRank }, { it.number }, { it.id }))
+        val from = rows.indexOfFirst { it.key == ref.key }
+        if (from < 0) return@withTransaction false
+        val order = rows.toMutableList()
+        order.add(toIndex.coerceIn(0, order.lastIndex), order.removeAt(from))
+        order.forEachIndexed { i, row ->
+            if (row.position != i) writeChannelPrefs(ChannelRef(ref.playlistId, row.key)) { it.copy(position = i) }
+        }
+        if (sortOf(ref.playlistId, group) != GroupSort.CUSTOM) {
+            writeGroupPrefs(ref.playlistId, group) { it.copy(sortMode = GroupSort.CUSTOM) }
+        }
+        overlay.rankGroup(ref.playlistId, group)
+        true
+    }
+
     /** Hides or shows every channel of a group (re-derives the playlist). */
     suspend fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean) = db.withTransaction {
         writeGroupPrefs(playlistId, title) { it.copy(hidden = hidden) }
         overlay.applyPlaylist(playlistId)
     }
 
-    /** A blank name, or the original title, restores the original. Channels are unaffected. */
+    /**
+     * A blank name, or the original title, restores the original; a name keeps its first
+     * [MAX_NAME_LENGTH] code points. Channels are unaffected.
+     */
     suspend fun renameGroup(playlistId: Long, title: String, name: String?) = db.withTransaction {
-        val custom = name.blankToNull()?.takeIf { it != title }
+        val custom = name?.takeCodePoints(MAX_NAME_LENGTH).blankToNull()?.takeIf { it != title }
         writeGroupPrefs(playlistId, title) { it.copy(customName = custom) }
     }
 
@@ -149,6 +178,24 @@ class ChannelEdits(private val db: AppDatabase, private val overlay: ChannelOver
             }
             true
         }
+    }
+
+    /**
+     * Moves a group straight to [toIndex] (0-based, hidden groups counted, clamped) in the order
+     * [moveGroup] uses, writing every position that changes. Returns false when the group is gone.
+     */
+    suspend fun moveGroupTo(playlistId: Long, title: String, toIndex: Int): Boolean = db.withTransaction {
+        val rows = overlayDao.groupRows(playlistId).sortedWith(
+            compareBy<GroupOrderRow>({ it.position == null }, { it.position }, { it.groupOrder }, { it.groupTitle }),
+        )
+        val from = rows.indexOfFirst { it.groupTitle == title }
+        if (from < 0) return@withTransaction false
+        val order = rows.toMutableList()
+        order.add(toIndex.coerceIn(0, order.lastIndex), order.removeAt(from))
+        order.forEachIndexed { i, row ->
+            if (row.position != i) writeGroupPrefs(playlistId, row.groupTitle) { it.copy(position = i) }
+        }
+        true
     }
 
     suspend fun setGroupSort(playlistId: Long, title: String, sort: GroupSort) = db.withTransaction {

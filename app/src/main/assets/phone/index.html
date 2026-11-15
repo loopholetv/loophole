@@ -1,0 +1,1519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Loophole</title>
+<style>
+:root {
+  --bg: #0B0C0E; --surface: #16181B; --raised: #24272C; --outline: #3A3E45;
+  --accent: #0ABAB5; --accent-light: #81D8D0; --text: #F4F6F7; --muted: #9AA0A8; --error: #FF6B6B;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow-x: hidden;
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 0 16px; }
+h1, h2 { margin: 0; font-weight: 700; }
+h2 { font-size: 20px; }
+p { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .5; }
+:focus-visible { outline: 2px solid var(--accent-light); outline-offset: 2px; }
+.muted { color: var(--muted); }
+.error { color: var(--error); }
+.info { color: var(--accent-light); }
+.small { font-size: 14px; }
+
+.btn {
+  min-height: 44px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--outline);
+  background: var(--raised);
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.btn.danger { color: var(--error); }
+.btn.on { background: var(--accent-light); border-color: var(--accent-light); color: var(--bg); }
+.icon {
+  flex: none; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 20px; padding: 0;
+}
+.icon:active { background: var(--raised); }
+.icon[aria-pressed="true"].star { color: var(--accent-light); }
+.icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { color: var(--muted); font-size: 14px; }
+.input {
+  width: 100%; min-height: 44px; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--outline); background: var(--surface); font-size: 16px;
+}
+.input::placeholder { color: var(--muted); }
+.input:focus { border-color: var(--accent); outline: none; }
+
+#banner { background: var(--raised); border-bottom: 1px solid var(--error); }
+#banner .wrap { display: flex; align-items: center; gap: 12px; padding-top: 10px; padding-bottom: 10px; }
+#banner p { flex: 1; min-width: 0; }
+
+#pair .wrap { padding-top: 48px; display: flex; flex-direction: column; gap: 20px; max-width: 420px; }
+#pair .brand { font-size: 28px; }
+#code { font-size: 32px; letter-spacing: 12px; text-align: center; max-width: 220px; }
+#pairForm { display: flex; flex-direction: column; gap: 12px; }
+#pairForm label { font-size: 18px; }
+
+.top { position: sticky; top: 0; z-index: 2; background: var(--bg); }
+#appTop { padding-top: 12px; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.bar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.brand { color: var(--accent-light); font-size: 20px; }
+#tvName { color: var(--muted); font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabs { display: flex; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--surface); }
+.tabs button {
+  flex: 1 1 0; min-width: 0; min-height: 44px; padding: 6px 2px; border: 0; border-radius: 10px;
+  background: var(--surface); font-size: 15px;
+}
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--bg); font-weight: 600; }
+
+.panel { padding: 16px 0 48px; display: flex; flex-direction: column; gap: 12px; }
+
+.cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.card { background: var(--surface); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.card-top { display: flex; align-items: flex-start; gap: 12px; }
+.card-top > div { flex: 1; min-width: 0; }
+.card strong { display: block; overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.switch {
+  flex: none; min-width: 64px; min-height: 36px; border-radius: 999px; border: 1px solid var(--outline);
+  background: var(--raised); color: var(--muted); padding: 4px 12px;
+}
+.switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+
+#plForm form { display: flex; flex-direction: column; gap: 12px; }
+#plForm fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.modes { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 8px 14px; border-radius: 999px;
+  background: var(--raised); border: 1px solid var(--outline); cursor: pointer;
+}
+.pill.on { background: var(--accent-light); border-color: var(--accent-light); color: var(--bg); font-weight: 600; }
+.pill:focus-within { outline: 2px solid var(--accent-light); outline-offset: 2px; }
+.pill input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.group { display: flex; flex-direction: column; gap: 12px; }
+
+.pick { display: flex; flex-direction: column; gap: 4px; }
+.pick label { color: var(--muted); font-size: 14px; }
+.chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; scrollbar-width: thin; }
+.chip {
+  flex: none; max-width: 70vw; min-height: 36px; padding: 6px 14px; border-radius: 999px; border: 0;
+  background: var(--raised); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chip.dim { color: var(--muted); }
+.chip[aria-pressed="true"] { background: var(--accent-light); color: var(--bg); font-weight: 600; }
+
+.rows { list-style: none; margin: 0; padding: 0; }
+.row {
+  display: flex; align-items: center; gap: 2px; min-height: 52px; padding: 4px 0;
+  border-bottom: 1px solid var(--surface); background: var(--bg); position: relative;
+}
+.row.dragging { z-index: 1; background: var(--raised); border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, .5); }
+.handle {
+  flex: none; width: 36px; height: 44px; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--outline); font-size: 22px; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none;
+}
+.row.dragging .handle { color: var(--accent-light); cursor: grabbing; }
+.name {
+  flex: 1; min-width: 0; text-align: left; background: transparent; border: 0; padding: 8px 6px;
+  overflow-wrap: anywhere; border-radius: 8px;
+}
+.name small { display: block; color: var(--muted); font-size: 13px; }
+.row.off .name > span { color: var(--muted); opacity: .7; text-decoration: line-through; }
+.rename { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0; }
+.rename .input { flex: 1 1 100%; }
+.rename .btn { min-height: 40px; padding: 6px 12px; }
+.sentinel { height: 1px; }
+.hint { font-size: 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div id="banner" role="alert" hidden>
+    <div class="wrap">
+      <p id="bannerText"></p>
+      <button class="btn" type="button" id="retry">Try again</button>
+    </div>
+  </div>
+  <div class="wrap" id="appTop" hidden>
+    <header class="bar"><h1 class="brand">Loophole</h1><span id="tvName"></span></header>
+    <nav class="tabs" role="tablist" aria-label="Sections" id="tabs">
+      <button type="button" role="tab" id="tab-playlists" aria-controls="panel-playlists" aria-selected="false">Playlists</button>
+      <button type="button" role="tab" id="tab-channels" aria-controls="panel-channels" aria-selected="false">Channels</button>
+      <button type="button" role="tab" id="tab-groups" aria-controls="panel-groups" aria-selected="false">Groups</button>
+      <button type="button" role="tab" id="tab-more" aria-controls="panel-more" aria-selected="false">More</button>
+    </nav>
+  </div>
+</div>
+
+<main id="pair" hidden>
+  <div class="wrap">
+    <h1 class="brand">Loophole</h1>
+    <form id="pairForm" novalidate>
+      <label for="code">Enter the code on your TV</label>
+      <input class="input" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="4" pattern="[0-9]*" aria-describedby="pairMsg">
+      <button class="btn primary" type="submit" id="pairBtn">Connect</button>
+      <p id="pairMsg" role="status"></p>
+    </form>
+  </div>
+</main>
+
+<main class="wrap" id="app" hidden>
+    <section class="panel" id="panel-playlists" role="tabpanel" aria-labelledby="tab-playlists" hidden>
+      <div id="plView" class="stack">
+        <p id="plNote" role="status"></p>
+        <ul class="cards" id="plList"></ul>
+        <button class="btn primary" type="button" id="addBtn">+ Add playlist</button>
+      </div>
+
+      <div id="plForm" hidden>
+        <form id="form" novalidate>
+          <h2 id="formTitle">Add playlist</h2>
+          <p id="formNotice" class="muted small">Loophole is a player only. It contains no channels — add the playlist from your own IPTV subscription.</p>
+          <fieldset id="formFields">
+            <div class="modes" role="radiogroup" aria-label="Playlist type">
+              <label class="pill"><input type="radio" name="mode" value="m3u">M3U link</label>
+              <label class="pill"><input type="radio" name="mode" value="xtream">Xtream Codes</label>
+              <label class="pill"><input type="radio" name="mode" value="portal">MAC portal</label>
+            </div>
+
+            <div class="group" data-mode="m3u">
+              <div class="field"><label for="f-url">Playlist URL</label>
+                <input class="input" id="f-url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+            </div>
+
+            <div class="group" data-mode="xtream">
+              <div class="field"><label for="f-server">Server address</label>
+                <input class="input" id="f-server" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+              <div class="field"><label for="f-user">Username</label>
+                <input class="input" id="f-user" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+              <div class="field"><label for="f-pass">Password</label>
+                <input class="input" id="f-pass" type="password" autocomplete="off" aria-describedby="passHint">
+                <p id="passHint" class="info small" hidden>Enter the password again</p></div>
+            </div>
+
+            <div class="group" data-mode="portal">
+              <div class="field"><label for="f-portalUrl">Portal address</label>
+                <input class="input" id="f-portalUrl" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+              <div class="field"><label for="f-mac">MAC address</label>
+                <input class="input" id="f-mac" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off" aria-describedby="macMsg">
+                <p id="macMsg" class="small" hidden></p></div>
+              <div><button class="btn" type="button" id="moreBtn" aria-expanded="false" aria-controls="moreFields">More options</button></div>
+              <div class="group" id="moreFields" hidden>
+                <div class="field"><label for="f-portalLogin">Login (optional)</label>
+                  <input class="input" id="f-portalLogin" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+                <div class="field"><label for="f-portalPass">Password (optional)</label>
+                  <input class="input" id="f-portalPass" type="password" autocomplete="off" aria-describedby="portalPassHint">
+                  <p id="portalPassHint" class="info small" hidden>Enter the password again</p></div>
+                <div class="field"><label for="f-serial">Serial number (optional)</label>
+                  <input class="input" id="f-serial" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+                <div class="field"><label for="f-deviceId">Device ID (optional)</label>
+                  <input class="input" id="f-deviceId" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+                <div class="field"><label for="f-deviceId2">Device ID 2 (optional)</label>
+                  <input class="input" id="f-deviceId2" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+                <div class="field"><label for="f-signature">Signature (optional)</label>
+                  <input class="input" id="f-signature" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+              </div>
+            </div>
+
+            <div class="field" id="nameField"><label for="f-name">Playlist name</label>
+              <input class="input" id="f-name" autocomplete="off"></div>
+
+          </fieldset>
+          <div class="actions">
+            <button class="btn primary" type="submit" id="saveBtn">Add playlist</button>
+            <button class="btn" type="button" id="cancelBtn">Cancel</button>
+          </div>
+          <p id="formStatus" role="status"></p>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-channels" role="tabpanel" aria-labelledby="tab-channels" hidden>
+      <p id="chEmpty" class="muted" hidden>No playlists yet. Add one on the Playlists tab.</p>
+      <div id="chBody" class="stack">
+        <div class="pick" id="chPickWrap" hidden><label for="chPick">Playlist</label><select class="input" id="chPick"></select></div>
+        <input class="input" id="search" type="search" placeholder="Search channels…" aria-label="Search channels" autocomplete="off" enterkeyhint="search">
+        <div class="chips" id="chips" role="group" aria-label="Groups"></div>
+        <p class="hint" id="chHint"></p>
+        <ul class="rows" id="chList"></ul>
+        <p id="chNote" class="muted" role="status"></p>
+        <div class="sentinel" id="chMore"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-groups" role="tabpanel" aria-labelledby="tab-groups" hidden>
+      <p id="grEmpty" class="muted" hidden>No playlists yet. Add one on the Playlists tab.</p>
+      <div id="grBody" class="stack">
+        <div class="pick" id="grPickWrap" hidden><label for="grPick">Playlist</label><select class="input" id="grPick"></select></div>
+        <p class="hint">Tap a name to rename · drag ≡ to reorder</p>
+        <ul class="rows" id="grList"></ul>
+        <p id="grNote" class="muted" role="status"></p>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-more" role="tabpanel" aria-labelledby="tab-more" hidden>
+      <div class="card">
+        <span class="muted small">This TV</span>
+        <strong id="moreTv"></strong>
+      </div>
+      <div><button class="btn danger" type="button" id="forgetBtn">Forget this phone</button></div>
+    </section>
+</main>
+
+<template id="eyeOn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6z"/></svg></template>
+<template id="eyeOff"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6zM3 3l18 18"/></svg></template>
+
+<script>
+"use strict";
+(function () {
+  var TABS = ["playlists", "channels", "groups", "more"];
+  var TAB_KEY = "loophole.tab";
+  var KINDS = { m3u: "M3U link", file: "Local file", xtream: "Xtream Codes", portal: "MAC portal" };
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var MODE_FIELDS = {
+    m3u: ["url"],
+    xtream: ["server", "user", "pass"],
+    portal: ["portalUrl", "mac", "portalLogin", "portalPass", "serial", "deviceId", "deviceId2", "signature"]
+  };
+  var PAGE = 100;
+  var MAX_PAGE = 200;
+  var WAITING = "Waiting for another playlist to finish…";
+  var UNKNOWN_END = "Loading has finished on the TV. Check the playlist list to see how it went.";
+  var NON_INFOMIR_MAC = "This MAC doesn't start with 00:1A:79. Some portals only accept those.";
+  var MAC_RE = /^[0-9A-Fa-f]{2}([:-]?)[0-9A-Fa-f]{2}(?:\1[0-9A-Fa-f]{2}){4}$/;
+  var PAIR_COPY = {
+    not_showing: "Open Settings → Phone page on your TV to see the code",
+    wrong_code: "That code didn't match. Check the TV and try again.",
+    too_many: "Too many tries. Wait a minute and try again."
+  };
+
+  var state = {
+    tv: "", tab: null, playlists: [], playlistId: null, jobs: [], fails: {}, removed: {}, pollTimer: null, noteIsJob: false, form: null, dragging: false
+  };
+  var cs = { groups: [], group: null, q: "", rows: [], more: false, loading: false, seq: 0, editing: null };
+  var gs = { rows: [], seq: 0, editing: null };
+
+  function $(id) { return document.getElementById(id); }
+
+  /* ---------- DOM helpers (text only; never parses HTML) ---------- */
+
+  function el(tag, props, children) {
+    var n = document.createElement(tag);
+    if (tag === "button") n.type = "button";
+    if (props) {
+      Object.keys(props).forEach(function (k) {
+        var v = props[k];
+        if (v == null || v === false) return;
+        if (k === "text") n.textContent = v;
+        else if (k === "class") n.className = v;
+        else if (k.slice(0, 2) === "on") n.addEventListener(k.slice(2), v);
+        else n.setAttribute(k, v === true ? "" : String(v));
+      });
+    }
+    (children || []).forEach(function (c) { if (c != null && c !== false) n.append(c); });
+    return n;
+  }
+
+  function eyeIcon(hidden) {
+    return $(hidden ? "eyeOff" : "eyeOn").content.firstElementChild.cloneNode(true);
+  }
+
+  function say(node, text, kind) {
+    node.textContent = text || "";
+    node.className = kind === "error" ? "error" : kind === "info" ? "info" : "muted";
+  }
+
+  function plural(n, one, many) { return Number(n).toLocaleString() + " " + (n === 1 ? one : many); }
+
+  function pad(n) { return n < 10 ? "0" + n : String(n); }
+
+  function updatedText(ms) {
+    var d = new Date(ms);
+    return "Updated " + d.getDate() + " " + MONTHS[d.getMonth()] + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  function guideProgressText(programmes) {
+    return programmes > 0 ? "Loading TV guide… " + programmes + " programmes" : "Loading TV guide…";
+  }
+
+  function query(params) {
+    var q = new URLSearchParams();
+    Object.keys(params).forEach(function (k) {
+      var v = params[k];
+      if (v != null && v !== "") q.set(k, String(v));
+    });
+    return q.toString();
+  }
+
+  /* ---------- The one way to talk to the TV ---------- */
+
+  function ApiError(status, code, text) {
+    this.status = status;
+    this.code = code;
+    this.text = text;
+  }
+
+  async function api(method, path, body) {
+    var init = { method: method, credentials: "same-origin", headers: { "X-Loophole": "1" } };
+    if (body !== undefined) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    var res;
+    try {
+      res = await fetch(path, init);
+    } catch (e) {
+      throw new ApiError(0, "offline", "");
+    }
+    var data = null;
+    try {
+      data = await res.json();
+    } catch (e) {
+      data = null;
+    }
+    var code = data && typeof data.error === "string" ? data.error : "";
+    var text = data && typeof data.message === "string" ? data.message : "";
+    if (res.status === 401) {
+      showPair(null);
+      throw new ApiError(401, code, "");
+    }
+    if (!res.ok) throw new ApiError(res.status, code, text);
+    $("banner").hidden = true;
+    return data;
+  }
+
+  /**
+   * A request that failed in a way the caller didn't handle: the TV gone shows the banner; a fixed
+   * message goes to [note]; after an edit ([reread]) whatever went away is read again.
+   */
+  function fail(e, note, reread) {
+    if (!(e instanceof ApiError)) throw e;
+    if (e.status === 401) return;
+    if (e.status === 0 || e.status === 421 || e.status >= 500) {
+      $("bannerText").textContent = "Can't reach " + (state.tv || "your TV") + ". Open Loophole on the TV and try again.";
+      $("banner").hidden = false;
+      return;
+    }
+    if (note && e.text) {
+      say(note, e.text, "error");
+    } else if (reread) {
+      // Something changed on the TV meanwhile (a channel or playlist went away).
+      loadTab();
+    } else if (note) {
+      say(note, "Something went wrong. Try again.", "error");
+    }
+  }
+
+  /* ---------- Start, pairing ---------- */
+
+  async function boot() {
+    var s;
+    try {
+      s = await api("GET", "/api/status");
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    setTv(s.tv);
+    if (s.paired) showApp();
+    else showPair(s);
+  }
+
+  function setTv(name) {
+    state.tv = typeof name === "string" ? name : "";
+    $("tvName").textContent = state.tv;
+    $("moreTv").textContent = state.tv;
+  }
+
+  /** The code screen; [status] is a fresh /api/status reply, or null to read one. */
+  function showPair(status) {
+    stopJobs();
+    state.form = null;
+    $("plForm").hidden = true;
+    $("plView").hidden = false;
+    $("app").hidden = true;
+    $("appTop").hidden = true;
+    $("pair").hidden = false;
+    if (status) pairHint(status);
+    else refreshPairHint();
+    $("code").focus();
+  }
+
+  function pairHint(s) {
+    var msg = $("pairMsg");
+    if (s.showing === false) say(msg, PAIR_COPY.not_showing, "info");
+    else if (msg.textContent === PAIR_COPY.not_showing) say(msg, "");
+  }
+
+  async function refreshPairHint() {
+    try {
+      var s = await api("GET", "/api/status");
+      setTv(s.tv);
+      if (s.paired) showApp();
+      else pairHint(s);
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function pair(ev) {
+    if (ev) ev.preventDefault();
+    var input = $("code");
+    var code = input.value.replace(/\D/g, "");
+    if (code.length !== 4 || $("pairBtn").disabled) return;
+    $("pairBtn").disabled = true;
+    try {
+      await api("POST", "/api/pair", { code: code });
+      input.value = "";
+      say($("pairMsg"), "");
+      showApp();
+    } catch (e) {
+      if (e instanceof ApiError && PAIR_COPY[e.code]) {
+        say($("pairMsg"), PAIR_COPY[e.code], e.code === "not_showing" ? "info" : "error");
+        input.value = "";
+        input.focus();
+      } else if (e instanceof ApiError && e.status === 400) {
+        say($("pairMsg"), PAIR_COPY.wrong_code, "error");
+      } else {
+        fail(e);
+      }
+    } finally {
+      $("pairBtn").disabled = false;
+    }
+  }
+
+  function onCodeInput() {
+    var input = $("code");
+    var digits = input.value.replace(/\D/g, "").slice(0, 4);
+    if (digits !== input.value) input.value = digits;
+    if (digits.length === 4) pair(null);
+  }
+
+  /* ---------- Tabs ---------- */
+
+  function savedTab() {
+    try {
+      var t = localStorage.getItem(TAB_KEY);
+      if (TABS.indexOf(t) >= 0) return t;
+    } catch (e) {
+      // Storage blocked: start on the first tab.
+    }
+    return "playlists";
+  }
+
+  function showApp() {
+    $("pair").hidden = true;
+    $("app").hidden = false;
+    $("appTop").hidden = false;
+    if (state.jobs.length) schedulePoll();
+    selectTab(state.tab || savedTab(), false);
+  }
+
+  function selectTab(name, focus) {
+    state.tab = name;
+    try {
+      localStorage.setItem(TAB_KEY, name);
+    } catch (e) {
+      // Not remembered; nothing else depends on it.
+    }
+    TABS.forEach(function (t) {
+      var b = $("tab-" + t);
+      var on = t === name;
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      b.tabIndex = on ? 0 : -1;
+      $("panel-" + t).hidden = !on;
+    });
+    if (focus) $("tab-" + name).focus();
+    loadTab();
+  }
+
+  /** Reads the current tab again from the TV. */
+  function loadTab() {
+    if (state.tab === "playlists") loadPlaylists();
+    else if (state.tab === "channels") loadChannels(cs.rows.length);
+    else if (state.tab === "groups") loadGroups();
+  }
+
+  function onTabKey(ev) {
+    var i = TABS.indexOf(state.tab);
+    var next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[ev.key];
+    if (next === undefined) return;
+    ev.preventDefault();
+    selectTab(TABS[(next + TABS.length) % TABS.length], true);
+  }
+
+  /* ---------- Playlists ---------- */
+
+  async function loadPlaylists() {
+    var list, job;
+    try {
+      list = await api("GET", "/api/playlists");
+      job = await api("GET", "/api/job");
+    } catch (e) {
+      fail(e, $("plNote"));
+      return;
+    }
+    state.playlists = withoutRemoved(list);
+    renderPlaylists();
+    noteJob(job);
+  }
+
+  /**
+   * [list] without the playlists this page just deleted. The TV deletes after it answers, so a read
+   * straight after may still list one; it is forgotten once a read no longer does.
+   */
+  function withoutRemoved(list) {
+    Object.keys(state.removed).forEach(function (id) {
+      if (!list.some(function (p) { return String(p.id) === id; })) delete state.removed[id];
+    });
+    return list.filter(function (p) { return !state.removed[p.id]; });
+  }
+
+  function renderPlaylists() {
+    var list = $("plList");
+    if (!state.playlists.length) {
+      list.replaceChildren(el("li", { class: "muted", text: "No playlists yet." }));
+    } else {
+      list.replaceChildren.apply(list, state.playlists.map(playlistCard));
+    }
+    renderJobs();
+  }
+
+  function playlistCard(p) {
+    var sw = el("button", {
+      class: "switch", role: "switch", "aria-checked": p.enabled ? "true" : "false", "aria-label": p.name,
+      text: p.enabled ? "On" : "Off", onclick: function () { setEnabled(p, sw); }
+    });
+    var info = el("div", null, [
+      el("strong", { text: p.name }),
+      el("span", { class: "muted small", text: (KINDS[p.kind] || p.kind) + " · " + plural(p.channels, "channel", "channels") })
+    ]);
+    var actions = el("div", { class: "actions" }, [
+      p.kind !== "file" && el("button", { class: "btn", text: "Edit", onclick: function () { openForm(p.id); } }),
+      el("button", { class: "btn", text: "Refresh", onclick: function () { refresh(p); } }),
+      el("button", { class: "btn danger", text: "Delete", onclick: function () { remove(p); } })
+    ]);
+    return el("li", { class: "card" }, [
+      el("div", { class: "card-top" }, [info, sw]),
+      el("p", { id: "st-" + p.id, class: "small" }),
+      actions
+    ]);
+  }
+
+  /** The status line under a playlist: its running load, a failed one, its stored error or when it was updated. */
+  function fillStatus(p) {
+    var node = $("st-" + p.id);
+    if (!node) return;
+    var job = state.jobs.filter(function (j) { return j.playlistId === p.id; })[0];
+    if (job) say(node, job.text, "info");
+    else if (state.fails[p.id]) say(node, state.fails[p.id], "error");
+    else if (p.error) say(node, p.error, "error");
+    else say(node, p.lastRefreshedAt ? updatedText(p.lastRefreshedAt) : "Not updated yet");
+  }
+
+  async function setEnabled(p, sw) {
+    var on = !p.enabled;
+    sw.disabled = true;
+    try {
+      var r = await api("POST", "/api/playlists/" + p.id + "/enabled", { enabled: on });
+      p.enabled = r.enabled === true;
+      sw.setAttribute("aria-checked", p.enabled ? "true" : "false");
+      sw.textContent = p.enabled ? "On" : "Off";
+      say($("plNote"), "");
+    } catch (e) {
+      fail(e, $("plNote"), true);
+    } finally {
+      sw.disabled = false;
+    }
+  }
+
+  async function refresh(p) {
+    try {
+      var r = await api("POST", "/api/playlists/" + p.id + "/refresh");
+      delete state.fails[p.id];
+      say($("plNote"), "");
+      trackJob(r.job, p.id, p.name, false);
+    } catch (e) {
+      fail(e, $("plNote"), true);
+    }
+  }
+
+  async function remove(p) {
+    if (!window.confirm("Delete " + p.name + "? Its channels and guide are removed from this TV.")) return;
+    try {
+      await api("POST", "/api/playlists/" + p.id + "/delete");
+      say($("plNote"), "");
+      if (state.playlistId === p.id) state.playlistId = null;
+      state.removed[p.id] = true;
+      state.playlists = state.playlists.filter(function (q) { return q.id !== p.id; });
+      renderPlaylists();
+      loadPlaylists();
+    } catch (e) {
+      fail(e, $("plNote"), true);
+    }
+  }
+
+  /* ---------- Loads (jobs) ---------- */
+
+  function trackJob(id, playlistId, name, fromForm) {
+    state.jobs.push({ id: id, playlistId: playlistId, name: name, fromForm: fromForm, text: "Loading channels… 0" });
+    renderJobs();
+    schedulePoll();
+  }
+
+  /** A job seen on the TV that this page isn't following yet (started elsewhere, or before a reload). */
+  function noteJob(d) {
+    var running = d && d.id != null && (d.phase === "channels" || d.phase === "guide");
+    var known = state.jobs.some(function (j) { return j.id === d.id; });
+    if (running && !known) state.jobs.push({ id: d.id, playlistId: d.playlistId, name: d.name || "", fromForm: false, text: "" });
+    if (state.jobs.length) applyJob(d);
+  }
+
+  function schedulePoll() {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = setTimeout(pollJob, 1000);
+  }
+
+  function stopJobs() {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+    state.jobs = [];
+  }
+
+  async function pollJob() {
+    state.pollTimer = null;
+    if (!state.jobs.length) return;
+    var d;
+    try {
+      d = await api("GET", "/api/job");
+    } catch (e) {
+      fail(e, $("plNote"));
+      return;
+    }
+    applyJob(d);
+  }
+
+  /** Brings every followed job up to date with the TV's current one, [d]. Jobs run one at a time, in id order. */
+  function applyJob(d) {
+    var ended = false;
+    state.jobs.slice().forEach(function (j) {
+      if (d.id === j.id) {
+        if (d.playlistId != null) j.playlistId = d.playlistId;
+        if (d.phase === "done" || d.phase === "failed") {
+          endJob(j, d.phase === "done", d.message || "");
+          ended = true;
+        } else {
+          j.text = d.phase === "guide" ? guideProgressText(d.count || 0) : "Loading channels… " + (d.count || 0);
+        }
+      } else if ((d.id != null && d.id < j.id) || (d.id == null && d.queued > 0)) {
+        j.text = WAITING;
+      } else {
+        // Finished while this page wasn't looking (the TV keeps a result for 30 s): outcome unknown.
+        endJob(j, null, "");
+        ended = true;
+      }
+    });
+    renderJobs();
+    if (state.jobs.length) schedulePoll();
+    if (ended && state.tab === "playlists") loadPlaylists();
+  }
+
+  /** [ok] is true when done, false when failed, null when the TV no longer reports how it ended. */
+  function endJob(j, ok, message) {
+    state.jobs = state.jobs.filter(function (x) { return x !== j; });
+    var f = state.form;
+    if (f && f.jobId === j.id) {
+      f.jobId = null;
+      if (ok === true) {
+        closeForm(false);
+      } else if (ok === null) {
+        setFormBusy(false);
+        say($("formStatus"), UNKNOWN_END, "info");
+      } else {
+        setFormBusy(false);
+        say($("formStatus"), message, "error");
+      }
+      return;
+    }
+    if (ok === false && j.playlistId != null) {
+      state.fails[j.playlistId] = message;
+    } else if (ok === false) {
+      say($("plNote"), (j.name ? j.name + ": " : "") + message, "error");
+      state.noteIsJob = false;
+    }
+  }
+
+  function renderJobs() {
+    var f = state.form;
+    var shown = {};
+    var note = "";
+    state.playlists.forEach(function (p) { shown[p.id] = true; fillStatus(p); });
+    state.jobs.forEach(function (j) {
+      if (f && f.jobId === j.id) say($("formStatus"), j.text, "info");
+      else if (!shown[j.playlistId] && j.text) note = (j.name ? j.name + ": " : "") + j.text;
+    });
+    if (note) say($("plNote"), note, "info");
+    else if (state.noteIsJob) say($("plNote"), "");
+    state.noteIsJob = !!note;
+  }
+
+  /* ---------- Add / edit form ---------- */
+
+  function field(key) { return $("f-" + key); }
+
+  function setFormBusy(busy) {
+    $("formFields").disabled = busy;
+    $("saveBtn").disabled = busy;
+  }
+
+  async function openForm(id) {
+    var data = null;
+    if (id != null) {
+      try {
+        data = await api("GET", "/api/playlists/" + id);
+      } catch (e) {
+        fail(e, $("plNote"));
+        return;
+      }
+    }
+    state.form = { id: id, data: data, mode: data ? data.mode : "m3u", jobId: null };
+    var keys = ["name"].concat(MODE_FIELDS.m3u, MODE_FIELDS.xtream, MODE_FIELDS.portal);
+    keys.forEach(function (k) {
+      var v = data && typeof data[k] === "string" ? data[k] : "";
+      field(k).value = k === "pass" || k === "portalPass" ? "" : v;
+    });
+    var editing = id != null;
+    $("formTitle").textContent = editing ? "Change address or login" : "Add playlist";
+    $("saveBtn").textContent = editing ? "Save" : "Add playlist";
+    $("formNotice").hidden = editing;
+    $("nameField").hidden = editing;
+    setFormBusy(false);
+    say($("formStatus"), "");
+    say($("plNote"), "");
+    var moreOpen = !!data && ["portalLogin", "serial", "deviceId", "deviceId2", "signature"].some(function (k) { return data[k]; });
+    setMore(moreOpen || (!!data && data.hasPortalPass));
+    setMode(state.form.mode);
+    $("plView").hidden = true;
+    $("plForm").hidden = false;
+    window.scrollTo(0, 0);
+    $("formTitle").setAttribute("tabindex", "-1");
+    $("formTitle").focus();
+  }
+
+  function closeForm(reload) {
+    state.form = null;
+    $("plForm").hidden = true;
+    $("plView").hidden = false;
+    if (reload !== false) loadPlaylists();
+  }
+
+  function setMode(mode) {
+    var f = state.form;
+    if (!f) return;
+    f.mode = mode;
+    document.querySelectorAll("input[name=mode]").forEach(function (r) {
+      r.checked = r.value === mode;
+      r.parentNode.classList.toggle("on", r.checked);
+    });
+    document.querySelectorAll(".group[data-mode]").forEach(function (g) { g.hidden = g.dataset.mode !== mode; });
+    field("url").required = mode === "m3u";
+    field("server").required = mode === "xtream";
+    field("user").required = mode === "xtream";
+    field("portalUrl").required = mode === "portal";
+    field("mac").required = mode === "portal";
+    $("macMsg").hidden = true;
+    if (f.jobId == null) say($("formStatus"), "");
+    updatePasswords();
+    macHint();
+  }
+
+  function setMore(open) {
+    $("moreBtn").setAttribute("aria-expanded", open ? "true" : "false");
+    $("moreBtn").classList.toggle("on", open);
+    $("moreFields").hidden = !open;
+  }
+
+  function trimmed(k) { return field(k).value.trim(); }
+
+  function normaliseMac(s) {
+    var t = s.trim();
+    if (!MAC_RE.test(t)) return null;
+    return t.replace(/[:-]/g, "").toUpperCase().match(/../g).join(":");
+  }
+
+  /** Whether an edit that leaves the password blank keeps the stored one (the same login as stored). */
+  function keepsPass() {
+    var f = state.form;
+    var d = f && f.data;
+    return !!d && d.hasPass && d.mode === "xtream" && f.mode === "xtream" &&
+      trimmed("server") === d.server.trim() && trimmed("user") === d.user.trim();
+  }
+
+  function keepsPortalPass() {
+    var f = state.form;
+    var d = f && f.data;
+    return !!d && d.hasPortalPass && d.mode === "portal" && f.mode === "portal" &&
+      trimmed("portalUrl") === d.portalUrl.trim() && normaliseMac(field("mac").value) !== null &&
+      normaliseMac(field("mac").value) === normaliseMac(d.mac) && trimmed("portalLogin") === d.portalLogin.trim();
+  }
+
+  /** "Unchanged" while a blank password keeps the stored one; "Enter the password again" once it wouldn't. */
+  function updatePasswords() {
+    var f = state.form;
+    if (!f) return;
+    var d = f.data;
+    var keep = keepsPass();
+    field("pass").placeholder = keep ? "Unchanged" : "";
+    field("pass").required = f.mode === "xtream" && !keep;
+    $("passHint").hidden = !(d && d.hasPass && f.mode === "xtream" && !keep && !field("pass").value);
+    var keepPortal = keepsPortalPass();
+    field("portalPass").placeholder = keepPortal ? "Unchanged" : "";
+    $("portalPassHint").hidden = !(d && d.hasPortalPass && f.mode === "portal" && !keepPortal && !field("portalPass").value);
+  }
+
+  function macHint() {
+    var msg = $("macMsg");
+    if (msg.classList.contains("error") && !msg.hidden) return;
+    var mac = normaliseMac(field("mac").value);
+    var warn = mac !== null && mac.indexOf("00:1A:79") !== 0;
+    msg.textContent = warn ? NON_INFOMIR_MAC : "";
+    msg.className = "small info";
+    msg.hidden = !warn;
+  }
+
+  async function submitForm(ev) {
+    ev.preventDefault();
+    var f = state.form;
+    if (!f || f.jobId != null) return;
+    $("macMsg").classList.remove("error");
+    macHint();
+    var firstMissing = Array.prototype.filter.call($("form").querySelectorAll("input[required]"), function (i) {
+      return !i.value.trim();
+    })[0];
+    if (firstMissing) {
+      say($("formStatus"), "Fill in " + firstMissing.labels[0].textContent + ".", "error");
+      firstMissing.focus();
+      return;
+    }
+    var body = { mode: f.mode, name: f.data ? f.data.name : field("name").value };
+    MODE_FIELDS[f.mode].forEach(function (k) { body[k] = field(k).value; });
+    if (body.pass === "" && keepsPass()) delete body.pass;
+    if (body.portalPass === "" && keepsPortalPass()) delete body.portalPass;
+    setFormBusy(true);
+    say($("formStatus"), "Loading channels… 0", "info");
+    var r;
+    try {
+      r = await api("POST", f.id == null ? "/api/playlists" : "/api/playlists/" + f.id, body);
+    } catch (e) {
+      setFormBusy(false);
+      say($("formStatus"), "");
+      formError(e);
+      return;
+    }
+    if (state.form !== f) return;
+    f.jobId = r.job;
+    trackJob(r.job, f.id, f.data ? f.data.name : "", true);
+  }
+
+  function formError(e) {
+    if (!(e instanceof ApiError)) throw e;
+    var status = $("formStatus");
+    if (e.code === "invalid_mac") {
+      var msg = $("macMsg");
+      msg.textContent = e.text;
+      msg.className = "small error";
+      msg.hidden = false;
+      field("mac").focus();
+    } else if (e.code === "incomplete") {
+      var passField = state.form.mode === "portal" ? field("portalPass") : field("pass");
+      if (!passField.value) {
+        say(status, "Enter the password again", "error");
+        if (state.form.mode === "portal") setMore(true);
+        passField.focus();
+      } else {
+        say(status, "Fill in every field above.", "error");
+      }
+    } else if (e.code === "not_found") {
+      closeForm();
+    } else if (e.code === "tv_only") {
+      say(status, "Change this playlist on the TV.", "error");
+    } else {
+      fail(e, status);
+    }
+  }
+
+  /* ---------- Playlist picker (Channels and Groups) ---------- */
+
+  /** Reads the playlists and fills [prefix]'s picker; false when there is none (or the TV didn't answer). */
+  async function pickPlaylist(prefix) {
+    var list;
+    try {
+      list = withoutRemoved(await api("GET", "/api/playlists"));
+    } catch (e) {
+      fail(e, $(prefix + "Note"));
+      return false;
+    }
+    state.playlists = list;
+    if (!list.some(function (p) { return p.id === state.playlistId; })) {
+      state.playlistId = list.length ? list[0].id : null;
+      cs.group = null;
+    }
+    var sel = $(prefix + "Pick");
+    sel.replaceChildren.apply(sel, list.map(function (p) { return el("option", { value: p.id, text: p.name }); }));
+    if (state.playlistId != null) sel.value = String(state.playlistId);
+    $(prefix + "PickWrap").hidden = list.length < 2;
+    $(prefix + "Empty").hidden = list.length > 0;
+    $(prefix + "Body").hidden = list.length === 0;
+    return list.length > 0;
+  }
+
+  function onPick(ev) {
+    state.playlistId = Number(ev.target.value);
+    cs.group = null;
+    cs.rows = [];
+    cs.editing = null;
+    gs.editing = null;
+    loadTab();
+  }
+
+  /* ---------- Rename (channels and groups) ---------- */
+
+  /** An inline rename: [save] gets the typed name ("" restores the original). */
+  function renameForm(current, label, canReset, save, cancel) {
+    var input = el("input", { class: "input", value: current, "aria-label": label, autocomplete: "off", maxlength: 200 });
+    var form = el("form", { class: "rename", novalidate: true }, [
+      input,
+      el("button", { class: "btn primary", type: "submit", text: "Save" }),
+      el("button", { class: "btn", text: "Cancel", onclick: cancel }),
+      canReset && el("button", { class: "btn", text: "Reset to original", onclick: function () { save(""); } })
+    ]);
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      save(input.value.trim());
+    });
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") cancel();
+    });
+    setTimeout(function () { input.focus(); input.select(); }, 0);
+    return form;
+  }
+
+  /* ---------- Drag to reorder (pointer events) ---------- */
+
+  /** Drags [row] within [list] by its handle; [drop](from, to) runs when it lands somewhere new. */
+  function startDrag(ev, row, list, drop) {
+    if (ev.pointerType === "mouse" && ev.button !== 0) return;
+    ev.preventDefault();
+    var handle = ev.currentTarget;
+    var items = Array.prototype.slice.call(list.children);
+    var from = items.indexOf(row);
+    if (from < 0) return;
+    try {
+      handle.setPointerCapture(ev.pointerId);
+    } catch (e) {
+      // Capture is a nicety: moves still arrive while the pointer stays on the page.
+    }
+    var mids = items.map(function (x) {
+      var r = x.getBoundingClientRect();
+      return r.top + window.scrollY + r.height / 2;
+    });
+    var shift = row.offsetHeight;
+    var startY = ev.clientY + window.scrollY;
+    var lastY = ev.clientY;
+    var to = from;
+    var frame = 0;
+    state.dragging = true;
+    row.classList.add("dragging");
+
+    function update() {
+      var dy = lastY + window.scrollY - startY;
+      row.style.transform = "translateY(" + dy + "px)";
+      var centre = mids[from] + dy;
+      to = from;
+      while (to < items.length - 1 && centre > mids[to + 1]) to++;
+      while (to > 0 && centre < mids[to - 1]) to--;
+      items.forEach(function (x, i) {
+        if (i === from) return;
+        var s = 0;
+        if (from < to && i > from && i <= to) s = -shift;
+        else if (to < from && i >= to && i < from) s = shift;
+        x.style.transform = s ? "translateY(" + s + "px)" : "";
+      });
+    }
+
+    function edgeScroll() {
+      var edge = 72;
+      var step = lastY < edge ? -(edge - lastY) / 4 : lastY > window.innerHeight - edge ? (lastY - window.innerHeight + edge) / 4 : 0;
+      if (step) {
+        window.scrollBy(0, step);
+        update();
+      }
+      frame = requestAnimationFrame(edgeScroll);
+    }
+
+    function move(e) {
+      if (e.pointerId !== ev.pointerId) return;
+      lastY = e.clientY;
+      update();
+    }
+
+    // On the window, so the drag ends even when capture failed or the pointer left the handle;
+    // a lost capture (without a pointerup) ends it too, without a drop.
+    var ended = false;
+    function end(e) {
+      if (ended || e.pointerId !== ev.pointerId) return;
+      ended = true;
+      cancelAnimationFrame(frame);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      handle.removeEventListener("lostpointercapture", end);
+      items.forEach(function (x) { x.style.transform = ""; });
+      row.classList.remove("dragging");
+      state.dragging = false;
+      if (e.type === "pointerup" && to !== from) drop(from, to);
+    }
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    handle.addEventListener("lostpointercapture", end);
+    frame = requestAnimationFrame(edgeScroll);
+  }
+
+  /** The handle and ↑/↓ buttons of a reorderable row. */
+  function moveControls(name, index, count, more, onMove, getRow, list) {
+    var handle = el("span", { class: "handle", "aria-hidden": "true", text: "≡" });
+    handle.addEventListener("pointerdown", function (ev) {
+      startDrag(ev, getRow(), list, function (from, to) { onMove(from, to, false); });
+    });
+    var up = el("button", {
+      class: "icon up", text: "↑", "aria-label": "Move " + name + " up", disabled: index === 0,
+      onclick: function () { onMove(index, index - 1, "up"); }
+    });
+    var down = el("button", {
+      class: "icon down", text: "↓", "aria-label": "Move " + name + " down", disabled: index === count - 1 && !more,
+      onclick: function () { onMove(index, index + 1, "down"); }
+    });
+    return { handle: handle, up: up, down: down };
+  }
+
+  /* ---------- Reorder requests ---------- */
+
+  var moves = Promise.resolve();
+  var moveGen = 0;
+
+  /**
+   * Sends one move after every earlier one has been answered, so the TV applies them in the order
+   * shown. After a failure the list is read again and moves still waiting are dropped.
+   */
+  function sendMove(path, body, note, then) {
+    var gen = moveGen;
+    moves = moves.then(async function () {
+      if (gen !== moveGen) return;
+      try {
+        await api("POST", path, body);
+      } catch (e) {
+        moveGen++;
+        fail(e, note, true);
+        return;
+      }
+      if (then) await then();
+    }).catch(function () {
+      // Anything else that went wrong ends this move only: the chain stays usable for the next.
+    });
+    return moves;
+  }
+
+  /* ---------- Channels ---------- */
+
+  function canReorder() { return cs.group != null && cs.q === ""; }
+
+  async function loadChannels(keep) {
+    if (cs.editing || state.dragging) return;
+    if (!(await pickPlaylist("ch"))) return;
+    var pid = state.playlistId;
+    var groups;
+    try {
+      groups = await api("GET", "/api/groups?" + query({ playlist: pid }));
+    } catch (e) {
+      fail(e, $("chNote"));
+      return;
+    }
+    if (pid !== state.playlistId) return;
+    cs.groups = groups;
+    if (cs.group != null && !groups.some(function (g) { return g.title === cs.group; })) cs.group = null;
+    renderChips();
+    await fetchChannels(true, keep);
+  }
+
+  function renderChips() {
+    var chips = $("chips");
+    var all = [{ title: null, label: "All", hidden: false }].concat(cs.groups);
+    chips.replaceChildren.apply(chips, all.map(function (g) {
+      return el("button", {
+        class: "chip" + (g.hidden ? " dim" : ""), text: g.label, "aria-pressed": cs.group === g.title ? "true" : "false",
+        onclick: function () { pickGroup(g.title); }
+      });
+    }));
+  }
+
+  function pickGroup(title) {
+    if (cs.group === title) return;
+    cs.group = title;
+    cs.editing = null;
+    renderChips();
+    fetchChannels(true, 0);
+  }
+
+  /** The first page (or, with [reset] and [want], as many rows as were showing), or the next page. */
+  async function fetchChannels(reset, want) {
+    var seq = ++cs.seq;
+    var pid = state.playlistId;
+    var offset = reset ? 0 : cs.rows.length;
+    var target = reset ? Math.max(PAGE, want || 0) : PAGE;
+    var rows = [];
+    var more = true;
+    cs.loading = true;
+    say($("chNote"), "Loading…");
+    try {
+      while (more && rows.length < target) {
+        var r = await api("GET", "/api/channels?" + query({
+          playlist: pid, group: cs.group, q: cs.q, offset: offset + rows.length, limit: Math.min(MAX_PAGE, target - rows.length)
+        }));
+        if (seq !== cs.seq) return;
+        rows = rows.concat(r.rows);
+        more = r.more === true;
+      }
+    } catch (e) {
+      if (seq === cs.seq) {
+        cs.loading = false;
+        fail(e, $("chNote"));
+      }
+      return;
+    }
+    cs.loading = false;
+    cs.rows = reset ? rows : cs.rows.concat(rows);
+    cs.more = more;
+    renderChannels(reset ? 0 : offset);
+    loadMoreIfNear();
+  }
+
+  function renderChannels(from) {
+    var list = $("chList");
+    var move = canReorder();
+    $("chHint").textContent = cs.group == null ? "Tap a name to rename · pick a group to reorder"
+      : cs.q ? "Tap a name to rename · clear the search to reorder"
+        : "Tap a name to rename · drag ≡ to reorder";
+    var rows = cs.rows.slice(from).map(function (c, i) { return channelRow(c, from + i, move); });
+    if (from === 0) list.replaceChildren.apply(list, rows);
+    else list.append.apply(list, rows);
+    say($("chNote"), cs.rows.length ? "" : "No channels found.");
+  }
+
+  function channelRow(c, index, move) {
+    var row = el("li", { class: "row" + (c.hidden ? " off" : ""), "data-key": c.key });
+    var ctl = move ? moveControls(c.name, index, cs.rows.length, cs.more, moveChannel, function () { return row; }, $("chList")) : null;
+    var star = el("button", {
+      class: "icon star", text: c.favourite ? "★" : "☆", "aria-pressed": c.favourite ? "true" : "false",
+      "aria-label": "Favourite " + c.name, onclick: function () { toggleFavourite(c, star); }
+    });
+    var eye = el("button", {
+      class: "icon", "aria-label": (c.hidden ? "Show " : "Hide ") + c.name, onclick: function () { toggleHidden(c, row, eye); }
+    }, [eyeIcon(c.hidden)]);
+    var name = cs.editing === c ? renameForm(c.name, "New name for " + c.name, c.name !== c.sourceName,
+      function (n) { renameChannel(c, n); }, function () { cs.editing = null; redrawChannel(c, ".name"); })
+      : el("button", { class: "name", onclick: function () { editChannel(c); } }, [
+        el("span", { text: c.name }),
+        cs.group == null && c.group ? el("small", { text: c.group }) : null
+      ]);
+    row.append.apply(row, [ctl && ctl.handle, name, ctl && ctl.up, ctl && ctl.down, star, eye].filter(Boolean));
+    return row;
+  }
+
+  function editChannel(c) {
+    var prev = cs.editing;
+    cs.editing = c;
+    if (prev && prev !== c) redrawChannel(prev);
+    redrawChannel(c);
+  }
+
+  /** Rebuilds [c]'s row in place, then focuses [focus] in it when given. */
+  function redrawChannel(c, focus) {
+    var i = cs.rows.indexOf(c);
+    var old = $("chList").children[i];
+    if (!old) return;
+    var row = channelRow(c, i, canReorder());
+    old.replaceWith(row);
+    if (focus) {
+      var target = row.querySelector(focus);
+      if (target) target.focus();
+    }
+  }
+
+  async function renameChannel(c, name) {
+    try {
+      await api("POST", "/api/channels/rename", { playlist: state.playlistId, key: c.key, name: name });
+    } catch (e) {
+      cs.editing = null;
+      fail(e, $("chNote"), true);
+      return;
+    }
+    c.name = name || c.sourceName;
+    cs.editing = null;
+    if (!canReorder()) {
+      redrawChannel(c, ".name");
+      return;
+    }
+    // A group sorted by name re-ranks on rename; moves must use the TV's new order.
+    await moves;
+    await fetchChannels(true, cs.rows.length);
+    var row = $("chList").querySelector('[data-key="' + CSS.escape(c.key) + '"] .name');
+    if (row) row.focus();
+  }
+
+  async function toggleFavourite(c, star) {
+    var on = !c.favourite;
+    star.disabled = true;
+    try {
+      await api("POST", "/api/channels/favourite", { playlist: state.playlistId, key: c.key, favourite: on });
+      c.favourite = on;
+      star.textContent = on ? "★" : "☆";
+      star.setAttribute("aria-pressed", on ? "true" : "false");
+    } catch (e) {
+      fail(e, $("chNote"), true);
+    } finally {
+      star.disabled = false;
+    }
+  }
+
+  async function toggleHidden(c, row, eye) {
+    var hidden = !c.hidden;
+    eye.disabled = true;
+    try {
+      await api("POST", "/api/channels/hidden", { playlist: state.playlistId, key: c.key, hidden: hidden });
+      c.hidden = hidden;
+      row.classList.toggle("off", hidden);
+      eye.replaceChildren(eyeIcon(hidden));
+      eye.setAttribute("aria-label", (hidden ? "Show " : "Hide ") + c.name);
+    } catch (e) {
+      fail(e, $("chNote"), true);
+    } finally {
+      eye.disabled = false;
+    }
+  }
+
+  /** Moves the channel at [from] to [to] (both within the one group shown); [button] keeps focus on ↑ or ↓. */
+  function moveChannel(from, to, button) {
+    var c = cs.rows[from];
+    if (!c || to < 0 || !canReorder()) return;
+    var inView = to < cs.rows.length;
+    if (inView) {
+      cs.rows.splice(to, 0, cs.rows.splice(from, 1)[0]);
+      renderChannels(0);
+      focusMoved($("chList"), to, button);
+    }
+    sendMove("/api/channels/move", { playlist: state.playlistId, key: c.key, to: to }, $("chNote"),
+      inView ? null : function () { return fetchChannels(true, cs.rows.length); });
+  }
+
+  function focusMoved(list, index, button) {
+    if (!button) return;
+    var row = list.children[index];
+    var b = row && row.querySelector("." + button);
+    if (b && !b.disabled) b.focus();
+    else if (row) {
+      var other = row.querySelector(button === "up" ? ".down" : ".up");
+      if (other) other.focus();
+    }
+  }
+
+  function loadMoreIfNear() {
+    if (!cs.more || cs.loading || $("panel-channels").hidden) return;
+    if ($("chMore").getBoundingClientRect().top < window.innerHeight + 600) fetchChannels(false);
+  }
+
+  var searchTimer = null;
+
+  function onSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      var q = $("search").value.trim();
+      if (q === cs.q) return;
+      cs.q = q;
+      cs.editing = null;
+      fetchChannels(true, 0);
+    }, 300);
+  }
+
+  /* ---------- Groups ---------- */
+
+  async function loadGroups() {
+    if (gs.editing || state.dragging) return;
+    if (!(await pickPlaylist("gr"))) return;
+    var pid = state.playlistId;
+    var seq = ++gs.seq;
+    var rows;
+    try {
+      rows = await api("GET", "/api/groups?" + query({ playlist: pid }));
+    } catch (e) {
+      fail(e, $("grNote"));
+      return;
+    }
+    if (seq !== gs.seq) return;
+    gs.rows = rows;
+    renderGroups();
+  }
+
+  function renderGroups() {
+    var list = $("grList");
+    list.replaceChildren.apply(list, gs.rows.map(groupRow));
+    say($("grNote"), gs.rows.length ? "" : "No groups in this playlist.");
+  }
+
+  function groupRow(g, index) {
+    var row = el("li", { class: "row" + (g.hidden ? " off" : "") });
+    var ctl = moveControls(g.label, index, gs.rows.length, false, moveGroup, function () { return row; }, $("grList"));
+    var eye = el("button", {
+      class: "icon", "aria-label": (g.hidden ? "Show " : "Hide ") + g.label, onclick: function () { toggleGroupHidden(g, row, eye); }
+    }, [eyeIcon(g.hidden)]);
+    var name = gs.editing === g ? renameForm(g.label, "New name for " + g.label, g.renamed,
+      function (n) { renameGroup(g, n); }, function () { gs.editing = null; redrawGroup(g); })
+      : el("button", { class: "name", onclick: function () { editGroup(g); } }, [
+        el("span", { text: g.label }),
+        el("small", { text: plural(g.count, "channel", "channels") })
+      ]);
+    row.append(ctl.handle, name, ctl.up, ctl.down, eye);
+    return row;
+  }
+
+  function editGroup(g) {
+    var prev = gs.editing;
+    gs.editing = g;
+    if (prev && prev !== g) redrawGroup(prev);
+    redrawGroup(g);
+  }
+
+  function redrawGroup(g) {
+    var i = gs.rows.indexOf(g);
+    var old = $("grList").children[i];
+    if (!old) return;
+    var row = groupRow(g, i);
+    old.replaceWith(row);
+    if (gs.editing !== g) row.querySelector(".name").focus();
+  }
+
+  async function renameGroup(g, name) {
+    try {
+      await api("POST", "/api/groups/rename", { playlist: state.playlistId, title: g.title, name: name });
+    } catch (e) {
+      gs.editing = null;
+      fail(e, $("grNote"), true);
+      return;
+    }
+    g.label = name || g.title;
+    g.renamed = g.label !== g.title;
+    gs.editing = null;
+    redrawGroup(g);
+  }
+
+  async function toggleGroupHidden(g, row, eye) {
+    var hidden = !g.hidden;
+    eye.disabled = true;
+    try {
+      await api("POST", "/api/groups/hidden", { playlist: state.playlistId, title: g.title, hidden: hidden });
+      g.hidden = hidden;
+      row.classList.toggle("off", hidden);
+      eye.replaceChildren(eyeIcon(hidden));
+      eye.setAttribute("aria-label", (hidden ? "Show " : "Hide ") + g.label);
+    } catch (e) {
+      fail(e, $("grNote"), true);
+    } finally {
+      eye.disabled = false;
+    }
+  }
+
+  function moveGroup(from, to, button) {
+    var g = gs.rows[from];
+    if (!g || to < 0 || to >= gs.rows.length) return;
+    gs.rows.splice(to, 0, gs.rows.splice(from, 1)[0]);
+    renderGroups();
+    focusMoved($("grList"), to, button);
+    sendMove("/api/groups/move", { playlist: state.playlistId, title: g.title, to: to }, $("grNote"), null);
+  }
+
+  /* ---------- More ---------- */
+
+  async function forget() {
+    if (!window.confirm("Forget this phone? You'll need a new code from the TV to use this page again.")) return;
+    try {
+      await api("POST", "/api/forget");
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 401) {
+        fail(e);
+        return;
+      }
+    }
+    showPair(null);
+  }
+
+  /* ---------- Wiring ---------- */
+
+  $("pairForm").addEventListener("submit", pair);
+  $("code").addEventListener("input", onCodeInput);
+  $("retry").addEventListener("click", function () {
+    $("banner").hidden = true;
+    boot();
+  });
+  TABS.forEach(function (t) {
+    $("tab-" + t).addEventListener("click", function () { selectTab(t, false); });
+  });
+  $("tabs").addEventListener("keydown", onTabKey);
+
+  $("addBtn").addEventListener("click", function () { openForm(null); });
+  $("cancelBtn").addEventListener("click", function () { closeForm(); });
+  $("form").addEventListener("submit", submitForm);
+  document.querySelectorAll("input[name=mode]").forEach(function (r) {
+    r.addEventListener("change", function () { if (r.checked) setMode(r.value); });
+  });
+  $("moreBtn").addEventListener("click", function () { setMore($("moreFields").hidden); });
+  ["server", "user", "pass", "portalUrl", "mac", "portalLogin", "portalPass"].forEach(function (k) {
+    field(k).addEventListener("input", function () {
+      if (k === "mac") $("macMsg").classList.remove("error");
+      updatePasswords();
+      macHint();
+    });
+  });
+
+  $("chPick").addEventListener("change", onPick);
+  $("grPick").addEventListener("change", onPick);
+  $("search").addEventListener("input", onSearch);
+  window.addEventListener("scroll", loadMoreIfNear, { passive: true });
+  window.addEventListener("resize", loadMoreIfNear);
+  $("forgetBtn").addEventListener("click", forget);
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "visible") return;
+    if (!$("banner").hidden) boot();
+    else if (!$("pair").hidden) refreshPairHint();
+    else if (!$("app").hidden) loadTab();
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>

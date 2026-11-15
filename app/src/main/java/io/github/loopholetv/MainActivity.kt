@@ -163,6 +163,7 @@ class MainActivity : ComponentActivity() {
         // The picture-in-picture callback doesn't always arrive when its window closes.
         container.setupController.setPaused(isInPictureInPictureMode)
         container.castController.onForeground(true)
+        container.phoneServer.onForeground(true)
     }
 
     override fun onResume() {
@@ -197,6 +198,7 @@ class MainActivity : ComponentActivity() {
             val c = container
             // First, so the other TVs hear "stopped casting" rather than seeing the stream stop.
             c.castController.onForeground(false)
+            c.phoneServer.onForeground(false)
             c.playback.stop()
             c.sleepTimer.cancel()
             displayModes.restore()

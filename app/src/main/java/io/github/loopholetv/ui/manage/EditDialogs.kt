@@ -32,13 +32,11 @@ import io.github.loopholetv.ui.common.TypingField
 import io.github.loopholetv.ui.common.rememberTypingState
 import io.github.loopholetv.ui.onboarding.PillButton
 import io.github.loopholetv.ui.theme.Tokens
+import io.github.loopholetv.util.MAX_NAME_LENGTH
 import io.github.loopholetv.util.takeCodePoints
 
 /** Rows shown before a [ChoiceDialog] or picker list scrolls (keeps the card on a 1080p screen). */
 private val LIST_MAX_HEIGHT = 420.dp
-
-/** Longest name typed into a rename field. */
-const val MAX_NAME_LENGTH = 200
 
 /**
  * One text value in its own dialog window: the field (read-only until OK opens the keyboard), then

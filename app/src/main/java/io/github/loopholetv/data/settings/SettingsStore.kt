@@ -8,6 +8,10 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
+import io.github.loopholetv.phone.PairedPhone
+import io.github.loopholetv.phone.PairingStore
+import io.github.loopholetv.phone.decodePairings
+import io.github.loopholetv.phone.encodePairings
 import io.github.loopholetv.util.takeCodePoints
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
@@ -25,7 +29,7 @@ import kotlinx.coroutines.flow.map
 fun Flow<AppSettings>.orDefaultsOnError(): Flow<AppSettings> = catch { emit(AppSettings()) }
 
 /** DataStore-backed [AppSettings]. Preference key names are persisted: never rename. */
-class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags {
+class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, PairingStore {
 
     val settings: Flow<AppSettings> = flow {
         migrate()
@@ -71,6 +75,23 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags {
 
     override suspend fun clearSkipped(id: Long) {
         store.edit { it[VOD_FILL_SKIPPED] = it[VOD_FILL_SKIPPED].orEmpty() - id.toString() }
+    }
+
+    /** Paired phones, as hashes only. Not part of [AppSettings], so a copy to another TV never carries them. */
+    override suspend fun pairedPhones(): List<PairedPhone> = decodePairings(store.data.first()[PHONE_PAIRINGS])
+
+    override val pairedCount: Flow<Int> =
+        store.data.map { decodePairings(it[PHONE_PAIRINGS]).size }.distinctUntilChanged()
+
+    override suspend fun savePairedPhones(list: List<PairedPhone>) {
+        store.edit { if (list.isEmpty()) it.remove(PHONE_PAIRINGS) else it[PHONE_PAIRINGS] = encodePairings(list) }
+    }
+
+    /** The port the phone page last listened on. Not part of [AppSettings]. */
+    override suspend fun phonePort(): Int? = store.data.first()[PHONE_PORT]
+
+    override suspend fun savePhonePort(port: Int) {
+        store.edit { it[PHONE_PORT] = port }
     }
 
     /** One-off upgrade step, run before the first read. */
@@ -266,6 +287,8 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags {
         val KEY_BINDINGS = stringPreferencesKey("key_bindings")
         val VOD_FILLED = booleanPreferencesKey("vod_filled")
         val VOD_FILL_SKIPPED = stringSetPreferencesKey("vod_fill_skipped")
+        val PHONE_PAIRINGS = stringPreferencesKey("phone_pairings")
+        val PHONE_PORT = intPreferencesKey("phone_port")
         val EPG_PAST_DAYS_AUTO_APPLIED = booleanPreferencesKey("epg_past_days_auto_applied")
     }
 }
