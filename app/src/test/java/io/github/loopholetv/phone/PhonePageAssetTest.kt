@@ -39,6 +39,12 @@ class PhonePageAssetTest {
     }
 
     @Test
+    fun phonePageHintNamesCompanion() {
+        assertTrue(page.contains("Open Settings → Companion on your TV to see the code"))
+        assertFalse(page.contains("Phone page"))
+    }
+
+    @Test
     fun hasAllTabs() {
         for (tab in listOf("Playlists", "Channels", "Groups", "More")) {
             assertTrue("tab $tab", page.contains(">$tab</button>"))

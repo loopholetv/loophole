@@ -89,7 +89,7 @@ internal fun changedSettings(secret: String = SECRET): AppSettings = AppSettings
         preferSurround = false, passthrough = io.github.loopholetv.data.settings.Passthrough.OFF,
         decodeDtsToPcm = true, tunneling = true, audioLanguage = "de", subtitleLanguage = "fr", audioDelayMs = 150,
         subtitleStyle = SubtitleStyle(SubtitleSize.LARGE, SubtitleColour.YELLOW, SubtitleBackground.BLACK, SubtitleEdge.SHADOW),
-        pipOnHome = true,
+        pipOnHome = true, autoPlayNext = false,
     ),
     remote = RemoteSettings(
         mediaKeysSeek = false, rwRewindsLive = false, leftRightSeek = false, leftRewindsLive = true,

@@ -87,6 +87,8 @@ data class PlaybackSettings(
     val subtitleStyle: SubtitleStyle = SubtitleStyle(),
     /** Whether the Home button opens picture-in-picture from the player. */
     val pipOnHome: Boolean = false,
+    /** Whether an episode that ends starts the next one (with a Still watching check). */
+    val autoPlayNext: Boolean = true,
 )
 
 const val AUDIO_DELAY_STEP_MS = 50

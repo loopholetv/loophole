@@ -55,13 +55,17 @@ import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import io.github.loopholetv.data.db.ChannelEntity
+import io.github.loopholetv.data.db.KeyRef
 import io.github.loopholetv.data.db.ProgrammeHit
 import io.github.loopholetv.data.db.displayLogo
 import io.github.loopholetv.data.db.displayName
 import io.github.loopholetv.data.vod.FilmCard
 import io.github.loopholetv.data.vod.ShowCard
+import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PlaybackState
+import io.github.loopholetv.ui.common.ChannelOption
+import io.github.loopholetv.ui.common.ChannelOptionsDialog
 import io.github.loopholetv.ui.common.StopPlaybackOnResume
 import io.github.loopholetv.ui.common.rememberAppPlayback
 import io.github.loopholetv.ui.guide.GuideFormat
@@ -69,6 +73,8 @@ import io.github.loopholetv.ui.guide.rememberGuideFormat
 import io.github.loopholetv.ui.onboarding.Field
 import io.github.loopholetv.ui.onboarding.PillButton
 import io.github.loopholetv.ui.theme.Tokens
+import io.github.loopholetv.ui.vod.OPTION_ADD_MY_LIST
+import io.github.loopholetv.ui.vod.OPTION_REMOVE_MY_LIST
 import kotlinx.coroutines.delay
 import java.time.Instant
 
@@ -76,6 +82,13 @@ private fun channelKey(id: Long) = "c:$id"
 private fun filmKey(f: FilmCard) = "f:${f.playlistId}:${f.key}"
 private fun showKey(s: ShowCard) = "s:${s.playlistId}:${s.key}"
 private fun programmeKey(hit: ProgrammeHit) = "p:${hit.programme.id}"
+
+/** The one option of a film or show result's menu: add it to My list, or remove it when it is there. */
+internal fun myListOption(inList: Boolean, onClick: () -> Unit) =
+    ChannelOption(if (inList) OPTION_REMOVE_MY_LIST else OPTION_ADD_MY_LIST, onClick)
+
+/** The result a long OK opened the My list menu for. */
+private data class TitleMenu(val kind: TitleKind, val playlistId: Long, val key: String, val name: String)
 
 /**
  * Search: the field is read-only until OK opens the keyboard; Down enters the results,
@@ -103,6 +116,8 @@ fun SearchScreen(
     var details by remember { mutableStateOf<ProgrammeHit?>(null) }
     var refocus by remember { mutableStateOf<String?>(null) }
     var resultsFocused by remember { mutableStateOf(false) }
+    var titleMenu by remember { mutableStateOf<TitleMenu?>(null) }
+    val myList by vm.myListKeys.collectAsStateWithLifecycle()
 
     // Same TV text-field behaviour as onboarding: read-only until OK opens the keyboard.
     val keyboard = LocalSoftwareKeyboardController.current
@@ -174,8 +189,23 @@ fun SearchScreen(
                 onProgramme = open,
                 onFilm = { f -> lastOpenedKey = filmKey(f); onOpenFilm(f.playlistId, f.key) },
                 onShow = { sh -> lastOpenedKey = showKey(sh); onOpenShow(sh.playlistId, sh.key) },
+                onFilmMenu = { f -> titleMenu = TitleMenu(TitleKind.FILM, f.playlistId, f.key, f.name) },
+                onShowMenu = { sh -> titleMenu = TitleMenu(TitleKind.SHOW, sh.playlistId, sh.key, sh.name) },
             )
         }
+    }
+
+    titleMenu?.let { menu ->
+        val inList = KeyRef(menu.playlistId, menu.key) in myList[menu.kind].orEmpty()
+        val close: () -> Unit = {
+            titleMenu = null
+            refocus = if (menu.kind == TitleKind.FILM) "f:${menu.playlistId}:${menu.key}" else "s:${menu.playlistId}:${menu.key}"
+        }
+        ChannelOptionsDialog(
+            title = menu.name,
+            options = listOf(myListOption(inList) { vm.setInMyList(menu.kind, menu.playlistId, menu.key, !inList); close() }),
+            onDismiss = close,
+        )
     }
 
     details?.let { hit ->
@@ -210,6 +240,8 @@ private fun ColumnScope.ResultsContent(
     onProgramme: (ProgrammeHit) -> Unit,
     onFilm: (FilmCard) -> Unit,
     onShow: (ShowCard) -> Unit,
+    onFilmMenu: (FilmCard) -> Unit,
+    onShowMenu: (ShowCard) -> Unit,
 ) {
     when (ui) {
         SearchUi.Hint -> Message("Type at least 2 letters")
@@ -228,7 +260,7 @@ private fun ColumnScope.ResultsContent(
                 SectionTitle("Films")
                 ui.films.forEach { f ->
                     key(filmKey(f)) {
-                        TitleResult(f.name, null, f.logo, Modifier.focusRequester(requester(filmKey(f)))) { onFilm(f) }
+                        TitleResult(f.name, null, f.logo, Modifier.focusRequester(requester(filmKey(f))), onLongClick = { onFilmMenu(f) }) { onFilm(f) }
                     }
                 }
             }
@@ -236,7 +268,7 @@ private fun ColumnScope.ResultsContent(
                 SectionTitle("Shows")
                 ui.shows.forEach { sh ->
                     key(showKey(sh)) {
-                        TitleResult(sh.name, sh.playlistName, sh.logo, Modifier.focusRequester(requester(showKey(sh)))) { onShow(sh) }
+                        TitleResult(sh.name, sh.playlistName, sh.logo, Modifier.focusRequester(requester(showKey(sh))), onLongClick = { onShowMenu(sh) }) { onShow(sh) }
                     }
                 }
             }
@@ -288,10 +320,11 @@ private fun ChannelResult(channel: ChannelEntity, modifier: Modifier, onClick: (
 }
 
 @Composable
-private fun TitleResult(name: String, secondary: String?, logo: String?, modifier: Modifier, onClick: () -> Unit) {
+private fun TitleResult(name: String, secondary: String?, logo: String?, modifier: Modifier, onLongClick: () -> Unit, onClick: () -> Unit) {
     ListItem(
         selected = false,
         onClick = onClick,
+        onLongClick = onLongClick,
         leadingContent = { ChannelLogo(logo) },
         headlineContent = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = secondary?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },

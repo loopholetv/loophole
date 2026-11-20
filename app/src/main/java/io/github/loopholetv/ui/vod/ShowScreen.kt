@@ -35,6 +35,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.material3.MaterialTheme
@@ -47,27 +48,46 @@ import io.github.loopholetv.ui.common.okPress
 import io.github.loopholetv.ui.onboarding.PillButton
 import io.github.loopholetv.ui.theme.Tokens
 
-/** One show: a Continue button, its season tabs and the episodes of the selected season. */
+/** The back-stack entry state where the player leaves the key of the episode it played last. */
+const val VOD_LAST_EPISODE = "vod_last_episode"
+
+/** The episode the player left on this entry, if any; it is cleared, so it is used once. */
+fun SavedStateHandle.takeLastEpisode(): String? = remove<String>(VOD_LAST_EPISODE)
+
+/**
+ * One show: a Continue button, its season tabs and the episodes of the selected season.
+ * [takeLastEpisodeFromPlayer] gives, once, the episode the player played last before returning here.
+ */
 @Composable
 fun ShowScreen(
     playlistId: Long,
     key: String,
     onPlay: (VodRef, Long) -> Unit,
     onBack: () -> Unit,
+    takeLastEpisodeFromPlayer: () -> String? = { null },
 ) {
     val vm: ShowViewModel = viewModel(key = "show/$playlistId/$key", factory = showViewModelFactory(playlistId, key))
+    // The page is composed afresh when the player closes; the episode that played last takes focus
+    // again, on its season tab. After an auto-play run that is the run's last episode, which may be
+    // in a later season than the one played from: that season is shown before the page is drawn.
+    var lastEpisode by rememberSaveable { mutableStateOf<String?>(null) }
+    // Once per visit: before the page reads ui, so it is composed on that season.
+    remember {
+        takeLastEpisodeFromPlayer()?.also {
+            lastEpisode = it
+            vm.showEpisode(it)
+        }
+    }
     val ui by vm.ui.collectAsStateWithLifecycle()
     StopPlaybackOnResume()
     val starter = rememberVodStarter(rememberCast()) { ref, ms -> onPlay(ref, ms) }
     val loaded by vm.loaded.collectAsStateWithLifecycle()
     CloseWhenGone(present = ui != null, loaded = loaded, onBack = onBack)
-    // The page is composed afresh when the player closes; the episode played from the list takes
-    // focus again, on the season tab it was played from.
-    var lastEpisode by rememberSaveable { mutableStateOf<String?>(null) }
     ui?.let { show ->
         ShowContent(
             show,
             onSelectTab = vm::selectTab,
+            onToggleMyList = vm::toggleMyList,
             restoreEpisodeKey = lastEpisode,
             onEpisodeUsed = { used ->
                 lastEpisode = used
@@ -82,6 +102,7 @@ fun ShowScreen(
 internal fun ShowContent(
     ui: ShowUi,
     onSelectTab: (Int) -> Unit,
+    onToggleMyList: () -> Unit = {},
     restoreEpisodeKey: String? = null,
     onEpisodeUsed: (episodeKey: String?) -> Unit = {},
     onPlay: (episodeKey: String, startMs: Long) -> Unit,
@@ -128,20 +149,22 @@ internal fun ShowContent(
             // Opening on an episode to restore leaves focus to that; otherwise Continue, or the season
             // tabs when there is nothing to continue.
             val openRestoring = remember { restoreKey != null }
-            if (ui.continueKey != null && ui.continueLabel != null) {
-                // The button stays in the column as its label changes with progress, so focus stays on it.
-                if (!openRestoring) RequestFocusOnOpen(continueButton)
-                PillButton(
-                    label = ui.continueLabel,
-                    selected = true,
-                    modifier = Modifier.padding(top = 16.dp).focusRequester(continueButton),
-                    onClick = {
-                        onEpisodeUsed(null)
-                        onPlay(ui.continueKey, ui.continueStartMs)
-                    },
-                )
-            } else if (!openRestoring && ui.tabs.isNotEmpty()) {
-                RequestFocusOnOpen(selectedTab)
+            if (ui.continueKey == null && !openRestoring && ui.tabs.isNotEmpty()) RequestFocusOnOpen(selectedTab)
+            if (ui.continueKey != null && !openRestoring) RequestFocusOnOpen(continueButton)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 16.dp)) {
+                // The button stays in the row as its label changes with progress, so focus stays on it.
+                if (ui.continueKey != null && ui.continueLabel != null) {
+                    PillButton(
+                        label = ui.continueLabel,
+                        selected = true,
+                        modifier = Modifier.focusRequester(continueButton),
+                        onClick = {
+                            onEpisodeUsed(null)
+                            onPlay(ui.continueKey, ui.continueStartMs)
+                        },
+                    )
+                }
+                PillButton(label = myListLabel(ui.inMyList), selected = false, onClick = onToggleMyList)
             }
             SeasonTabs(ui.tabs, ui.selectedTab, selectedTab, onSelectTab)
             LazyColumn(

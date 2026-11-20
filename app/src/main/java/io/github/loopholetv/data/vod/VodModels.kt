@@ -9,6 +9,9 @@ data class FilmCard(val playlistId: Long, val key: String, val name: String, val
 /** [playlistName] is set only when another enabled playlist has a show with the same name. */
 data class ShowCard(val playlistId: Long, val key: String, val name: String, val logo: String?, val playlistName: String?)
 
+/** Whether a My list or dismissal entry is a film or a show; stored by name. */
+enum class TitleKind { FILM, SHOW }
+
 data class CategoryRow(val title: String, val count: Int)
 
 data class FilmDetail(val film: FilmEntity, val playlistName: String)

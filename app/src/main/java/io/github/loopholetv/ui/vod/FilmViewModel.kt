@@ -6,7 +6,9 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
+import io.github.loopholetv.data.vod.VodLibraryRepository
 import io.github.loopholetv.data.vod.VodProgressRepository
 import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.data.vod.VodRepository
@@ -26,6 +28,7 @@ data class FilmUi(
     val logo: String?,
     val resumeMs: Long?,
     val fraction: Float?,
+    val inMyList: Boolean = false,
 )
 
 /** A button on the film page and where it starts playback, in ms. */
@@ -45,12 +48,16 @@ fun resumeLabel(positionMs: Long): String {
     return "Resume from " + if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
+/** The My list pill's label. */
+fun myListLabel(inList: Boolean): String = if (inList) "✓ In My list" else "+ My list"
+
 /** One film, with where its playback would resume. [ui] is null while loading and when the film is gone. */
 class FilmViewModel(
-    playlistId: Long,
-    key: String,
+    private val playlistId: Long,
+    private val key: String,
     repo: VodRepository,
     progress: VodProgressRepository,
+    private val library: VodLibraryRepository,
 ) : ViewModel() {
     private val _ui = MutableStateFlow<FilmUi?>(null)
     private val _loaded = MutableStateFlow(false)
@@ -61,7 +68,11 @@ class FilmViewModel(
 
     init {
         viewModelScope.launch {
-            combine(repo.film(playlistId, key), progress.observe(VodRef(VodKind.MOVIE, playlistId, key))) { detail, p ->
+            combine(
+                repo.film(playlistId, key),
+                progress.observe(VodRef(VodKind.MOVIE, playlistId, key)),
+                library.inMyList(TitleKind.FILM, playlistId, key),
+            ) { detail, p, inList ->
                 detail?.let {
                     val resume = resumeFrom(p)
                     val duration = p?.durationMs
@@ -73,6 +84,7 @@ class FilmViewModel(
                         fraction = if (resume != null && duration != null && duration > 0) {
                             (resume.toFloat() / duration).coerceIn(0f, 1f)
                         } else null,
+                        inMyList = inList,
                     )
                 }
             }.collect {
@@ -81,11 +93,17 @@ class FilmViewModel(
             }
         }
     }
+
+    /** Adds the film to My list, or removes it when it is there. */
+    fun toggleMyList() {
+        val inList = _ui.value?.inMyList ?: return
+        viewModelScope.launch { library.setInMyList(TitleKind.FILM, playlistId, key, !inList) }
+    }
 }
 
 fun filmViewModelFactory(playlistId: Long, key: String): ViewModelProvider.Factory = viewModelFactory {
     initializer {
         val c = (this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
-        FilmViewModel(playlistId, key, c.vod, c.vodProgress)
+        FilmViewModel(playlistId, key, c.vod, c.vodProgress, c.vodLibrary)
     }
 }

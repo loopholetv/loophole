@@ -2,6 +2,7 @@ package io.github.loopholetv.ui.vod
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.loopholetv.data.db.AppDatabase
+import io.github.loopholetv.data.db.EpisodeEntity
 import io.github.loopholetv.data.db.FilmEntity
 import io.github.loopholetv.data.db.ShowEntity
 import io.github.loopholetv.data.db.addPlaylist
@@ -11,19 +12,21 @@ import io.github.loopholetv.data.repo.ChannelEdits
 import io.github.loopholetv.data.vod.ALL_SHOWS_GRID_THRESHOLD
 import io.github.loopholetv.data.vod.CategoryRow
 import io.github.loopholetv.data.vod.HiddenCategory
+import io.github.loopholetv.data.db.VodProgressEntity
+import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
+import io.github.loopholetv.data.vod.VodLibraryRepository
+import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.data.vod.VodRepository
-import kotlinx.coroutines.Dispatchers
+import io.github.loopholetv.ui.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
@@ -35,18 +38,23 @@ class VodBrowseViewModelTest {
     private lateinit var db: AppDatabase
     private lateinit var repo: VodRepository
     private lateinit var edits: ChannelEdits
+    private lateinit var library: VodLibraryRepository
+
+    @get:Rule val main = MainDispatcherRule()
 
     @Before fun setUp() {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
         db = inMemoryDb()
         repo = VodRepository(db) { now }
         edits = ChannelEdits(db, ChannelOverlay(db))
+        library = VodLibraryRepository(db, repo) { now }
     }
 
     @After fun tearDown() {
+        main.clear()
         db.close()
-        Dispatchers.resetMain()
     }
+
+    private fun browse(kind: VodKind) = main.keep(VodBrowseViewModel(kind, repo, library, edits))
 
     private fun film(p: Long, key: String, category: String, seen: Instant = Instant.EPOCH) =
         FilmEntity(p, key, key, category, null, "http://s.test/$key.mp4", "ua", "ref", null, 0, seen)
@@ -63,7 +71,7 @@ class VodBrowseViewModelTest {
         val a = db.addPlaylist()
         insertFilms(film(a, "f1", "Action", seen = now), film(a, "f2", "Drama"))
 
-        val rows = VodBrowseViewModel(VodKind.MOVIE, repo, edits).loaded()
+        val rows = browse(VodKind.MOVIE).loaded()
 
         assertEquals(listOf("Recently added", "Action", "Drama"), rows.map { it.title })
         assertTrue(rows[0] is VodRowModel.Recent)
@@ -75,7 +83,7 @@ class VodBrowseViewModelTest {
         val a = db.addPlaylist()
         insertFilms(film(a, "f1", "Action"))
 
-        val rows = VodBrowseViewModel(VodKind.MOVIE, repo, edits).loaded()
+        val rows = browse(VodKind.MOVIE).loaded()
 
         assertEquals(listOf("Action"), rows.map { it.title })
     }
@@ -84,7 +92,7 @@ class VodBrowseViewModelTest {
         val a = db.addPlaylist()
         insertShows(*(0..ALL_SHOWS_GRID_THRESHOLD).map { show(a, "s$it") }.toTypedArray())
 
-        val rows = VodBrowseViewModel(VodKind.EPISODE, repo, edits).loaded()
+        val rows = browse(VodKind.EPISODE).loaded()
 
         assertEquals(listOf("All shows"), rows.map { it.title })
         assertTrue(rows[0] is VodRowModel.Grid)
@@ -94,7 +102,7 @@ class VodBrowseViewModelTest {
         val a = db.addPlaylist()
         insertShows(show(a, "s1"), show(a, "s2", category = "Crime"))
 
-        val rows = VodBrowseViewModel(VodKind.EPISODE, repo, edits).loaded()
+        val rows = browse(VodKind.EPISODE).loaded()
 
         assertEquals(listOf("All shows", "Crime"), rows.map { it.title })
         assertEquals(null, (rows[0] as VodRowModel.Paged).category)
@@ -104,7 +112,7 @@ class VodBrowseViewModelTest {
         val a = db.addPlaylist("A")
         val b = db.addPlaylist("B")
         insertFilms(film(a, "f1", "Action"), film(b, "f2", "Action"), film(a, "f3", "Drama"))
-        val vm = VodBrowseViewModel(VodKind.MOVIE, repo, edits)
+        val vm = browse(VodKind.MOVIE)
         vm.loaded()
 
         vm.hideCategory("Action")
@@ -116,7 +124,7 @@ class VodBrowseViewModelTest {
     @Test fun everyCategoryHiddenIsReported() = runTest {
         val a = db.addPlaylist("A")
         insertFilms(film(a, "f1", "Action"), film(a, "f2", "Drama"))
-        val vm = VodBrowseViewModel(VodKind.MOVIE, repo, edits)
+        val vm = browse(VodKind.MOVIE)
         vm.loaded()
         assertEquals(false, vm.allHidden.value)
 
@@ -132,7 +140,7 @@ class VodBrowseViewModelTest {
     @Test fun showHiddenCategoryUnhides() = runTest {
         val a = db.addPlaylist("A")
         insertFilms(film(a, "f1", "Action"))
-        val vm = VodBrowseViewModel(VodKind.MOVIE, repo, edits)
+        val vm = browse(VodKind.MOVIE)
         vm.loaded()
         vm.hideCategory("Action")
         val hidden = vm.hidden.first { it.isNotEmpty() }.single()
@@ -141,5 +149,60 @@ class VodBrowseViewModelTest {
 
         assertEquals(emptyList<HiddenCategory>(), vm.hidden.first { it.isEmpty() })
         assertEquals(listOf(CategoryRow("Action", 1)), repo.filmCategories().first())
+    }
+
+    private suspend fun watchFilm(p: Long, key: String, positionMs: Long) =
+        db.vodProgressDao().upsert(VodProgressEntity(VodKind.MOVIE, p, key, positionMs, 100_000, false, now))
+
+    @Test fun rowsStartWithContinueThenMyList() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action", seen = now), film(a, "f2", "Drama"), film(a, "f3", "Drama"))
+        watchFilm(a, "f2", 50_000)
+        library.setInMyList(TitleKind.FILM, a, "f3", true)
+
+        val rows = browse(VodKind.MOVIE).loaded()
+
+        assertEquals(listOf(CONTINUE_ROW_TITLE, MY_LIST_ROW_TITLE, "Recently added", "Action", "Drama"), rows.map { it.title })
+        assertTrue(rows[0] is VodRowModel.Continue)
+        assertTrue(rows[1] is VodRowModel.MyList)
+        assertEquals(listOf("f3"), (rows[1] as VodRowModel.MyList).cards.map { it.key })
+    }
+
+    @Test fun emptyContinueAndMyListAreOmitted() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"))
+
+        val rows = browse(VodKind.MOVIE).loaded()
+
+        assertEquals(listOf("Action"), rows.map { it.title })
+    }
+
+    @Test fun continueCardCarriesPlayAndCaption() = runTest {
+        val a = db.addPlaylist()
+        insertShows(show(a, "s1"))
+        db.vodWriteDao().upsertEpisodes(
+            listOf(EpisodeEntity(a, "e1", "s1", "Drama", "Ep 1", 1, 1, null, "http://s.test/e1.mp4", null, null, null, 0, Instant.EPOCH)),
+        )
+        db.vodProgressDao().upsert(VodProgressEntity(VodKind.EPISODE, a, "e1", 50_000, 100_000, false, now))
+
+        val rows = browse(VodKind.EPISODE).loaded()
+
+        val card = (rows[0] as VodRowModel.Continue).cards.single()
+        assertEquals("s1", card.key)
+        assertEquals("S1 E1", card.subtitle)
+        assertEquals(0.5f, card.fraction)
+        assertEquals(VodPlay(VodRef(VodKind.EPISODE, a, "e1"), 50_000), card.play)
+    }
+
+    @Test fun dismissRemovesCard() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"), film(a, "f2", "Action"))
+        watchFilm(a, "f1", 50_000)
+        val vm = browse(VodKind.MOVIE)
+        val card = (vm.loaded()[0] as VodRowModel.Continue).cards.single()
+
+        vm.dismissContinue(card)
+
+        assertEquals(listOf("Action"), vm.rows.first { r -> r.none { it is VodRowModel.Continue } }.map { it.title })
     }
 }

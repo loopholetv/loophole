@@ -90,6 +90,7 @@ class PlaylistRepository internal constructor(
     private val maintenance = db.maintenanceDao()
     private val vodDao = db.vodWriteDao()
     private val vodProgress = db.vodProgressDao()
+    private val vodLibrary = db.vodLibraryDao()
     private val m3u = M3uSourceOpener(http)
     private val xtream = XtreamSourceOpener(xtream)
     private val mutex = Mutex()
@@ -256,6 +257,7 @@ class PlaylistRepository internal constructor(
             db.withTransaction {
                 playlistDao.delete(playlistId)
                 vodProgress.deleteForPlaylist(playlistId)
+                vodLibrary.deleteForPlaylist(playlistId)
                 overlay.renumber()
                 maintenance.deleteUnreferencedProgrammes()
             }
@@ -361,7 +363,9 @@ class PlaylistRepository internal constructor(
         if (count == 0 && vodCount == 0) throw ImportFailure(source.noChannelsError(), "The playlist contains no channels")
         if (rekey) carryOver(id, before, existing)
         if (vodBefore != null) carryOverProgress(id, vodBefore)
-        vodProgress.deleteOrphans(now().minus(ORPHAN_PROGRESS_DAYS.toLong(), ChronoUnit.DAYS))
+        val orphanCutoff = now().minus(ORPHAN_PROGRESS_DAYS.toLong(), ChronoUnit.DAYS)
+        vodProgress.deleteOrphans(orphanCutoff)
+        vodLibrary.deleteOrphans(orphanCutoff)
         // The writer overwrote the derived columns; re-derive the edits before the transaction commits.
         overlay.applyPlaylist(id); overlay.renumber()
         // A read from the last-good copy isn't a real update: the next scheduled one tries the file again.
@@ -391,10 +395,13 @@ class PlaylistRepository internal constructor(
     private suspend fun vodNameGroups(id: Long) =
         VodNameGroups(vodDao.filmNameGroups(id), vodDao.episodeNameGroups(id))
 
-    /** Viewing progress follows its film or episode to the new key, by the same name-and-group rule as channels. */
+    /** Viewing progress, My list and dismissals follow their film or episode to the new key, by the same name-and-group rule as channels. */
     private suspend fun carryOverProgress(id: Long, before: VodNameGroups) {
         val after = vodNameGroups(id)
-        for ((from, to) in carryOverPlan(before.films, after.films)) vodProgress.rekey(VodKind.MOVIE, id, from, to)
+        for ((from, to) in carryOverPlan(before.films, after.films)) {
+            vodProgress.rekey(VodKind.MOVIE, id, from, to)
+            vodLibrary.rekeyFilm(id, from, to)
+        }
         for ((from, to) in carryOverPlan(before.episodes, after.episodes)) vodProgress.rekey(VodKind.EPISODE, id, from, to)
     }
 

@@ -75,6 +75,7 @@ private fun PlaybackRow(
         }
         PB_AUTO_FRAME_RATE -> toggle(p.autoFrameRate, PB_AUTO_FRAME_RATE_HINT) { it.copy(autoFrameRate = !it.autoFrameRate) }
         PB_SURROUND -> toggle(p.preferSurround, PB_SURROUND_HINT) { it.copy(preferSurround = !it.preferSurround) }
+        PB_AUTO_PLAY_NEXT -> toggle(p.autoPlayNext, PB_AUTO_PLAY_NEXT_HINT) { it.copy(autoPlayNext = !it.autoPlayNext) }
         PB_PASSTHROUGH -> host.Row(
             label, Passthrough.entries, p.passthrough, ::passthroughText, key, supporting = PB_PASSTHROUGH_HINT,
         ) { v -> set { it.copy(passthrough = v) } }

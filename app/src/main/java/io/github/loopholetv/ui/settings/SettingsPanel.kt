@@ -90,7 +90,7 @@ private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     SettingsPage.Epg -> "EPG"
     SettingsPage.Playback -> "Playback"
     SettingsPage.Remote -> "Remote control"
-    SettingsPage.Phone -> "Phone page"
+    SettingsPage.Phone -> SECTION_COMPANION
     is SettingsPage.RemoteButtons -> context.title
     SettingsPage.About -> "About"
 }
@@ -232,8 +232,8 @@ private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
         SectionItem("EPG", requesters.getValue(SettingsPage.Epg)) { onOpen(SettingsPage.Epg) }
         SectionItem("Playback", requesters.getValue(SettingsPage.Playback)) { onOpen(SettingsPage.Playback) }
         SectionItem("Remote control", requesters.getValue(SettingsPage.Remote)) { onOpen(SettingsPage.Remote) }
-        SectionItem("Phone page", requesters.getValue(SettingsPage.Phone)) { onOpen(SettingsPage.Phone) }
-        // Not focusable: D-pad moves straight from Phone page to About.
+        SectionItem(SECTION_COMPANION, requesters.getValue(SettingsPage.Phone)) { onOpen(SettingsPage.Phone) }
+        // Not focusable: D-pad moves straight from Companion to About.
         DISABLED_SECTIONS.forEach { DisabledSection(it) }
         SectionItem("About", requesters.getValue(SettingsPage.About)) { onOpen(SettingsPage.About) }
     }

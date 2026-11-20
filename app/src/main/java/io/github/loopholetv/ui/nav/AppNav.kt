@@ -78,6 +78,8 @@ import io.github.loopholetv.ui.theme.Tokens
 import io.github.loopholetv.ui.vod.FilmScreen
 import io.github.loopholetv.ui.vod.MoviesScreen
 import io.github.loopholetv.ui.vod.ShowScreen
+import io.github.loopholetv.ui.vod.VOD_LAST_EPISODE
+import io.github.loopholetv.ui.vod.takeLastEpisode
 import io.github.loopholetv.ui.vod.SeriesScreen
 
 object Routes {
@@ -464,15 +466,27 @@ fun AppNav(
                     onBack = dropUnlessResumed { navController.popBackStack() },
                 )
             }
-            composable(Routes.MOVIES) {
+            composable(Routes.MOVIES) { entry ->
                 MoviesScreen(
                     onOpenFilm = { p, key -> navController.navigate(Routes.film(p, key)) { launchSingleTop = true } },
+                    // Only while this entry is resumed: a quick double OK must not push two players.
+                    onPlay = { ref, ms ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.vodPlayer(ref, ms))
+                        }
+                    },
                     onBack = dropUnlessResumed { navController.popBackStack() },
                 )
             }
-            composable(Routes.SERIES) {
+            composable(Routes.SERIES) { entry ->
                 SeriesScreen(
                     onOpenShow = { p, key -> navController.navigate(Routes.show(p, key)) { launchSingleTop = true } },
+                    // Only while this entry is resumed: a quick double OK must not push two players.
+                    onPlay = { ref, ms ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.vodPlayer(ref, ms))
+                        }
+                    },
                     onBack = dropUnlessResumed { navController.popBackStack() },
                 )
             }
@@ -502,6 +516,7 @@ fun AppNav(
                         }
                     },
                     onBack = dropUnlessResumed { navController.popBackStack() },
+                    takeLastEpisodeFromPlayer = { entry.savedStateHandle.takeLastEpisode() },
                 )
             }
             composable(Routes.PLAYER, arguments = Routes.playerArguments) { entry ->
@@ -527,7 +542,14 @@ fun AppNav(
                         ref = ref,
                         startMs = entry.arguments?.getLong(Routes.ARG_START) ?: 0L,
                         // Not only while resumed: a film that ends in the picture-in-picture window leaves too.
-                        onExit = { if (navController.currentDestination?.route == Routes.VOD_PLAYER) navController.popBackStack() },
+                        // The screen below learns the episode that played last, to focus it; only the
+                        // show page reads it.
+                        onExit = { lastEpisode ->
+                            if (navController.currentDestination?.route == Routes.VOD_PLAYER) {
+                                navController.previousBackStackEntry?.savedStateHandle?.set(VOD_LAST_EPISODE, lastEpisode)
+                                navController.popBackStack()
+                            }
+                        },
                     )
                 }
             }

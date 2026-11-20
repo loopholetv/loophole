@@ -30,6 +30,22 @@ fun progressAfter(
     )
 }
 
+/**
+ * Like [progressAfter], for a stream that played to its natural end. With no known duration there is
+ * no telling how far through it was, so the position resets (watched is left as it was) instead of
+ * resuming at the very end; a known duration behaves exactly as [progressAfter].
+ */
+fun progressAfterNaturalEnd(
+    old: VodProgressEntity?,
+    ref: VodRef,
+    positionMs: Long,
+    durationMs: Long?,
+    now: Instant,
+): VodProgressEntity? {
+    if (durationMs != null && durationMs > 0) return progressAfter(old, ref, positionMs, durationMs, now)
+    return old?.copy(positionMs = 0L)
+}
+
 /** Where to resume playback, or null when the saved position is too early to be worth resuming. */
 fun resumeFrom(p: VodProgressEntity?): Long? = p?.positionMs?.takeIf { it >= NOT_STARTED_MS }
 
@@ -63,3 +79,37 @@ fun continueTarget(episodesInOrder: List<EpisodeView>): ContinueTarget? {
 }
 
 private fun EpisodeView.toTarget(started: Boolean) = ContinueTarget(key, season, episode, name, started)
+
+/**
+ * The episode a show's Continue watching entry should open, or null when the show does not belong in
+ * the row: nothing watched yet, or the final episode finished. [ContinueTarget.started] is true only
+ * when the target has a saved position to resume from.
+ */
+fun continueRowTarget(episodesInOrder: List<EpisodeView>): ContinueTarget? {
+    val latestIndex = episodesInOrder.indices
+        .filter { episodesInOrder[it].progress != null }
+        .maxByOrNull { episodesInOrder[it].progress!!.lastWatchedAt }
+        ?: return null
+    val p = episodesInOrder[latestIndex].progress!!
+    if (p.watched && p.positionMs == 0L && latestIndex == episodesInOrder.lastIndex) return null
+    val target = continueTarget(episodesInOrder) ?: return null
+    val started = episodesInOrder.first { it.key == target.key }.progress?.let { it.positionMs > 0 } == true
+    return target.copy(started = started)
+}
+
+/**
+ * The numbered episode that follows [currentKey] in show-page order, or null when [currentKey] is
+ * absent, in the "Other" group (no season or episode number), or the last numbered episode.
+ */
+fun nextEpisode(episodesInOrder: List<EpisodeView>, currentKey: String): EpisodeView? {
+    val index = episodesInOrder.indexOfFirst { it.key == currentKey }
+    if (index < 0) return null
+    val current = episodesInOrder[index]
+    if (current.season == null || current.episode == null) return null
+    return episodesInOrder.getOrNull(index + 1)?.takeIf { it.season != null && it.episode != null }
+}
+
+/** Playback position from which the "Next episode" button shows, for an episode [durationMs] long. */
+fun nextWindowStartMs(durationMs: Long): Long =
+    if (durationMs >= SHORT_EPISODE_MS) durationMs - NEXT_WINDOW_MS
+    else (durationMs * (1 - SHORT_EPISODE_WINDOW_FRACTION)).toLong()

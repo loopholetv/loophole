@@ -65,6 +65,7 @@ class PlaybackSettingsTest {
         assertEquals(0, p.audioDelayMs)
         assertEquals(SubtitleStyle(SubtitleSize.NORMAL, SubtitleColour.WHITE, SubtitleBackground.NONE, SubtitleEdge.OUTLINE), p.subtitleStyle)
         assertEquals(false, p.pipOnHome)
+        assertEquals(true, p.autoPlayNext)
         assertEquals(PlaybackSettings(), AppSettings().playback)
     }
 

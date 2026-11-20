@@ -27,6 +27,7 @@ class PlaybackTextsTest {
         "Subtitle colour",
         "Subtitle background",
         "Subtitle edge",
+        "Auto-play next episode",
     )
 
     @Test fun playbackRowLabelsInOrder() {

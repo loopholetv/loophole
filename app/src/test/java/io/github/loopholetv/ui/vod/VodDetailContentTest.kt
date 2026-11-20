@@ -2,6 +2,7 @@ package io.github.loopholetv.ui.vod
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsFocused
@@ -13,10 +14,12 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.input.key.Key
+import androidx.lifecycle.SavedStateHandle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.resetMain
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -229,4 +232,43 @@ class VodDetailContentTest {
         // No crash from the stale restore index, and no pull onto an unrelated episode.
         compose.onNodeWithText("Name x1").assertIsNotFocused()
     }
+
+    @Test fun myListPillKeepsFocusAfterToggle() {
+        var film by mutableStateOf(film)
+        compose.setContent { FilmContent(film, onToggleMyList = { film = film.copy(inMyList = !film.inMyList) }, onPlay = {}) }
+        compose.waitForIdle()
+
+        okOn("+ My list")
+        compose.waitForIdle()
+
+        compose.onNodeWithText("✓ In My list").assertIsFocused()
+        compose.onNodeWithText("Play").assertIsNotFocused()
+    }
+
+    @Test fun showMyListPillKeepsFocusAfterToggle() {
+        var ui by mutableStateOf(show)
+        compose.setContent {
+            ShowContent(ui, onSelectTab = {}, onToggleMyList = { ui = ui.copy(inMyList = !ui.inMyList) }, onPlay = { _, _ -> })
+        }
+        compose.waitForIdle()
+
+        okOn("+ My list")
+        compose.waitForIdle()
+
+        compose.onNodeWithText("✓ In My list").assertIsFocused()
+    }
+
+    @Test fun showPageFocusesLastEpisodeFromSavedState() {
+        val handle = SavedStateHandle(mapOf(VOD_LAST_EPISODE to "e25"))
+        compose.setContent {
+            val restore = remember { handle.takeLastEpisode() }
+            ShowContent(longShow(), onSelectTab = {}, restoreEpisodeKey = restore, onPlay = { _, _ -> })
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Name e25").assertIsFocused()
+        // Read once: a later return to the page without a player run does not land there again.
+        assertNull(handle.get<String>(VOD_LAST_EPISODE))
+    }
 }
+

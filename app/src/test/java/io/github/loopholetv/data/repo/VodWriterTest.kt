@@ -21,18 +21,25 @@ class VodWriterTest {
         val stored = LinkedHashMap<String, EpisodeEntity>()
         var showKeyUpdates = 0
         val filmBatches = ArrayList<List<FilmEntity>>()
+        val filmStore = LinkedHashMap<String, FilmEntity>()
         val episodeBatches = ArrayList<List<EpisodeEntity>>()
         val shows = ArrayList<ShowEntity>()
 
-        override suspend fun filmKeys(p: Long) = filmBatches.flatten().map { KeyFirstSeen(it.key, it.firstSeenAt) }
-        override suspend fun episodeKeys(p: Long) = stored.values.map { KeyFirstSeen(it.key, it.firstSeenAt) }
+        override suspend fun filmKeys(p: Long) = filmStore.values.map { KeyFirstSeen(it.key, it.firstSeenAt, it.streamUrl) }
+        override suspend fun episodeKeys(p: Long) = stored.values.map { KeyFirstSeen(it.key, it.firstSeenAt, it.streamUrl) }
         override suspend fun episodeShowKeys(p: Long) = stored.values.map { KeyShowKey(it.key, it.showKey) }
-        override suspend fun upsertFilms(rows: List<FilmEntity>) { filmBatches += rows }
+        override suspend fun filmsByKeys(p: Long, keys: List<String>) =
+            filmStore.values.filter { it.key in keys }
+        override suspend fun episodesByKeys(p: Long, keys: List<String>) = stored.values.filter { it.key in keys }
+        override suspend fun upsertFilms(rows: List<FilmEntity>) {
+            filmBatches += rows
+            rows.forEach { filmStore[it.key] = it }
+        }
         override suspend fun upsertEpisodes(rows: List<EpisodeEntity>) {
             episodeBatches += rows
             rows.forEach { stored[it.key] = it }
         }
-        override suspend fun deleteFilms(p: Long, keys: List<String>) = Unit
+        override suspend fun deleteFilms(p: Long, keys: List<String>) { keys.forEach { filmStore.remove(it) } }
         override suspend fun deleteEpisodes(p: Long, keys: List<String>) = Unit
         override suspend fun deleteShows(p: Long) { shows.clear() }
         override suspend fun insertShows(rows: List<ShowEntity>) { shows += rows }
@@ -103,6 +110,69 @@ class VodWriterTest {
             dao.filmBatches.flatten().map { it.name to it.key },
         )
         assertEquals(listOf(base, "$base?id=8"), dao.stored.keys.toList())
+    }
+
+    private fun currentKeys(dao: FakeVodDao): Map<String, String> =
+        dao.filmStore.values.associate { it.streamUrl to it.key }
+
+    @Test fun aRotatedTokenInACollidingGroupKeepsTheShortKey() = runTest {
+        val dao = FakeVodDao()
+        val base = "http://s.test/movie.php"
+        suspend fun import(vararg urls: String) {
+            val writer = VodWriter(dao, FakePrefs(), 1, Instant.EPOCH)
+            urls.forEach { writer.add(vod(0, url = it, key = base)) }
+            writer.finish()
+        }
+
+        import("$base?id=1&t=a", "$base?id=2&t=a")
+        import("$base?id=1&t=b", "$base?id=2&t=b")
+
+        assertEquals(
+            mapOf("$base?id=1&t=b" to base, "$base?id=2&t=b" to "$base?id=2&t=b"),
+            currentKeys(dao).filterKeys { it.endsWith("t=b") },
+        )
+    }
+
+    @Test fun collidingQueryKeysKeepTheirKeysWhenOrderChanges() = runTest {
+        val dao = FakeVodDao()
+        val base = "http://s.test/movie.php"
+        val u1 = "$base?id=1"
+        val u2 = "$base?id=2"
+        suspend fun import(vararg urls: String): Map<String, String> {
+            val writer = VodWriter(dao, FakePrefs(), 1, Instant.EPOCH)
+            urls.forEach { writer.add(vod(0, url = it, key = base)) }
+            writer.finish()
+            return currentKeys(dao)
+        }
+
+        val first = import(u1, u2)
+        // Progress and a hide are recorded against the stored key, as the app does.
+        val hidden = setOf(first.getValue(u2))
+        val second = import(u2, u1)
+
+        assertEquals(first, second)
+        assertEquals(setOf(u2), second.filterValues { it in hidden }.keys)
+    }
+
+    @Test fun aNewEntryDisplacedByAKeySwapCountsAsRecentlyAdded() = runTest {
+        val dao = FakeVodDao()
+        val base = "http://s.test/movie.php"
+        val (u1, u3) = "$base?id=1" to "$base?id=3"
+        val later = Instant.ofEpochSecond(5_000_000)
+        suspend fun import(at: Instant, vararg urls: String) {
+            val writer = VodWriter(dao, FakePrefs(), 1, at)
+            urls.forEach { writer.add(vod(0, url = it, key = base)) }
+            writer.finish()
+        }
+
+        import(Instant.ofEpochSecond(1_000_000), u1)
+        import(later, u3, u1)
+
+        val rows = dao.filmStore.values.associateBy { it.streamUrl }
+        assertEquals(u3, rows.getValue(u3).key)
+        assertEquals(later, rows.getValue(u3).firstSeenAt)
+        assertEquals(base, rows.getValue(u1).key)
+        assertEquals(Instant.EPOCH, rows.getValue(u1).firstSeenAt)
     }
 
     @Test fun aShowCountsAsNewWhenItGainsANewEpisode() = runTest {

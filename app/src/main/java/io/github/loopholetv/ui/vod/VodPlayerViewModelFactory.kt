@@ -11,6 +11,16 @@ import io.github.loopholetv.data.vod.VodRef
 internal fun vodPlayerViewModelFactory(ref: VodRef, startMs: Long): ViewModelProvider.Factory = viewModelFactory {
     initializer {
         val c = (this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
-        VodPlayerViewModel(ref, startMs, c.playback, c.vod::playable, c.vodProgress, SystemClock::elapsedRealtime)
+        VodPlayerViewModel(
+            ref = ref,
+            startMs = startMs,
+            playback = c.playback,
+            items = c.vod::playable,
+            progress = c.vodProgress,
+            next = c.vod::nextEpisode,
+            label = { next -> c.vod.episodeInfo(next)?.let { countdownLabel(it.season, it.episode, it.name) } },
+            autoPlay = { c.settingsSnapshot.current.playback.autoPlayNext },
+            nowMs = SystemClock::elapsedRealtime,
+        )
     }
 }

@@ -177,6 +177,7 @@ data class SetupSettings(
     val subtitleLanguage: String?,
     val subtitleStyle: SubtitleStyle,
     val pipOnHome: Boolean,
+    val autoPlayNext: Boolean,
     val remote: RemoteSettings,
 ) {
     fun applyTo(s: AppSettings): AppSettings = s.copy(
@@ -198,6 +199,7 @@ data class SetupSettings(
             subtitleLanguage = subtitleLanguage,
             subtitleStyle = subtitleStyle,
             pipOnHome = pipOnHome,
+            autoPlayNext = autoPlayNext,
         ),
         remote = remote,
     )
@@ -223,6 +225,7 @@ data class SetupSettings(
             subtitleLanguage = s.playback.subtitleLanguage,
             subtitleStyle = s.playback.subtitleStyle,
             pipOnHome = s.playback.pipOnHome,
+            autoPlayNext = s.playback.autoPlayNext,
             remote = s.remote,
         )
     }
@@ -244,7 +247,7 @@ internal object SetupFields {
     /** This TV's identity and personal state. */
     val APP_NOT_COPIED = setOf("lastGuideScope", "castAllowJoin", "castTvName", "onboardingSkipped")
 
-    val PLAYBACK_COPIED = setOf("bufferPreset", "audioLanguage", "subtitleLanguage", "subtitleStyle", "pipOnHome")
+    val PLAYBACK_COPIED = setOf("bufferPreset", "audioLanguage", "subtitleLanguage", "subtitleStyle", "pipOnHome", "autoPlayNext")
 
     /** Hardware-specific. */
     val PLAYBACK_NOT_COPIED = setOf(
@@ -459,6 +462,7 @@ object SetupJson {
         w.name("subtitleBackground").value(s.subtitleStyle.background.name)
         w.name("subtitleEdge").value(s.subtitleStyle.edge.name)
         w.name("pipOnHome").value(s.pipOnHome)
+        w.name("autoPlayNext").value(s.autoPlayNext)
         w.name("mediaKeysSeek").value(s.remote.mediaKeysSeek)
         w.name("rwRewindsLive").value(s.remote.rwRewindsLive)
         w.name("leftRightSeek").value(s.remote.leftRightSeek)
@@ -608,6 +612,7 @@ object SetupJson {
                 edge = v.enum<SubtitleEdge>("subtitleEdge", ds.edge),
             ),
             pipOnHome = v.bool("pipOnHome") ?: dp.pipOnHome,
+            autoPlayNext = v.bool("autoPlayNext") ?: dp.autoPlayNext,
             remote = RemoteSettings(
                 mediaKeysSeek = v.bool("mediaKeysSeek") ?: dr.mediaKeysSeek,
                 rwRewindsLive = v.bool("rwRewindsLive") ?: dr.rwRewindsLive,

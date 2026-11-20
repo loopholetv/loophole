@@ -8,13 +8,18 @@ import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.map
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.data.db.KeyRef
 import io.github.loopholetv.data.repo.ChannelEdits
 import io.github.loopholetv.data.vod.ALL_SHOWS_GRID_THRESHOLD
 import io.github.loopholetv.data.vod.CategoryRow
+import io.github.loopholetv.data.vod.ContinueCard
 import io.github.loopholetv.data.vod.FilmCard
 import io.github.loopholetv.data.vod.HiddenCategory
 import io.github.loopholetv.data.vod.ShowCard
+import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
+import io.github.loopholetv.data.vod.VodLibraryRepository
+import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.data.vod.VodRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,15 +32,42 @@ import kotlinx.coroutines.launch
 
 const val RECENT_ROW_TITLE = "Recently added"
 const val ALL_SHOWS_ROW_TITLE = "All shows"
+const val CONTINUE_ROW_TITLE = "Continue watching"
+const val MY_LIST_ROW_TITLE = "My list"
 
-/** One poster as the browse screens show it: [subtitle] is the playlist a show comes from, if known. */
-data class PosterModel(val playlistId: Long, val key: String, val title: String, val logo: String?, val subtitle: String?)
+/** What a Continue watching card plays: the film or episode [ref], from [startMs]. */
+data class VodPlay(val ref: VodRef, val startMs: Long)
+
+/**
+ * One poster as the browse screens show it: [subtitle] is the playlist a show comes from, if known
+ * (on a Continue card, the episode caption). [fraction] and [play] are set on Continue cards only.
+ */
+data class PosterModel(
+    val playlistId: Long,
+    val key: String,
+    val title: String,
+    val logo: String?,
+    val subtitle: String?,
+    val fraction: Float? = null,
+    val play: VodPlay? = null,
+)
 
 sealed interface VodRowModel {
     val title: String
 
+    /** A row that is a short fixed list of cards. */
+    sealed interface Fixed : VodRowModel {
+        val cards: List<PosterModel>
+    }
+
     /** A short fixed list (the recently added films or shows). */
-    data class Recent(override val title: String, val cards: List<PosterModel>) : VodRowModel
+    data class Recent(override val title: String, override val cards: List<PosterModel>) : Fixed
+
+    /** Titles to pick up again: unfinished films, and the next episode of shows being watched. */
+    data class Continue(override val title: String, override val cards: List<PosterModel>) : Fixed
+
+    /** The titles the viewer saved. */
+    data class MyList(override val title: String, override val cards: List<PosterModel>) : Fixed
 
     /** A horizontally scrolling row of one category; a null [category] is every show without one. */
     data class Paged(override val title: String, val category: String?, val items: Flow<PagingData<PosterModel>>) : VodRowModel
@@ -48,9 +80,12 @@ sealed interface VodRowModel {
 class VodBrowseViewModel(
     private val kind: VodKind,
     private val repo: VodRepository,
+    private val library: VodLibraryRepository,
     private val edits: ChannelEdits,
 ) : ViewModel() {
     // One pager per category, kept so a row keeps its loaded pages when the category list changes.
+    private val titleKind = if (kind == VodKind.MOVIE) TitleKind.FILM else TitleKind.SHOW
+
     private val pagers = HashMap<String?, Flow<PagingData<PosterModel>>>()
 
     private val rowSource = (if (kind == VodKind.MOVIE) filmRows() else showRows())
@@ -66,6 +101,18 @@ class VodBrowseViewModel(
     val allHidden: StateFlow<Boolean> = combine(rowSource, hiddenSource) { r, h -> r.isEmpty() && h.isNotEmpty() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /** The titles in My list, to mark cards in their menus. */
+    val myListKeys: StateFlow<Set<KeyRef>> = library.myListKeys(titleKind)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    fun setInMyList(card: PosterModel, inList: Boolean) {
+        viewModelScope.launch { library.setInMyList(titleKind, card.playlistId, card.key, inList) }
+    }
+
+    fun dismissContinue(card: PosterModel) {
+        viewModelScope.launch { library.dismissContinue(titleKind, card.playlistId, card.key) }
+    }
+
     /** Hides [title] in every playlist that has it. */
     fun hideCategory(title: String) {
         viewModelScope.launch {
@@ -78,14 +125,24 @@ class VodBrowseViewModel(
     }
 
     private fun filmRows(): Flow<List<VodRowModel>> =
-        combine(repo.recentFilms(), repo.filmCategories()) { recent, categories ->
-            recentRow(recent.map { it.poster() }) + categories.map { pagedRow(it) }
+        combine(library.continueFilms(), library.myListFilms(), repo.recentFilms(), repo.filmCategories()) { cont, mine, recent, categories ->
+            continueRow(cont) + myListRow(mine.map { it.poster() }) + recentRow(recent.map { it.poster() }) +
+                categories.map { pagedRow(it) }
         }
 
     private fun showRows(): Flow<List<VodRowModel>> =
-        combine(repo.recentShows(), repo.showCount(null), repo.showCategories()) { recent, uncategorised, categories ->
-            recentRow(recent.map { it.poster() }) + allShowsRow(uncategorised) + categories.map { pagedRow(it) }
+        combine(
+            library.continueShows(), library.myListShows(), repo.recentShows(), repo.showCount(null), repo.showCategories(),
+        ) { cont, mine, recent, uncategorised, categories ->
+            continueRow(cont) + myListRow(mine.map { it.poster() }) + recentRow(recent.map { it.poster() }) +
+                allShowsRow(uncategorised) + categories.map { pagedRow(it) }
         }
+
+    private fun continueRow(cards: List<ContinueCard>): List<VodRowModel> =
+        if (cards.isEmpty()) emptyList() else listOf(VodRowModel.Continue(CONTINUE_ROW_TITLE, cards.map { it.poster() }))
+
+    private fun myListRow(cards: List<PosterModel>): List<VodRowModel> =
+        if (cards.isEmpty()) emptyList() else listOf(VodRowModel.MyList(MY_LIST_ROW_TITLE, cards))
 
     private fun recentRow(cards: List<PosterModel>): List<VodRowModel> =
         if (cards.isEmpty()) emptyList() else listOf(VodRowModel.Recent(RECENT_ROW_TITLE, cards))
@@ -109,10 +166,12 @@ class VodBrowseViewModel(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
             val c = (extras[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
-            return VodBrowseViewModel(kind, c.vod, c.channelEdits) as T
+            return VodBrowseViewModel(kind, c.vod, c.vodLibrary, c.channelEdits) as T
         }
     }
 }
 
 private fun FilmCard.poster() = PosterModel(playlistId, key, name, logo, null)
 private fun ShowCard.poster() = PosterModel(playlistId, key, name, logo, playlistName)
+private fun ContinueCard.poster() =
+    PosterModel(playlistId, key, title, logo, caption, fraction, VodPlay(play, startMs))

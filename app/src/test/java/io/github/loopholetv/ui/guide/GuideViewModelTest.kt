@@ -615,6 +615,8 @@ class GuideViewModelTest {
         assertTrue(RailItem.MOVIES !in vm.railItems.value)
         assertTrue(RailItem.SERIES !in vm.railItems.value)
         assertTrue(RailItem.TV in vm.railItems.value)
+        assertTrue(vm.railItems.value.none { it.label == "My list" })
+        assertTrue(RailItem.RECORDINGS in vm.railItems.value)
     }
 
     @Test fun railShowsMoviesWhenFilmsExist() = runTest {

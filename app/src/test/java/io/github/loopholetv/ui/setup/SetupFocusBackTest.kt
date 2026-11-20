@@ -176,7 +176,7 @@ class SetupFocusBackTest {
     }
 
     private fun focusedRailItem(): String? =
-        listOf("Search", "Guide", "TVs", "Recordings", "My list", "Settings").firstOrNull { label ->
+        listOf("Search", "Guide", "TVs", "Recordings", "Settings").firstOrNull { label ->
             runCatching { compose.onNodeWithContentDescription(label).assertIsFocused() }.isSuccess
         }
 

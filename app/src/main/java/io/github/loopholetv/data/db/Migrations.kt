@@ -161,8 +161,19 @@ val MIGRATION_6_7: Migration = SqlMigration(
     "CREATE INDEX IF NOT EXISTS `index_vod_progress_lastWatchedAt` ON `vod_progress` (`lastWatchedAt`)",
 )
 
+/** My list and the Continue watching dismissals. Neither has a foreign key, so both survive a refresh. SQL matches Room's schema 8 export. */
+val MIGRATION_7_8: Migration = SqlMigration(
+    7,
+    8,
+    """CREATE TABLE IF NOT EXISTS `vod_my_list` (`kind` TEXT NOT NULL, `playlistId` INTEGER NOT NULL,
+       `key` TEXT NOT NULL, `addedAt` INTEGER NOT NULL, PRIMARY KEY(`kind`, `playlistId`, `key`))""",
+    "CREATE INDEX IF NOT EXISTS `index_vod_my_list_addedAt` ON `vod_my_list` (`addedAt`)",
+    """CREATE TABLE IF NOT EXISTS `vod_continue_dismissed` (`kind` TEXT NOT NULL, `playlistId` INTEGER NOT NULL,
+       `key` TEXT NOT NULL, `dismissedAt` INTEGER NOT NULL, PRIMARY KEY(`kind`, `playlistId`, `key`))""",
+)
+
 val ALL_MIGRATIONS: Array<Migration> =
-    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */
 private class SqlMigration(from: Int, to: Int, private vararg val statements: String) : Migration(from, to) {

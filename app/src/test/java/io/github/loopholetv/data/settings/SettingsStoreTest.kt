@@ -230,6 +230,7 @@ class SettingsStoreTest {
                 edge = SubtitleEdge.SHADOW,
             ),
             pipOnHome = true,
+            autoPlayNext = false,
         )
         store.update { it.copy(playback = playback, confirmExit = false) }
         val s = store.current()
@@ -239,6 +240,16 @@ class SettingsStoreTest {
         // Back to defaults: optional languages are removed, not kept.
         store.update { it.copy(playback = PlaybackSettings()) }
         assertEquals(PlaybackSettings(), store.current().playback)
+    }
+
+    @Test
+    fun autoPlayNextDefaultsOnAndPersists() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        assertEquals(true, store.current().playback.autoPlayNext)
+        store.update { it.copy(playback = it.playback.copy(autoPlayNext = false)) }
+        assertEquals(false, store.current().playback.autoPlayNext)
+        store.update { it.copy(playback = it.playback.copy(autoPlayNext = true)) }
+        assertEquals(true, store.current().playback.autoPlayNext)
     }
 
     @Test

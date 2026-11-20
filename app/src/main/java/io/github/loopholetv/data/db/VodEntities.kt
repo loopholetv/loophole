@@ -3,6 +3,7 @@ package io.github.loopholetv.data.db
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
+import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
 import java.time.Instant
 
@@ -89,4 +90,29 @@ data class VodProgressEntity(
     val durationMs: Long?,
     val watched: Boolean,
     val lastWatchedAt: Instant,
+)
+
+/** A film or show on My list; [key] is the film key or the show key. No foreign key, like progress. */
+@Entity(
+    tableName = "vod_my_list",
+    primaryKeys = ["kind", "playlistId", "key"],
+    indices = [Index("addedAt")],
+)
+data class MyListEntity(
+    val kind: TitleKind,
+    val playlistId: Long,
+    val key: String,
+    val addedAt: Instant,
+)
+
+/** A film or show hidden from Continue watching until it is watched again. No foreign key, like progress. */
+@Entity(
+    tableName = "vod_continue_dismissed",
+    primaryKeys = ["kind", "playlistId", "key"],
+)
+data class ContinueDismissalEntity(
+    val kind: TitleKind,
+    val playlistId: Long,
+    val key: String,
+    val dismissedAt: Instant,
 )

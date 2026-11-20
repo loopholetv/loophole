@@ -4,6 +4,10 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.ChannelPrefsEntity
+import io.github.loopholetv.data.db.KeyRef
+import io.github.loopholetv.data.db.MyListEntity
+import io.github.loopholetv.data.vod.TitleKind
+import kotlinx.coroutines.flow.first
 import io.github.loopholetv.data.db.channel
 import io.github.loopholetv.data.db.rowCount
 import io.github.loopholetv.data.xtream.XtreamClient
@@ -126,15 +130,30 @@ class VodImportTest {
         assertTrue(db.vodWriteDao().episodeKeys(id).all { it.firstSeenAt == Instant.EPOCH })
     }
 
+    @Test fun collidingEpisodesKeepTheirKeysWhenReordered() = runTest {
+        val base = "http://s.test/series.php"
+        fun ep(n: Int) = "#EXTINF:-1 tvg-type=\"series\" group-title=\"Show\",Show S01E0$n\n$base?id=$n\n"
+        val id = add("#EXTM3U\n" + ep(1) + ep(2))
+        val before = db.vodWriteDao().episodeKeys(id).associate { it.streamUrl to it.key }
+        assertEquals(mapOf("$base?id=1" to base, "$base?id=2" to "$base?id=2"), before)
+
+        clock = Instant.ofEpochMilli(9_000_000)
+        refresh(id, "#EXTM3U\n" + ep(2) + ep(1))
+
+        assertEquals(before, db.vodWriteDao().episodeKeys(id).associate { it.streamUrl to it.key })
+        assertTrue(db.vodWriteDao().episodeKeys(id).all { it.firstSeenAt == Instant.EPOCH })
+    }
+
     @Test fun tokenChangeKeepsKey() = runTest {
         val body = res("vod.m3u")
         val id = add(body)
-        val before = db.vodWriteDao().filmKeys(id).sortedBy { it.key }
+        val keyAndTime = { rows: List<io.github.loopholetv.data.db.KeyFirstSeen> -> rows.sortedBy { it.key }.map { it.key to it.firstSeenAt } }
+        val before = keyAndTime(db.vodWriteDao().filmKeys(id))
 
         clock = Instant.ofEpochMilli(9_000_000)
         refresh(id, body.replace("token=a", "token=b"))
 
-        assertEquals(before, db.vodWriteDao().filmKeys(id).sortedBy { it.key })
+        assertEquals(before, keyAndTime(db.vodWriteDao().filmKeys(id)))
         val url = db.openHelper.readableDatabase.query("SELECT streamUrl FROM vod_films WHERE `key` = 'http://s.test/movie/m1.mp4'")
             .use { it.moveToFirst(); it.getString(0) }
         assertEquals("http://s.test/movie/m1.mp4?token=b", url)
@@ -249,6 +268,16 @@ class VodImportTest {
 
         val key = db.openHelper.readableDatabase.query("SELECT `key` FROM vod_progress").use { it.moveToFirst(); it.getString(0) }
         assertEquals("http://new.test/movie/m1.mp4", key)
+    }
+
+    @Test fun myListFollowsFilmOnAddressChange() = runTest {
+        val id = add(res("vod.m3u"))
+        db.vodLibraryDao().add(MyListEntity(TitleKind.FILM, id, "http://s.test/movie/m1.mp4", clock))
+
+        enqueue(res("vod.m3u").replace("http://s.test/", "http://new.test/"))
+        success(repo.updateSource(id, SourceEdit.M3uUrl(server.url("/list.m3u").toString())) {})
+
+        assertEquals(listOf(KeyRef(id, "http://new.test/movie/m1.mp4")), db.vodLibraryDao().observeListKeys(TitleKind.FILM).first())
     }
 
     @Test fun addressChangeDoesNotMakeEverythingRecentlyAdded() = runTest {

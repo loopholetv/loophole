@@ -129,6 +129,12 @@ interface VodBrowseDao {
     fun episodesOf(playlistId: Long, showKey: String): Flow<List<EpisodeEntity>>
 
     @Query(
+        """SELECT e.* FROM vod_episodes e WHERE e.playlistId = :playlistId AND e.showKey = :showKey
+           AND NOT EXISTS (SELECT 1 FROM channel_prefs c WHERE c.playlistId = e.playlistId AND c.channelKey = e.`key` AND c.hidden = 1)""",
+    )
+    suspend fun episodesOnce(playlistId: Long, showKey: String): List<EpisodeEntity>
+
+    @Query(
         """SELECT $FILM_CARD FROM vod_films f WHERE f.name LIKE :pattern ESCAPE '\' AND $FILM_VISIBLE
            ORDER BY f.name, f.playlistId, f.position LIMIT :limit""",
     )

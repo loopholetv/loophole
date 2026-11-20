@@ -16,6 +16,14 @@ class VodProgressRepository(
         progressAfter(old, ref, positionMs, durationMs, clock())?.let { dao.upsert(it) }
     }
 
+    /** Stores the end of a stream that played out; an unknown-length one starts from the beginning next time. */
+    suspend fun recordEnd(ref: VodRef, positionMs: Long, durationMs: Long?) {
+        val old = dao.get(ref.kind, ref.playlistId, ref.key)
+        progressAfterNaturalEnd(old, ref, positionMs, durationMs, clock())?.let { dao.upsert(it) }
+    }
+
+    suspend fun get(ref: VodRef): VodProgressEntity? = dao.get(ref.kind, ref.playlistId, ref.key)
+
     fun observe(ref: VodRef): Flow<VodProgressEntity?> = dao.observe(ref.kind, ref.playlistId, ref.key)
 
     fun observeEpisodes(playlistId: Long, showKey: String): Flow<Map<String, VodProgressEntity>> =

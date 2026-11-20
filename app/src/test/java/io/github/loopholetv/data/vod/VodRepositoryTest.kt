@@ -236,6 +236,30 @@ class VodRepositoryTest {
         )
     }
 
+    @Test fun nextEpisodeSkipsHiddenEpisode() = runTest {
+        val a = db.addPlaylist()
+        insertShows(show(a, "s"))
+        db.vodWriteDao().upsertEpisodes(
+            listOf(episode(a, "e1", "s", 1, 1, 0), episode(a, "e2", "s", 1, 2, 1), episode(a, "e3", "s", 1, 3, 2)),
+        )
+        assertEquals(VodRef(VodKind.EPISODE, a, "e2"), repo.nextEpisode(VodRef(VodKind.EPISODE, a, "e1")))
+
+        db.channelPrefsDao().upsert(ChannelPrefsEntity(a, "e2", hidden = true))
+        assertEquals(VodRef(VodKind.EPISODE, a, "e3"), repo.nextEpisode(VodRef(VodKind.EPISODE, a, "e1")))
+    }
+
+    @Test fun nextEpisodeNullWhenGone() = runTest {
+        val a = db.addPlaylist()
+        insertShows(show(a, "s"))
+        db.vodWriteDao().upsertEpisodes(listOf(episode(a, "e1", "s", 1, 1, 0), episode(a, "e2", "s", 1, 2, 1)))
+
+        assertNull(repo.nextEpisode(VodRef(VodKind.EPISODE, a, "e2")))
+        assertNull(repo.nextEpisode(VodRef(VodKind.EPISODE, a, "missing")))
+        assertNull(repo.nextEpisode(VodRef(VodKind.MOVIE, a, "e1")))
+        db.vodWriteDao().deleteEpisodes(a, listOf("e2"))
+        assertNull(repo.nextEpisode(VodRef(VodKind.EPISODE, a, "e1")))
+    }
+
     private suspend fun VodRepository.browseFilms(category: String) = films(category).asSnapshot()
 
     private suspend fun VodRepository.browseShows(category: String?) = shows(category).asSnapshot()

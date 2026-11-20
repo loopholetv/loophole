@@ -808,6 +808,16 @@ class SettingsViewModelTest {
         assertNull(f.settings.value.playback.subtitleLanguage)
     }
 
+    @Test fun playbackPageTogglesAutoPlayNext() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        assertTrue(f.settings.value.playback.autoPlayNext)
+        vm.setPlayback { it.copy(autoPlayNext = !it.autoPlayNext) }
+        assertFalse(f.settings.value.playback.autoPlayNext)
+        vm.setPlayback { it.copy(autoPlayNext = !it.autoPlayNext) }
+        assertTrue(f.settings.value.playback.autoPlayNext)
+    }
+
     @Test fun togglesWriteThrough() = runTest {
         val f = Fakes(listOf(playlist(1)))
         val vm = f.vm()

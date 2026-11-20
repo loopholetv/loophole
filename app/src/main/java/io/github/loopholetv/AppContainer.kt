@@ -19,6 +19,7 @@ import io.github.loopholetv.data.repo.ScopedChannels
 import io.github.loopholetv.data.repo.RefreshCoordinator
 import io.github.loopholetv.data.repo.VodFill
 import io.github.loopholetv.data.settings.SettingsStore
+import io.github.loopholetv.data.vod.VodLibraryRepository
 import io.github.loopholetv.data.vod.VodProgressRepository
 import io.github.loopholetv.data.vod.VodRepository
 import kotlinx.coroutines.async
@@ -164,6 +165,8 @@ class AppContainer(context: Context) {
     val vodProgress: VodProgressRepository by lazy { VodProgressRepository(db.vodProgressDao()) { java.time.Instant.now() } }
 
     val vod: VodRepository by lazy { VodRepository(db) { java.time.Instant.now() } }
+
+    val vodLibrary: VodLibraryRepository by lazy { VodLibraryRepository(db, vod) { java.time.Instant.now() } }
 
     val scopedChannels: ScopedChannels by lazy { ScopedChannels(db.channelDao(), db.favouriteDao()) }
 

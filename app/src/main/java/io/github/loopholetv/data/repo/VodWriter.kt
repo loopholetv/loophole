@@ -38,10 +38,14 @@ internal class VodWriter(
 ) {
     private var storedFilms: Map<String, Instant>? = null
     private var storedEpisodes: Map<String, Instant>? = null
+    private var storedFilmUrls: Map<String, String> = emptyMap()
+    private var storedEpisodeUrls: Map<String, String> = emptyMap()
     private var storedShowKeys: Map<String, String> = emptyMap()
     private var initial = false
-    private val seenFilms = HashSet<String>()
-    private val seenEpisodes = HashSet<String>()
+    private val filmOwners = HashMap<String, String>()
+    private val episodeOwners = HashMap<String, String>()
+    private val seenFilms get() = filmOwners.keys
+    private val seenEpisodes get() = episodeOwners.keys
     private val filmUrls = HashSet<String>()
     private val episodeUrls = HashSet<String>()
     private val films = ArrayList<FilmEntity>(BATCH_SIZE)
@@ -58,7 +62,7 @@ internal class VodWriter(
     }
 
     private suspend fun addFilm(v: ImportedVod) {
-        val key = uniqueKey(v, seenFilms, filmUrls) ?: return
+        val key = uniqueKey(v, filmOwners, filmUrls) ?: return
         films += FilmEntity(
             playlistId = playlistId,
             key = key,
@@ -76,7 +80,7 @@ internal class VodWriter(
     }
 
     private suspend fun addEpisode(v: ImportedVod) {
-        val key = uniqueKey(v, seenEpisodes, episodeUrls) ?: return
+        val key = uniqueKey(v, episodeOwners, episodeUrls) ?: return
         val number = parseEpisodeNumber(v.name)
         episodes += EpisodeEntity(
             playlistId = playlistId,
@@ -97,21 +101,83 @@ internal class VodWriter(
         if (episodes.size >= BATCH_SIZE) flushEpisodes()
     }
 
-    /** The key [v] is stored under, claimed in [seen]; null when it duplicates an earlier entry. */
-    private fun uniqueKey(v: ImportedVod, seen: MutableSet<String>, urls: MutableSet<String>): String? {
+    /** The key [v] is stored under, claimed in [owners] (key to URL); null when it duplicates an earlier entry. */
+    private fun uniqueKey(v: ImportedVod, owners: MutableMap<String, String>, urls: MutableSet<String>): String? {
         if (!urls.add(v.streamUrl)) return null
-        return when {
-            seen.add(v.key) -> v.key
-            seen.add(v.streamUrl) -> v.streamUrl
-            else -> null
+        val key = when {
+            v.key !in owners -> v.key
+            v.streamUrl !in owners -> v.streamUrl
+            else -> return null
+        }
+        owners[key] = v.streamUrl
+        return key
+    }
+
+    /**
+     * While streaming, the first entry with a short key takes it. If the stored row for that key
+     * belongs to another URL that this import keyed by its full URL, the two have swapped places
+     * (the playlist was reordered), so swap them back: the stored URL regains the short key and
+     * progress, hides and lists stay with the same item. A stored URL absent from the import (a
+     * rotated token) triggers no swap. The set of keys is unchanged, so the seen sets stay valid.
+     */
+    private suspend fun restoreSwappedKeys() {
+        val swaps = swappedKeys(filmOwners, storedFilmUrls)
+        swaps.chunked(BATCH_SIZE / 2).forEach { chunk ->
+            val keys = chunk.flatMap { listOf(it.first, it.second) }
+            val byKey = dao.filmsByKeys(playlistId, keys).associateBy { it.key }
+            val out = chunk.flatMap { (short, full) ->
+                listOf(
+                    byKey.getValue(short).let { it.copy(key = it.streamUrl, firstSeenAt = firstSeen(storedFilms, it.streamUrl)) },
+                    byKey.getValue(full).copy(key = short, firstSeenAt = firstSeen(storedFilms, short)),
+                )
+            }
+            dao.upsertFilms(out)
+            applySwap(chunk, filmOwners)
+            dao.deleteFilms(playlistId, chunk.mapNotNull { (short, full) -> full.takeIf { it !in filmOwners } })
+        }
+        swappedKeys(episodeOwners, storedEpisodeUrls).chunked(BATCH_SIZE / 2).forEach { chunk ->
+            val keys = chunk.flatMap { listOf(it.first, it.second) }
+            val byKey = dao.episodesByKeys(playlistId, keys).associateBy { it.key }
+            val out = chunk.flatMap { (short, full) ->
+                listOf(
+                    byKey.getValue(short).let { it.rekeyed(it.streamUrl) },
+                    byKey.getValue(full).rekeyed(short),
+                )
+            }
+            dao.upsertEpisodes(out)
+            applySwap(chunk, episodeOwners)
+            dao.deleteEpisodes(playlistId, chunk.mapNotNull { (short, full) -> full.takeIf { it !in episodeOwners } })
         }
     }
+
+    private fun applySwap(chunk: List<Pair<String, String>>, owners: MutableMap<String, String>) {
+        for ((short, full) in chunk) {
+            val displaced = owners.getValue(short)
+            owners.remove(full)
+            owners[short] = full
+            owners[displaced] = displaced
+        }
+    }
+
+    private fun EpisodeEntity.rekeyed(newKey: String) = copy(
+        key = newKey,
+        showKey = storedShowKeys[newKey] ?: showKey,
+        firstSeenAt = firstSeen(storedEpisodes, newKey),
+    )
+
+    /** Pairs (short key, full-URL key) whose owners must trade keys to match the stored mapping. */
+    private fun swappedKeys(owners: Map<String, String>, stored: Map<String, String>): List<Pair<String, String>> =
+        owners.keys.mapNotNull { short ->
+            val storedUrl = stored[short] ?: return@mapNotNull null
+            if (owners[short] == storedUrl || owners[storedUrl] != storedUrl) null else short to storedUrl
+        }
 
     /** Flushes, drops what the source no longer lists and rebuilds the shows. Returns films plus episodes written. */
     suspend fun finish(): Int {
         loadStored()
         flushFilms()
         flushEpisodes()
+        restoreSwappedKeys()
         storedFilms.orEmpty().keys.filter { it !in seenFilms }.chunked(BATCH_SIZE)
             .forEach { dao.deleteFilms(playlistId, it) }
         storedEpisodes.orEmpty().keys.filter { it !in seenEpisodes }.chunked(BATCH_SIZE)
@@ -123,8 +189,12 @@ internal class VodWriter(
 
     private suspend fun loadStored() {
         if (storedFilms != null) return
-        val f = dao.filmKeys(playlistId).associate { it.key to it.firstSeenAt }
-        val e = dao.episodeKeys(playlistId).associate { it.key to it.firstSeenAt }
+        val fRows = dao.filmKeys(playlistId)
+        val eRows = dao.episodeKeys(playlistId)
+        val f = fRows.associate { it.key to it.firstSeenAt }
+        val e = eRows.associate { it.key to it.firstSeenAt }
+        storedFilmUrls = fRows.associate { it.key to it.streamUrl }
+        storedEpisodeUrls = eRows.associate { it.key to it.streamUrl }
         storedShowKeys = dao.episodeShowKeys(playlistId).associate { it.key to it.showKey }
         initial = rekey || (f.isEmpty() && e.isEmpty())
         storedFilms = f

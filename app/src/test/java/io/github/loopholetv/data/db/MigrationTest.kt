@@ -6,6 +6,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.data.settings.DecoderChoice
+import io.github.loopholetv.data.vod.TitleKind
+import io.github.loopholetv.data.vod.VodKind
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -398,6 +400,31 @@ class MigrationTest {
             assertEquals("Ch", db.channelDao().byId(1)!!.name)
             assertTrue(db.vodWriteDao().filmKeys(7).isEmpty())
             assertTrue(db.vodWriteDao().episodeKeys(7).isEmpty())
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun migrate7To8AddsLibraryTablesAndKeepsProgress() = runTest {
+        helper.createDatabase(DB, 7).use { v7 ->
+            v7.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
+            v7.execSQL(
+                """INSERT INTO vod_progress (kind, playlistId, `key`, positionMs, durationMs, watched, lastWatchedAt)
+                   VALUES ('MOVIE', 7, 'k', 5000, 100000, 0, 42)""",
+            )
+        }
+
+        // Validates the migrated schema against the exported schema 8.json.
+        helper.runMigrationsAndValidate(DB, 8, true, MIGRATION_7_8).close()
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            val row = db.vodProgressDao().get(VodKind.MOVIE, 7, "k")!!
+            assertEquals(5000L, row.positionMs)
+            assertEquals(Instant.ofEpochMilli(42), row.lastWatchedAt)
+            assertTrue(db.vodLibraryDao().observeListKeys(TitleKind.FILM).first().isEmpty())
         } finally {
             db.close()
         }

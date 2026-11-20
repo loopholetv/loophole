@@ -3,33 +3,33 @@ package io.github.loopholetv.ui.search
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ProgrammeEntity
 import io.github.loopholetv.data.db.ProgrammeHit
+import io.github.loopholetv.data.db.KeyRef
 import io.github.loopholetv.data.vod.FilmCard
+import io.github.loopholetv.data.vod.TitleKind
+import io.github.loopholetv.ui.MainDispatcherRule
+import io.github.loopholetv.ui.vod.OPTION_ADD_MY_LIST
+import io.github.loopholetv.ui.vod.OPTION_REMOVE_MY_LIST
+import kotlinx.coroutines.flow.MutableStateFlow
 import io.github.loopholetv.data.vod.ShowCard
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import java.time.Instant
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SearchViewModelTest {
-    private val dispatcher = StandardTestDispatcher()
-
-    @Before fun setUp() = Dispatchers.setMain(dispatcher)
-    @After fun tearDown() = Dispatchers.resetMain()
+    @get:Rule val main = MainDispatcherRule(StandardTestDispatcher())
+    private val dispatcher get() = main.dispatcher
 
     private val now = Instant.parse("2026-11-09T20:00:00Z")
     private val channelCalls = mutableListOf<String>()
@@ -40,14 +40,22 @@ class SearchViewModelTest {
     private var filmRows: suspend (String) -> List<FilmCard> = { emptyList() }
     private var showRows: suspend (String) -> List<ShowCard> = { emptyList() }
 
-    private fun vm() = SearchViewModel(
+    private fun vm() = main.keep(SearchViewModel(
         searchFilms = { p -> filmRows(p) },
         searchShows = { p -> showRows(p) },
         searchChannels = { p -> channelCalls += p; channelRows(p) },
         searchProgrammes = { p, t -> programmeCalls += p to t; programmeRows(p) },
+        myListKeysOf = { kind -> myListFlows.getValue(kind) },
+        saveMyList = { kind, p, k, inList -> saved.add(listOf(kind, p, k, inList)) },
         clock = { now },
         io = dispatcher,
+    ))
+
+    private val myListFlows = mapOf(
+        TitleKind.FILM to MutableStateFlow(emptySet<KeyRef>()),
+        TitleKind.SHOW to MutableStateFlow(emptySet<KeyRef>()),
     )
+    private val saved = mutableListOf<List<Any>>()
 
     private fun channel(id: Long, name: String) = ChannelEntity(
         id = id, playlistId = 1, key = "k$id", number = id.toInt(), name = name, streamUrl = "http://x/$id",
@@ -243,5 +251,22 @@ class SearchViewModelTest {
         assertFalse(later.isOnNow(now))
         assertTrue(later.copy(shiftMinutes = -45).isOnNow(now)) // 19:45–20:15
         assertFalse(later.copy(shiftMinutes = -60).isOnNow(now)) // 19:30–20:00: the stop is exclusive
+    }
+
+    @Test fun searchLongPressOffersMyList() = runTest(dispatcher) {
+        val vm = vm()
+        assertEquals(emptySet<KeyRef>(), vm.myListKeys.value.getValue(TitleKind.FILM))
+
+        myListFlows.getValue(TitleKind.FILM).value = setOf(KeyRef(1, "f1"))
+        advanceUntilIdle()
+        assertEquals(setOf(KeyRef(1, "f1")), vm.myListKeys.value.getValue(TitleKind.FILM))
+        assertEquals(emptySet<KeyRef>(), vm.myListKeys.value.getValue(TitleKind.SHOW))
+
+        vm.setInMyList(TitleKind.SHOW, 2, "s1", true)
+        advanceUntilIdle()
+        assertEquals(listOf<List<Any>>(listOf(TitleKind.SHOW, 2L, "s1", true)), saved)
+
+        assertEquals(OPTION_ADD_MY_LIST, myListOption(inList = false) {}.label)
+        assertEquals(OPTION_REMOVE_MY_LIST, myListOption(inList = true) {}.label)
     }
 }

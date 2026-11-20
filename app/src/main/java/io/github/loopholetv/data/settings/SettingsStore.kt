@@ -169,6 +169,7 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
                 edge = this[SUBTITLE_EDGE].validOr(ds.edge),
             ),
             pipOnHome = this[PIP_ON_HOME] ?: d.pipOnHome,
+            autoPlayNext = this[AUTO_PLAY_NEXT] ?: d.autoPlayNext,
         )
     }
 
@@ -221,6 +222,7 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         this[SUBTITLE_BACKGROUND] = p.subtitleStyle.background.name
         this[SUBTITLE_EDGE] = p.subtitleStyle.edge.name
         this[PIP_ON_HOME] = p.pipOnHome
+        this[AUTO_PLAY_NEXT] = p.autoPlayNext
     }
 
     /** Blank and null both remove the key. */
@@ -268,6 +270,7 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         val COLOUR_MODE = stringPreferencesKey("colour_mode")
         val AUDIO_DECODER = stringPreferencesKey("audio_decoder")
         val AUTO_FRAME_RATE = booleanPreferencesKey("auto_frame_rate")
+        val AUTO_PLAY_NEXT = booleanPreferencesKey("auto_play_next")
         val PREFER_SURROUND = booleanPreferencesKey("prefer_surround")
         val AUDIO_PASSTHROUGH = stringPreferencesKey("audio_passthrough")
         val DECODE_DTS_PCM = booleanPreferencesKey("decode_dts_pcm")

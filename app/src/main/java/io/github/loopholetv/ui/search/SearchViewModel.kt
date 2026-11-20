@@ -7,25 +7,31 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ProgrammeEntity
+import io.github.loopholetv.data.db.KeyRef
 import io.github.loopholetv.data.db.ProgrammeHit
 import io.github.loopholetv.data.db.searchPattern
 import io.github.loopholetv.data.repo.shiftedBy
 import io.github.loopholetv.data.vod.FilmCard
 import io.github.loopholetv.data.vod.ShowCard
+import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.ui.guide.isAiring
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
 
@@ -73,6 +79,8 @@ class SearchViewModel(
     private val searchProgrammes: suspend (pattern: String, now: Instant) -> List<ProgrammeHit>,
     private val searchFilms: suspend (pattern: String) -> List<FilmCard>,
     private val searchShows: suspend (pattern: String) -> List<ShowCard>,
+    private val myListKeysOf: (TitleKind) -> Flow<Set<KeyRef>> = { flowOf(emptySet()) },
+    private val saveMyList: suspend (TitleKind, Long, String, Boolean) -> Unit = { _, _, _, _ -> },
     private val clock: () -> Instant = Instant::now,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
@@ -80,6 +88,16 @@ class SearchViewModel(
     val query: StateFlow<String> = _query.asStateFlow()
 
     fun setQuery(q: String) { _query.value = q }
+
+    /** The films and shows in My list, so a result's menu offers Add or Remove. */
+    val myListKeys: StateFlow<Map<TitleKind, Set<KeyRef>>> = combine(
+        myListKeysOf(TitleKind.FILM), myListKeysOf(TitleKind.SHOW),
+    ) { films, shows -> mapOf(TitleKind.FILM to films, TitleKind.SHOW to shows) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, mapOf(TitleKind.FILM to emptySet(), TitleKind.SHOW to emptySet()))
+
+    fun setInMyList(kind: TitleKind, playlistId: Long, key: String, inList: Boolean) {
+        viewModelScope.launch { saveMyList(kind, playlistId, key, inList) }
+    }
 
     // Eagerly: results must survive the screen being stopped (player on top) without re-running.
     val results: StateFlow<SearchUi> = _query
@@ -122,11 +140,14 @@ class SearchViewModel(
                 val app = extras[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp
                 val dao = app.container.db.searchDao()
                 val vod = app.container.vod
+                val library = app.container.vodLibrary
                 return SearchViewModel(
                     searchChannels = { dao.channels(it, SEARCH_LIMIT) },
                     searchProgrammes = { p, now -> dao.programmes(p, now, SEARCH_LIMIT) },
                     searchFilms = { vod.searchFilms(it, SEARCH_LIMIT) },
                     searchShows = { vod.searchShows(it, SEARCH_LIMIT) },
+                    myListKeysOf = library::myListKeys,
+                    saveMyList = library::setInMyList,
                 ) as T
             }
         }

@@ -102,6 +102,9 @@ internal fun storedErrorCopy(lastError: String?): StoredError? {
 fun <T> choiceText(choices: List<Pair<T, String>>, value: T, fallback: (T) -> String): String =
     choices.firstOrNull { it.first == value }?.second ?: fallback(value)
 
+/** The Settings section for the phone and laptop setup page. */
+internal const val SECTION_COMPANION = "Companion"
+
 // --- Playback page ---
 
 internal const val PB_BUFFER = "Buffer size"
@@ -120,6 +123,7 @@ internal const val PB_SUBTITLE_COLOUR = "Subtitle colour"
 internal const val PB_SUBTITLE_BACKGROUND = "Subtitle background"
 internal const val PB_SUBTITLE_EDGE = "Subtitle edge"
 internal const val PB_PIP_ON_HOME = "Home button opens picture-in-picture"
+internal const val PB_AUTO_PLAY_NEXT = "Auto-play next episode"
 internal const val PB_TUNNELING = "Tunneled playback (advanced)"
 
 internal const val PB_VIDEO_DECODER_HINT = "Software can help a channel that won't play. It is slower."
@@ -130,6 +134,7 @@ internal const val PB_SURROUND_HINT = "Picks a 5.1 sound track when the channel 
 internal const val PB_PASSTHROUGH_HINT = "Auto sends Dolby sound to your TV or sound system when it supports it."
 internal const val PB_DTS_HINT = "Turn on if DTS channels have no sound."
 internal const val PB_SUBTITLE_LANGUAGE_HINT = "Subtitles turn on by themselves when a channel has this language."
+internal const val PB_AUTO_PLAY_NEXT_HINT = "Plays the next episode when one ends. Asks if you're still watching after 3 in a row."
 internal const val PB_TUNNELING_HINT = "Can make 4K smoother on some TVs. May do nothing on Fire TV. Full screen only."
 
 /** The Playback page's rows, top to bottom. The picture-in-picture row exists only where the device supports it. */
@@ -149,6 +154,7 @@ internal fun playbackRowLabels(pipSupported: Boolean): List<String> = listOfNotN
     PB_SUBTITLE_COLOUR,
     PB_SUBTITLE_BACKGROUND,
     PB_SUBTITLE_EDGE,
+    PB_AUTO_PLAY_NEXT,
     PB_PIP_ON_HOME.takeIf { pipSupported },
     PB_TUNNELING,
 )

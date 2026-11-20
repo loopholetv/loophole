@@ -7,22 +7,22 @@ import io.github.loopholetv.data.db.ShowEntity
 import io.github.loopholetv.data.db.VodProgressEntity
 import io.github.loopholetv.data.db.addPlaylist
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
+import io.github.loopholetv.data.vod.VodLibraryRepository
 import io.github.loopholetv.data.vod.VodProgressRepository
 import io.github.loopholetv.data.vod.VodRepository
-import kotlinx.coroutines.Dispatchers
+import io.github.loopholetv.ui.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
@@ -34,19 +34,23 @@ class ShowViewModelTest {
     private lateinit var db: AppDatabase
     private var playlist = 0L
 
+    @get:Rule val main = MainDispatcherRule()
+
     @Before fun setUp() = runTest {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
         db = inMemoryDb()
         playlist = db.addPlaylist()
     }
 
     @After fun tearDown() {
+        main.clear()
         db.close()
-        Dispatchers.resetMain()
     }
 
+    private val repo get() = VodRepository(db) { now }
+    private val library get() = VodLibraryRepository(db, repo) { now }
+
     private fun vm(key: String = "s") =
-        ShowViewModel(playlist, key, VodRepository(db) { now }, VodProgressRepository(db.vodProgressDao()) { now })
+        main.keep(ShowViewModel(playlist, key, repo, VodProgressRepository(db.vodProgressDao()) { now }, library))
 
     private fun ep(key: String, season: Int?, episode: Int?, show: String = "s", position: Int = 0) =
         EpisodeEntity(playlist, key, show, "Drama", "Name $key", season, episode, null, "http://s.test/$key.mp4", null, null, null, position, now)
@@ -142,5 +146,43 @@ class ShowViewModelTest {
         assertEquals(250_000L, rows[1].resumeMs)
         assertFalse(rows[2].watched)
         assertNull(rows[2].resumeMs)
+    }
+
+    @Test fun toggleMyListAddsAndRemoves() = runTest {
+        insertShow("s", listOf(ep("a", 1, 1)))
+        val vm = vm()
+        assertFalse(vm.loaded().inMyList)
+
+        vm.toggleMyList()
+        assertTrue(vm.ui.first { it?.inMyList == true }!!.inMyList)
+        assertTrue(library.inMyList(TitleKind.SHOW, playlist, "s").first())
+
+        vm.toggleMyList()
+        assertFalse(vm.ui.first { it?.inMyList == false }!!.inMyList)
+    }
+
+    @Test fun showingAnEpisodeOpensItsSeasonAtOnce() = runTest {
+        insertShow("s", listOf(ep("a", 1, 1), ep("b", 1, 2, position = 1), ep("c", 2, 1, position = 2)))
+        val model = vm()
+        model.loaded()
+        model.selectTab(0)
+        model.ui.first { it?.selectedTab == 0 }
+
+        // An auto-play run went on into season 2: the page must already be on it when it is drawn.
+        model.showEpisode("c")
+
+        assertEquals(1, model.ui.value!!.selectedTab)
+        assertEquals(listOf("c"), model.ui.value!!.episodes.map { it.key })
+    }
+
+    @Test fun showingAnUnknownEpisodeKeepsTheContinueSeason() = runTest {
+        insertShow("s", listOf(ep("a", 1, 1), ep("b", 2, 1, position = 1)))
+        progress("b", positionMs = 120_000)
+        val model = vm()
+        model.loaded()
+
+        model.showEpisode("gone")
+
+        assertEquals(1, model.ui.first { it != null }!!.selectedTab)
     }
 }

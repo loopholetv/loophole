@@ -4,7 +4,10 @@ import androidx.media3.common.Player
 import io.github.loopholetv.data.db.VodProgressDao
 import io.github.loopholetv.data.db.VodProgressEntity
 import io.github.loopholetv.data.settings.AspectMode
+import io.github.loopholetv.data.vod.COUNTDOWN_SECONDS
+import io.github.loopholetv.data.vod.NEXT_PILL_HIDE_MS
 import io.github.loopholetv.data.vod.SAVE_INTERVAL_MS
+import io.github.loopholetv.data.vod.STILL_WATCHING_TIMEOUT_MS
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodPlayable
 import io.github.loopholetv.data.vod.VodProgressRepository
@@ -14,7 +17,7 @@ import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.StreamTags
 import io.github.loopholetv.player.VOD_CHANNEL_ID
 import io.github.loopholetv.player.catchup.PlayMode
-import kotlinx.coroutines.Dispatchers
+import io.github.loopholetv.ui.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,24 +27,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
-import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import java.time.Instant
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VodPlayerViewModelTest {
-    private val dispatcher = StandardTestDispatcher()
-
-    @Before fun setUp() = Dispatchers.setMain(dispatcher)
-    @After fun tearDown() = Dispatchers.resetMain()
+    @get:Rule val main = MainDispatcherRule(StandardTestDispatcher())
+    private val dispatcher get() = main.dispatcher
 
     private val ref = VodRef(VodKind.MOVIE, 1, "film/1")
     private val item = VodPlayable(ref, "The Film", "http://example.test/f.mp4", null, null)
@@ -51,7 +50,14 @@ class VodPlayerViewModelTest {
         val upserts = mutableListOf<VodProgressEntity>()
         override fun observe(kind: VodKind, playlistId: Long, key: String): Flow<VodProgressEntity?> = emptyFlow()
         override fun observeForShow(kind: VodKind, playlistId: Long, showKey: String): Flow<List<VodProgressEntity>> = emptyFlow()
-        override suspend fun get(kind: VodKind, playlistId: Long, key: String) = upserts.lastOrNull()
+        /** While set, reads of this key wait for it: holds a start in flight. */
+        var gateKey: String? = null
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        override suspend fun get(kind: VodKind, playlistId: Long, key: String): VodProgressEntity? {
+            if (key == gateKey) gate.await()
+            return upserts.lastOrNull { it.kind == kind && it.playlistId == playlistId && it.key == key }
+        }
+        fun last(key: String) = upserts.last { it.key == key }
         override suspend fun upsert(row: VodProgressEntity) { upserts += row }
         override suspend fun rekey(kind: VodKind, p: Long, from: String, to: String) = Unit
         override suspend fun deleteOrphans(before: Instant) = Unit
@@ -72,7 +78,7 @@ class VodPlayerViewModelTest {
         var position = 0L
 
         override fun play(channel: io.github.loopholetv.data.db.ChannelEntity) = Unit
-        override fun stop() { stops++; _state.value = PlaybackState.Idle }
+        override fun stop() { stops++; _mode.value = PlayMode.Live; _state.value = PlaybackState.Idle }
         override fun playVod(item: VodPlayable, startMs: Long) {
             opened += item to startMs
             // The real player reports 0 until the new stream has loaded.
@@ -106,11 +112,33 @@ class VodPlayerViewModelTest {
         }
     }
 
-    private fun TestScope.rig(startMs: Long = 0, playable: VodPlayable? = item): Rig {
+    private fun episode(n: Int) = VodRef(VodKind.EPISODE, 1, "e$n")
+    private fun episodeItem(r: VodRef) = VodPlayable(r, "Episode ${r.key}", "http://example.test/${r.key}.mp4", null, null)
+
+    /** Episodes e1 to e6 of one show, in order; e6 is the last. */
+    private val nextOf: suspend (VodRef) -> VodRef? = { r ->
+        val n = r.key.removePrefix("e").toIntOrNull()
+        if (r.kind == VodKind.EPISODE && n != null && n < 6) episode(n + 1) else null
+    }
+
+    private fun TestScope.rig(
+        startMs: Long = 0,
+        playable: VodPlayable? = item,
+        start: VodRef = ref,
+        autoPlay: Boolean = true,
+        dao: FakeProgressDao = FakeProgressDao(),
+    ): Rig {
         val playback = FakePlayback()
-        val dao = FakeProgressDao()
         val progress = VodProgressRepository(dao) { Instant.ofEpochSecond(1_000_000) }
-        val vm = VodPlayerViewModel(ref, startMs, playback, { playable }, progress) { testScheduler.currentTime }
+        val items: suspend (VodRef) -> VodPlayable? = { r -> if (r.kind == VodKind.EPISODE) episodeItem(r) else playable }
+        val vm = main.keep(
+            VodPlayerViewModel(
+                start, startMs, playback, items, progress,
+                next = nextOf,
+                label = { "Next: ${it.key}" },
+                autoPlay = { autoPlay },
+            ) { testScheduler.currentTime },
+        )
         val events = mutableListOf<VodPlayerEvent>()
         backgroundScope.launch(dispatcher) { vm.events.collect { events += it } }
         runCurrent()
@@ -149,16 +177,17 @@ class VodPlayerViewModelTest {
         assertEquals(90_000L, r.dao.upserts.last().positionMs)
     }
 
-    @Test fun endWithUnknownLengthKeepsThePositionAndIsNotWatched() = runTest(dispatcher) {
+    @Test fun unknownLengthEndRecordsEnd() = runTest(dispatcher) {
         val r = rig()
         r.playback.playing(null, at = 5_000_000)
-        runCurrent()
+        passTime(r, 10_000)
+        assertEquals(5_000_000L, r.dao.upserts.last().positionMs)
         r.playback.ended()
         passTime(r, 500)
-        val row = r.dao.upserts.single()
+        val row = r.dao.upserts.last()
         assertEquals(false, row.watched)
-        assertEquals(5_000_000L, row.positionMs)
-        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit), r.events)
+        assertEquals(0L, row.positionMs)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), r.events)
     }
 
     @Test fun endWellShortOfTheLengthKeepsThePositionAndIsNotWatched() = runTest(dispatcher) {
@@ -172,14 +201,14 @@ class VodPlayerViewModelTest {
         assertEquals(20 * 60_000L, row.positionMs)
         assertEquals(hour, row.durationMs)
         assertEquals(1, r.playback.stops)
-        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit), r.events)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), r.events)
     }
 
     @Test fun backBeforeTheItemLoadsNeverStartsPlayback() = runTest(dispatcher) {
         val gate = kotlinx.coroutines.CompletableDeferred<VodPlayable?>()
         val playback = FakePlayback()
         val progress = VodProgressRepository(FakeProgressDao()) { Instant.ofEpochSecond(1_000_000) }
-        val vm = VodPlayerViewModel(ref, 0, playback, { gate.await() }, progress) { testScheduler.currentTime }
+        val vm = main.keep(VodPlayerViewModel(ref, 0, playback, { gate.await() }, progress, { null }, { "" }, { true }) { testScheduler.currentTime })
         runCurrent()
         vm.onBack()
         gate.complete(item)
@@ -229,7 +258,7 @@ class VodPlayerViewModelTest {
         runCurrent()
         assertEquals(listOf(125_000L), r.dao.upserts.map { it.positionMs })
         assertEquals(1, r.playback.stops)
-        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit), r.events)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), r.events)
     }
 
     @Test fun backBeforeAnythingPlayedKeepsTheSavedPosition() = runTest(dispatcher) {
@@ -237,7 +266,7 @@ class VodPlayerViewModelTest {
         r.vm.onBack()
         runCurrent()
         assertTrue(r.dao.upserts.isEmpty())
-        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit), r.events)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), r.events)
     }
 
     @Test fun screenStopSavesPosition() = runTest(dispatcher) {
@@ -262,7 +291,7 @@ class VodPlayerViewModelTest {
         assertEquals(0L, row.positionMs)
         assertEquals(hour, row.durationMs)
         assertEquals(1, r.playback.stops)
-        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit), r.events)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), r.events)
     }
 
     @Test fun seekBatchesThenCommits() = runTest(dispatcher) {
@@ -317,5 +346,309 @@ class VodPlayerViewModelTest {
         assertEquals(AspectMode.STRETCH, r.vm.aspect.value)
         repeat(AspectMode.entries.size - 1) { r.vm.cycleAspect() }
         assertEquals(AspectMode.FIT, r.vm.aspect.value)
+    }
+
+    // Auto-play run.
+
+    /** Plays the current episode to its natural end at [at] of an hour, then lets the end be seen. */
+    private fun TestScope.endEpisode(r: Rig, at: Long = hour - 1_000, durationMs: Long? = hour) {
+        r.playback.playing(durationMs, at = at)
+        runCurrent()
+        r.playback.ended()
+        passTime(r, VOD_TICK_MS)
+    }
+
+    /** Ends the current episode and lets the countdown run out. */
+    private fun TestScope.endAndCountDown(r: Rig) {
+        endEpisode(r)
+        passTime(r, COUNTDOWN_SECONDS * 1_000L)
+    }
+
+    private fun Rig.openedKeys() = playback.opened.map { it.first.ref.key }
+
+    @Test fun endOfEpisodeShowsCountdownThenStartsNext() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r)
+        assertEquals(AutoNextUi.Countdown("Next: e2", COUNTDOWN_SECONDS), r.vm.autoNext.value)
+        assertEquals(1, r.playback.stops)
+        assertTrue(r.dao.last("e1").watched)
+        passTime(r, 5_000)
+        assertEquals(AutoNextUi.Countdown("Next: e2", COUNTDOWN_SECONDS - 5), r.vm.autoNext.value)
+        assertEquals(listOf("e1"), r.openedKeys())
+        passTime(r, 5_000)
+        assertEquals(episodeItem(episode(2)) to 0L, r.playback.opened.last())
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        assertTrue(r.events.isEmpty())
+    }
+
+    @Test fun cutShortEndExitsWithoutCountdown() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r, at = 20 * 60_000L)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e1")), r.events)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        assertEquals(20 * 60_000L, r.dao.last("e1").positionMs)
+        passTime(r, 15_000)
+        assertEquals(listOf("e1"), r.openedKeys())
+    }
+
+    @Test fun unknownLengthEndStillCountsDown() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        r.playback.playing(null, at = 5_000_000)
+        passTime(r, SAVE_INTERVAL_MS)
+        endEpisode(r, at = 5_000_000, durationMs = null)
+        assertEquals(AutoNextUi.Countdown("Next: e2", COUNTDOWN_SECONDS), r.vm.autoNext.value)
+        assertEquals(0L, r.dao.last("e1").positionMs)
+        passTime(r, COUNTDOWN_SECONDS * 1_000L)
+        assertEquals(listOf("e1", "e2"), r.openedKeys())
+    }
+
+    @Test fun autoPlayOffExits() = runTest(dispatcher) {
+        val r = rig(start = episode(1), autoPlay = false)
+        endEpisode(r)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e1")), r.events)
+        passTime(r, 15_000)
+        assertEquals(listOf("e1"), r.openedKeys())
+    }
+
+    @Test fun lastEpisodeExits() = runTest(dispatcher) {
+        val r = rig(start = episode(6))
+        endEpisode(r)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e6")), r.events)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        assertEquals(listOf("e6"), r.openedKeys())
+    }
+
+    @Test fun pipEndExits() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        r.vm.onPipChanged(true)
+        endEpisode(r)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e1")), r.events)
+        passTime(r, 15_000)
+        assertEquals(listOf("e1"), r.openedKeys())
+    }
+
+    @Test fun thirdAutoStartAsksStillWatching() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endAndCountDown(r)
+        endAndCountDown(r)
+        assertEquals(listOf("e1", "e2", "e3"), r.openedKeys())
+        endAndCountDown(r)
+        assertEquals(AutoNextUi.StillWatching, r.vm.autoNext.value)
+        assertEquals(listOf("e1", "e2", "e3"), r.openedKeys())
+        assertEquals(3, r.playback.stops)
+        assertTrue(r.events.isEmpty())
+    }
+
+    @Test fun stillWatchingTimesOutAndExits() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        repeat(3) { endAndCountDown(r) }
+        assertEquals(AutoNextUi.StillWatching, r.vm.autoNext.value)
+        passTime(r, STILL_WATCHING_TIMEOUT_MS - 1_000)
+        assertTrue(r.events.isEmpty())
+        passTime(r, 1_000)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e3")), r.events)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        assertEquals(listOf("e1", "e2", "e3"), r.openedKeys())
+    }
+
+    @Test fun keepWatchingStartsNextAndResetsCount() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        repeat(3) { endAndCountDown(r) }
+        r.vm.onKeepWatching()
+        runCurrent()
+        assertEquals(listOf("e1", "e2", "e3", "e4"), r.openedKeys())
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        // The count started again: e5 and e6 both start by themselves.
+        endAndCountDown(r)
+        endAndCountDown(r)
+        assertEquals(listOf("e1", "e2", "e3", "e4", "e5", "e6"), r.openedKeys())
+        assertTrue(r.events.isEmpty())
+    }
+
+    @Test fun userKeyResetsCount() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endAndCountDown(r)
+        endAndCountDown(r)
+        r.vm.onUserKey()
+        endAndCountDown(r)
+        assertEquals(listOf("e1", "e2", "e3", "e4"), r.openedKeys())
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+    }
+
+    @Test fun backDuringCountdownExitsAndOpensNothing() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r)
+        r.vm.onBack()
+        runCurrent()
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e1")), r.events)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        passTime(r, 15_000)
+        assertEquals(listOf("e1"), r.openedKeys())
+        assertEquals(1, r.playback.stops)
+        // The end stays recorded: Back does not save the old position over it.
+        assertTrue(r.dao.last("e1").watched)
+        assertEquals(0L, r.dao.last("e1").positionMs)
+    }
+
+    @Test fun backDuringStillWatchingExitsAndOpensNothing() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        repeat(3) { endAndCountDown(r) }
+        r.vm.onBack()
+        r.vm.onKeepWatching()
+        passTime(r, 2_000)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e3")), r.events)
+        assertEquals(listOf("e1", "e2", "e3"), r.openedKeys())
+    }
+
+    @Test fun doublePlayNowStartsOnce() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r)
+        r.vm.onPlayNow()
+        r.vm.onPlayNow()
+        r.vm.onNextPressed()
+        r.vm.onKeepWatching()
+        passTime(r, 15_000)
+        assertEquals(listOf("e1", "e2"), r.openedKeys())
+        assertEquals(1, r.playback.stops)
+    }
+
+    @Test fun pillThenSecondStartWhileTheFirstIsInFlightStartsOnce() = runTest(dispatcher) {
+        val dao = FakeProgressDao()
+        dao.gateKey = "e2"
+        val r = rig(start = episode(1), dao = dao)
+        r.playback.playing(hour, at = hour - 60_000)
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Pill, r.vm.autoNext.value)
+        r.vm.onNextPressed()
+        runCurrent()
+        // The start waits on e2's progress: every other start path must do nothing meanwhile.
+        assertEquals(listOf("e1"), r.openedKeys())
+        r.vm.onNextPressed()
+        r.vm.onPlayNow()
+        r.vm.onKeepWatching()
+        passTime(r, 1_000)
+        dao.gate.complete(Unit)
+        runCurrent()
+        passTime(r, 15_000)
+        assertEquals(listOf("e1", "e2"), r.openedKeys())
+        assertEquals(1, r.playback.stops)
+    }
+
+    @Test fun playPauseBetweenEpisodesKeepsTheRecordedEnd() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r)
+        r.vm.onPlayPause()
+        runCurrent()
+        assertEquals(0L, r.dao.last("e1").positionMs)
+        assertTrue(r.dao.last("e1").watched)
+        assertEquals(false, r.playback.paused.value)
+        r.vm.retry()
+        runCurrent()
+        assertEquals(listOf("e1"), r.openedKeys())
+    }
+
+    @Test fun countdownAtZeroThenPlayNowStartsOnce() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r)
+        passTime(r, COUNTDOWN_SECONDS * 1_000L)
+        r.vm.onPlayNow()
+        r.vm.onCancelCountdown()
+        runCurrent()
+        assertEquals(listOf("e1", "e2"), r.openedKeys())
+        assertTrue(r.events.isEmpty())
+    }
+
+    @Test fun backgroundDuringCountdownExitsOnReturn() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r)
+        r.vm.onScreenStopped()
+        r.playback.stop()
+        passTime(r, 15_000)
+        assertEquals(listOf("e1"), r.openedKeys())
+        assertTrue(r.events.isEmpty())
+        r.vm.onScreenStarted()
+        runCurrent()
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e1")), r.events)
+        passTime(r, 2_000)
+        assertEquals(listOf("e1"), r.openedKeys())
+        assertTrue(r.dao.last("e1").watched)
+    }
+
+    @Test fun nextPressedMarksWatchedAndStartsNext() = runTest(dispatcher) {
+        val dao = FakeProgressDao()
+        dao.upserts += VodProgressEntity(VodKind.EPISODE, 1, "e2", 300_000, hour, false, Instant.ofEpochSecond(1))
+        val r = rig(start = episode(1), dao = dao)
+        r.playback.playing(hour, at = hour - 60_000)
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Pill, r.vm.autoNext.value)
+        r.vm.onNextPressed()
+        runCurrent()
+        val row = r.dao.last("e1")
+        assertTrue(row.watched)
+        assertEquals(1, r.playback.stops)
+        assertEquals(episodeItem(episode(2)) to 300_000L, r.playback.opened.last())
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        assertTrue(r.events.isEmpty())
+    }
+
+    @Test fun pillHidesWhenPausedAndAfterTenSecondsUnlessTheBarShows() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        r.playback.playing(hour, at = 30_000)
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        r.playback.position = hour - 60_000
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Pill, r.vm.autoNext.value)
+        r.vm.onPlayPause()
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        r.vm.onNextPressed()
+        runCurrent()
+        assertEquals(listOf("e1"), r.openedKeys())
+        r.vm.onPlayPause()
+        passTime(r, NEXT_PILL_HIDE_MS)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        r.vm.onBarShowing(true)
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Pill, r.vm.autoNext.value)
+    }
+
+    @Test fun autoPlayOffShowsNoNextButtonAndOkPauses() = runTest(dispatcher) {
+        val r = rig(start = episode(1), autoPlay = false)
+        r.playback.playing(hour, at = hour - 60_000)
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        assertFalse(okGoesToNext(r.vm.autoNext.value, r.playback.paused.value))
+        r.vm.onBarShowing(true)
+        passTime(r, VOD_TICK_MS)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        r.vm.onNextPressed()
+        runCurrent()
+        assertEquals(listOf("e1"), r.openedKeys())
+        assertEquals(0, r.playback.stops)
+    }
+
+    @Test fun pipDuringCountdownExits() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endEpisode(r)
+        r.vm.onPipChanged(true)
+        passTime(r, 15_000)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e1")), r.events)
+        assertEquals(listOf("e1"), r.openedKeys())
+    }
+
+    @Test fun exitCarriesLastEpisodeKey() = runTest(dispatcher) {
+        val r = rig(start = episode(1))
+        endAndCountDown(r)
+        r.playback.playing(hour, at = 100_000)
+        runCurrent()
+        r.vm.onBack()
+        runCurrent()
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e2")), r.events)
+        assertEquals(100_000L, r.dao.last("e2").positionMs)
+        val film = rig()
+        film.vm.onBack()
+        runCurrent()
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), film.events)
     }
 }

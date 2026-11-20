@@ -7,7 +7,7 @@ import androidx.room.Upsert
 import io.github.loopholetv.data.repo.KeyNameGroup
 import java.time.Instant
 
-data class KeyFirstSeen(val key: String, val firstSeenAt: Instant)
+data class KeyFirstSeen(val key: String, val firstSeenAt: Instant, val streamUrl: String)
 
 data class KeyShowKey(val key: String, val showKey: String)
 
@@ -24,11 +24,17 @@ data class EpisodeForShows(
 
 @Dao
 interface VodWriteDao {
-    @Query("SELECT `key`, firstSeenAt FROM vod_films WHERE playlistId = :p")
+    @Query("SELECT `key`, firstSeenAt, streamUrl FROM vod_films WHERE playlistId = :p")
     suspend fun filmKeys(p: Long): List<KeyFirstSeen>
 
-    @Query("SELECT `key`, firstSeenAt FROM vod_episodes WHERE playlistId = :p")
+    @Query("SELECT `key`, firstSeenAt, streamUrl FROM vod_episodes WHERE playlistId = :p")
     suspend fun episodeKeys(p: Long): List<KeyFirstSeen>
+
+    @Query("SELECT * FROM vod_films WHERE playlistId = :p AND `key` IN (:keys)")
+    suspend fun filmsByKeys(p: Long, keys: List<String>): List<FilmEntity>
+
+    @Query("SELECT * FROM vod_episodes WHERE playlistId = :p AND `key` IN (:keys)")
+    suspend fun episodesByKeys(p: Long, keys: List<String>): List<EpisodeEntity>
 
     @Query("SELECT `key`, showKey FROM vod_episodes WHERE playlistId = :p")
     suspend fun episodeShowKeys(p: Long): List<KeyShowKey>

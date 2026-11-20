@@ -23,6 +23,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,16 +40,19 @@ import io.github.loopholetv.ui.theme.Tokens
 val POSTER_WIDTH = 120.dp
 private val POSTER_SHAPE = RoundedCornerShape(8.dp)
 private const val FOCUSED_SCALE = 1.05f
+internal const val POSTER_PROGRESS_TAG = "poster-progress"
 
 /**
  * A 2:3 poster. Without a [logo], or when it fails to load, the card shows the [title] instead.
- * [subtitle] (the playlist a show comes from) sits at the foot. OK opens, a long OK or Menu calls [onLongClick].
+ * [subtitle] (the playlist a show comes from) sits at the foot, with a progress bar under it when
+ * [fraction] is set. OK calls [onClick], a long OK or Menu calls [onLongClick].
  */
 @Composable
 fun PosterCard(
     title: String,
     logo: String?,
     subtitle: String?,
+    fraction: Float? = null,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -93,15 +97,22 @@ fun PosterCard(
                 modifier = Modifier.align(Alignment.Center).padding(8.dp),
             )
         }
-        if (subtitle != null) {
-            Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color(0xB3000000)).padding(horizontal = 6.dp, vertical = 3.dp)) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Tokens.OnBackground,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        if (subtitle != null || fraction != null) {
+            Column(Modifier.align(Alignment.BottomStart).fillMaxWidth()) {
+                if (subtitle != null) {
+                    Column(Modifier.fillMaxWidth().background(Color(0xB3000000)).padding(horizontal = 6.dp, vertical = 3.dp)) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Tokens.OnBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (fraction != null) {
+                    ProgressBar(fraction.coerceIn(0f, 1f), Modifier.fillMaxWidth().testTag(POSTER_PROGRESS_TAG))
+                }
             }
         }
     }

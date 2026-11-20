@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -32,6 +33,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import io.github.loopholetv.data.db.KeyRef
 import io.github.loopholetv.data.vod.HiddenCategory
 import io.github.loopholetv.ui.common.ChannelOption
 import io.github.loopholetv.ui.common.ChannelOptionsDialog
@@ -55,40 +57,60 @@ private class RowCards(val count: Int, val peek: (Int) -> PosterModel?, val get:
     }
 }
 
-/** Identifies one card across rows, so focus can return to it. */
-internal fun cardId(row: String, card: PosterModel) = "$row\u0000${card.playlistId}\u0000${card.key}"
+/**
+ * Identifies one row by its kind as well as its title: a playlist category may be called "My list" or
+ * "Continue watching" too, and must not be taken for the row of that name.
+ */
+internal fun rowId(row: VodRowModel): String = when (row) {
+    is VodRowModel.Continue -> "fixed:continue"
+    is VodRowModel.MyList -> "fixed:mylist"
+    is VodRowModel.Recent -> "fixed:recent"
+    is VodRowModel.Paged -> row.category?.let { "paged:$it" } ?: "paged-none"
+    is VodRowModel.Grid -> "grid:${row.title}"
+}
 
-private fun RowCards.indexOf(row: String, id: String): Int =
-    (0 until count).firstOrNull { i -> peek(i)?.let { cardId(row, it) } == id } ?: -1
+/** Identifies one card across rows (in the row [rowId]), so focus can return to it. */
+internal fun cardId(rowId: String, card: PosterModel) = "$rowId\u0000${card.playlistId}\u0000${card.key}"
+
+private fun RowCards.indexOf(rowId: String, id: String): Int =
+    (0 until count).firstOrNull { i -> peek(i)?.let { cardId(rowId, it) } == id } ?: -1
+
+/** The card a menu is open for, at [index] in [row]. */
+private class MenuTarget(val row: VodRowModel, val index: Int, val card: PosterModel)
 
 /** True once the row has shown real cards: a card still missing from it is gone, not just unloaded. */
 private fun RowCards.hasLoaded(): Boolean = count > 0 && peek(0) != null
 
 /**
- * The shared body of the Movies and Series screens: a column of rows of posters. OK on a card calls
- * [onOpen]; a long OK opens the category options.
+ * The shared body of the Movies and Series screens: a column of rows of posters. OK on a Continue
+ * watching card calls [onPlay], OK on any other card [onOpen]; a long OK opens the card's options.
  */
 @Composable
 internal fun VodBrowse(
     heading: String,
     vm: VodBrowseViewModel,
     onOpen: (playlistId: Long, key: String) -> Unit,
+    onPlay: (VodPlay) -> Unit,
     onBack: () -> Unit,
 ) {
     val rows by vm.rows.collectAsStateWithLifecycle()
     val hidden by vm.hidden.collectAsStateWithLifecycle()
     StopPlaybackOnResume()
     val allHidden by vm.allHidden.collectAsStateWithLifecycle()
+    val myListKeys by vm.myListKeys.collectAsStateWithLifecycle()
     VodBrowseContent(
         heading = heading, rows = rows, hidden = hidden, allHidden = allHidden,
         onHideCategory = vm::hideCategory, onShowCategory = vm::showCategory,
         onOpen = onOpen, onBack = onBack,
+        myListKeys = myListKeys, onPlay = onPlay,
+        onSetInMyList = vm::setInMyList, onDismissContinue = vm::dismissContinue,
     )
 }
 
 /**
  * What the screen shows, with its edits as callbacks (the part the screen tests drive). With no rows
- * and [allHidden], a note and a button to show the hidden categories take their place.
+ * and [allHidden], a note and a button to show the hidden categories take their place. [myListKeys]
+ * says which cards' menus offer to remove them from My list rather than add them.
  */
 @Composable
 internal fun VodBrowseContent(
@@ -101,15 +123,22 @@ internal fun VodBrowseContent(
     onOpen: (playlistId: Long, key: String) -> Unit,
     onBack: () -> Unit,
     lastOpenedSeed: String? = null,
+    lastOpenedSlotSeed: Int = -1,
+    myListKeys: Set<KeyRef> = emptySet(),
+    onPlay: (VodPlay) -> Unit = {},
+    onSetInMyList: (PosterModel, Boolean) -> Unit = { _, _ -> },
+    onDismissContinue: (PosterModel) -> Unit = {},
 ) {
     var lastOpened by rememberSaveable { mutableStateOf(lastOpenedSeed) }
+    // The last opened card's place in its row: a Continue watching card may be gone on return.
+    var lastSlot by rememberSaveable { mutableIntStateOf(lastOpenedSlotSeed) }
     // Where focus goes back to when the screen is entered again; spent once it has landed or is found gone.
     var restore by remember { mutableStateOf(lastOpened) }
     // The first row takes focus on a fresh entry, and again when the card to restore is gone.
     var wantsEntry by remember { mutableStateOf(lastOpened == null) }
     // The row a hidden category was in: when it has gone, the row now at its place takes focus.
     var hiddenFrom by remember { mutableStateOf<Pair<String, Int>?>(null) }
-    var options by remember { mutableStateOf<VodRowModel?>(null) }
+    var options by remember { mutableStateOf<MenuTarget?>(null) }
     var listingHidden by remember { mutableStateOf(false) }
     val column = rememberLazyListState()
     val gridRow = rows.filterIsInstance<VodRowModel.Grid>().firstOrNull()
@@ -119,22 +148,33 @@ internal fun VodBrowseContent(
 
     BackHandler(onBack = onBack)
 
-    val open: (VodRowModel, PosterModel) -> Unit = { row, card ->
-        lastOpened = cardId(row.title, card)
+    val noteOpened: (VodRowModel, Int, PosterModel) -> Unit = { row, index, card ->
+        lastOpened = cardId(rowId(row), card)
+        lastSlot = index
+    }
+    val openPage: (VodRowModel, Int, PosterModel) -> Unit = { row, index, card ->
+        noteOpened(row, index, card)
         onOpen(card.playlistId, card.key)
     }
-    val longClick: (VodRowModel) -> Unit = { row ->
-        if (canHide(row) || hidden.isNotEmpty()) options = row
+    val open: (VodRowModel, Int, PosterModel) -> Unit = { row, index, card ->
+        val play = card.play
+        if (row is VodRowModel.Continue && play != null) {
+            noteOpened(row, index, card)
+            onPlay(play)
+        } else {
+            openPage(row, index, card)
+        }
     }
+    val longClick: (VodRowModel, Int, PosterModel) -> Unit = { row, index, card -> options = MenuTarget(row, index, card) }
     val restoreFailed = { restore = null; wantsEntry = true }
 
     // The row that should take focus now, if any.
-    val claimTitle: String? = when {
+    val claimId: String? = when {
         restore != null -> null
         hiddenFrom != null ->
-            if (rows.any { it.title == hiddenFrom?.first }) null
-            else (rows.getOrNull(hiddenFrom!!.second) ?: rows.lastOrNull())?.title
-        wantsEntry -> rows.firstOrNull()?.title
+            if (rows.any { rowId(it) == hiddenFrom?.first }) null
+            else (rows.getOrNull(hiddenFrom!!.second) ?: rows.lastOrNull())?.let(::rowId)
+        wantsEntry -> rows.firstOrNull()?.let(::rowId)
         else -> null
     }
     val claimed = { wantsEntry = false; hiddenFrom = null }
@@ -143,8 +183,8 @@ internal fun VodBrowseContent(
     LaunchedEffect(rows.isNotEmpty(), gridCards?.count) {
         val id = restore ?: return@LaunchedEffect
         if (rows.isEmpty()) return@LaunchedEffect
-        val title = id.substringBefore('\u0000')
-        val at = rows.indexOfFirst { it.title == title }
+        val key = id.substringBefore('\u0000')
+        val at = rows.indexOfFirst { rowId(it) == key }
         if (at < 0) restoreFailed() else column.scrollToItem(lazyIndexOf(rows, at, gridCards))
     }
     // A card in the grid: its line scrolls into view, then it takes focus.
@@ -152,9 +192,10 @@ internal fun VodBrowseContent(
         val id = restore ?: return@LaunchedEffect
         val grid = gridRow ?: return@LaunchedEffect
         val cards = gridCards ?: return@LaunchedEffect
-        val index = cards.indexOf(grid.title, id)
+        val gridId = rowId(grid)
+        val index = cards.indexOf(gridId, id)
         if (index < 0) {
-            if (cards.hasLoaded() && id.startsWith(grid.title + '\u0000')) restoreFailed()
+            if (cards.hasLoaded() && id.startsWith(gridId + '\u0000')) restoreFailed()
             return@LaunchedEffect
         }
         column.scrollToItem(lazyIndexOf(rows, rows.indexOf(grid), cards) + 1 + index / GRID_COLUMNS)
@@ -162,14 +203,14 @@ internal fun VodBrowseContent(
         if (gridRequesters[id]?.tryFocus() == true) restore = null
     }
     // The row claiming focus is brought into view; a grid's first card then takes it.
-    LaunchedEffect(claimTitle, gridCards?.count) {
-        val title = claimTitle ?: return@LaunchedEffect
-        column.scrollToItem(lazyIndexOf(rows, rows.indexOfFirst { it.title == title }, gridCards))
+    LaunchedEffect(claimId, gridCards?.count) {
+        val id = claimId ?: return@LaunchedEffect
+        column.scrollToItem(lazyIndexOf(rows, rows.indexOfFirst { rowId(it) == id }, gridCards))
         val grid = gridRow
         val first = gridCards?.peek(0)
-        if (grid?.title == title && first != null) {
+        if (grid != null && rowId(grid) == id && first != null) {
             withFrameNanos { }
-            if (gridRequesters[cardId(title, first)]?.tryFocus() == true) claimed()
+            if (gridRequesters[cardId(id, first)]?.tryFocus() == true) claimed()
         }
     }
 
@@ -185,28 +226,23 @@ internal fun VodBrowseContent(
             modifier = Modifier.padding(top = 12.dp),
         ) {
             rows.forEach { row ->
+                val id = rowId(row)
+                val inRow = { cardKey: String? -> cardKey?.takeIf { it.startsWith(id + '\u0000') } }
+                @Composable
+                fun cardRow(cards: RowCards) = CardRow(
+                    title = row.title, rowId = id, cards = cards,
+                    claim = claimId == id, onClaimed = claimed,
+                    restore = inRow(restore),
+                    // Only a Continue watching card may be gone on return: the card now in its place takes focus.
+                    restoreSlot = lastSlot.takeIf { row is VodRowModel.Continue && it >= 0 },
+                    onRestored = { restore = null }, onRestoreMissing = restoreFailed,
+                    onOpen = { i, card -> open(row, i, card) }, onLongClick = { i, card -> longClick(row, i, card) },
+                )
                 when (row) {
-                    is VodRowModel.Recent -> item(key = "row:${row.title}") {
-                        CardRow(
-                            title = row.title, cards = RowCards.of(row.cards),
-                            claim = claimTitle == row.title, onClaimed = claimed,
-                            restore = restore?.takeIf { it.startsWith(row.title + '\u0000') },
-                            onRestored = { restore = null }, onRestoreMissing = restoreFailed,
-                            onOpen = { open(row, it) }, onLongClick = { longClick(row) },
-                        )
-                    }
-                    is VodRowModel.Paged -> item(key = "row:${row.title}") {
-                        val items = row.items.collectAsLazyPagingItems()
-                        CardRow(
-                            title = row.title, cards = RowCards.of(items),
-                            claim = claimTitle == row.title, onClaimed = claimed,
-                            restore = restore?.takeIf { it.startsWith(row.title + '\u0000') },
-                            onRestored = { restore = null }, onRestoreMissing = restoreFailed,
-                            onOpen = { open(row, it) }, onLongClick = { longClick(row) },
-                        )
-                    }
+                    is VodRowModel.Fixed -> item(key = "row:$id") { cardRow(RowCards.of(row.cards)) }
+                    is VodRowModel.Paged -> item(key = "row:$id") { cardRow(RowCards.of(row.items.collectAsLazyPagingItems())) }
                     is VodRowModel.Grid -> {
-                        item(key = "row:${row.title}") { RowTitle(row.title) }
+                        item(key = "row:$id") { RowTitle(row.title) }
                         val cards = gridCards
                         if (cards != null) {
                             items(chunkCount(cards.count), key = { "grid:$it" }) { chunk ->
@@ -216,11 +252,10 @@ internal fun VodBrowseContent(
                                         if (card == null) {
                                             Box(Modifier.width(POSTER_WIDTH).aspectRatio(2f / 3f))
                                         } else {
-                                            val id = cardId(row.title, card)
                                             PosterCard(
-                                                title = card.title, logo = card.logo, subtitle = card.subtitle,
-                                                onClick = { open(row, card) }, onLongClick = { longClick(row) },
-                                                modifier = Modifier.focusRequester(gridRequesters.requesterFor(id)),
+                                                title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction,
+                                                onClick = { open(row, i, card) }, onLongClick = { longClick(row, i, card) },
+                                                modifier = Modifier.focusRequester(gridRequesters.requesterFor(cardId(id, card))),
                                             )
                                         }
                                     }
@@ -233,18 +268,30 @@ internal fun VodBrowseContent(
         }
     }
 
-    options?.let { row ->
+    options?.let { t ->
+        val row = t.row
+        val card = t.card
+        val inMyList = row is VodRowModel.MyList || KeyRef(card.playlistId, card.key) in myListKeys
         val choices = buildList {
+            if (row is VodRowModel.Continue) {
+                add(ChannelOption(OPTION_REMOVE_CONTINUE) { options = null; onDismissContinue(card) })
+                add(ChannelOption(OPTION_OPEN_PAGE) { options = null; openPage(row, t.index, card) })
+            }
+            if (inMyList) {
+                add(ChannelOption(OPTION_REMOVE_MY_LIST) { options = null; onSetInMyList(card, false) })
+            } else {
+                add(ChannelOption(OPTION_ADD_MY_LIST) { options = null; onSetInMyList(card, true) })
+            }
             if (canHide(row)) {
                 add(ChannelOption(OPTION_HIDE_CATEGORY) {
-                    hiddenFrom = row.title to rows.indexOf(row)
+                    hiddenFrom = rowId(row) to rows.indexOf(row)
                     onHideCategory(row.title)
                     options = null
                 })
             }
             if (hidden.isNotEmpty()) add(ChannelOption(OPTION_SHOW_HIDDEN) { options = null; listingHidden = true })
         }
-        ChannelOptionsDialog(row.title, choices) { options = null }
+        ChannelOptionsDialog(card.title, choices) { options = null }
     }
     if (listingHidden) {
         ChannelOptionsDialog(
@@ -273,6 +320,10 @@ private fun AllHiddenNote(onShowHidden: () -> Unit, onFocused: () -> Unit) {
 
 private fun canHide(row: VodRowModel) = row is VodRowModel.Paged && row.category != null
 
+const val OPTION_REMOVE_CONTINUE = "Remove from Continue watching"
+const val OPTION_OPEN_PAGE = "Open page"
+const val OPTION_ADD_MY_LIST = "Add to My list"
+const val OPTION_REMOVE_MY_LIST = "Remove from My list"
 const val OPTION_HIDE_CATEGORY = "Hide category"
 const val OPTION_SHOW_HIDDEN = "Show hidden categories"
 const val ALL_HIDDEN_NOTE = "All categories are hidden"
@@ -289,42 +340,53 @@ private fun RowTitle(title: String) {
 }
 
 /**
- * One scrolling row. Its scroll position is kept per row. [restore] (a card id) scrolls to that card and
- * focuses it, or calls [onRestoreMissing] when the row has loaded without it; [claim] focuses the first card.
+ * One scrolling row, [rowId] among the screen's rows. Its scroll position is kept per row. [restore] (a card
+ * id) scrolls to that card and focuses it; when the row has loaded without it, the card at [restoreSlot]
+ * (or the last card) takes focus instead if a slot is given, else [onRestoreMissing] is called. [claim]
+ * focuses the first card.
  */
 @Composable
 private fun CardRow(
     title: String,
+    rowId: String,
     cards: RowCards,
     claim: Boolean,
     onClaimed: () -> Unit,
     restore: String?,
+    restoreSlot: Int?,
     onRestored: () -> Unit,
     onRestoreMissing: () -> Unit,
-    onOpen: (PosterModel) -> Unit,
-    onLongClick: () -> Unit,
+    onOpen: (Int, PosterModel) -> Unit,
+    onLongClick: (Int, PosterModel) -> Unit,
 ) {
     val state = rememberLazyListState()
     val requesters = remember { HashMap<String, FocusRequester>() }
     val first = cards.peek(0)
 
-    LaunchedEffect(restore, cards.count, first) {
-        val id = restore ?: return@LaunchedEffect
-        val index = cards.indexOf(title, id)
-        if (index < 0) {
-            if (cards.hasLoaded()) onRestoreMissing()
-            return@LaunchedEffect
-        }
+    suspend fun focusAt(index: Int): Boolean {
         state.scrollToItem(index)
         withFrameNanos { }
-        if (requesters[id]?.tryFocus() == true) onRestored()
+        val card = cards.peek(index) ?: return false
+        return requesters[cardId(rowId, card)]?.tryFocus() == true
+    }
+
+    LaunchedEffect(restore, cards.count, first) {
+        val id = restore ?: return@LaunchedEffect
+        val index = cards.indexOf(rowId, id)
+        val target = when {
+            index >= 0 -> index
+            !cards.hasLoaded() -> return@LaunchedEffect
+            restoreSlot != null -> minOf(restoreSlot, cards.count - 1)
+            else -> { onRestoreMissing(); return@LaunchedEffect }
+        }
+        if (focusAt(target)) onRestored()
     }
     LaunchedEffect(claim, first) {
         if (!claim || first == null) return@LaunchedEffect
         // The row may have been scrolled sideways: bring its first card back so it is composed.
         state.scrollToItem(0)
         withFrameNanos { }
-        if (requesters[cardId(title, first)]?.tryFocus() == true) onClaimed()
+        if (requesters[cardId(rowId, first)]?.tryFocus() == true) onClaimed()
     }
 
     Column {
@@ -334,15 +396,15 @@ private fun CardRow(
             horizontalArrangement = Arrangement.spacedBy(CARD_GAP),
             modifier = Modifier.focusGroup(),
         ) {
-            items(cards.count, key = { i -> cards.peek(i)?.let { cardId(title, it) } ?: "placeholder:$i" }) { i ->
+            items(cards.count, key = { i -> cards.peek(i)?.let { cardId(rowId, it) } ?: "placeholder:$i" }) { i ->
                 val card = cards.get(i)
                 if (card == null) {
                     Box(Modifier.width(POSTER_WIDTH).aspectRatio(2f / 3f))
                 } else {
                     PosterCard(
-                        title = card.title, logo = card.logo, subtitle = card.subtitle,
-                        onClick = { onOpen(card) }, onLongClick = onLongClick,
-                        modifier = Modifier.focusRequester(requesters.requesterFor(cardId(title, card))),
+                        title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction,
+                        onClick = { onOpen(i, card) }, onLongClick = { onLongClick(i, card) },
+                        modifier = Modifier.focusRequester(requesters.requesterFor(cardId(rowId, card))),
                     )
                 }
             }

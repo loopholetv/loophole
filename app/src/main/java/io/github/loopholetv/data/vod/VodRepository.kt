@@ -69,6 +69,24 @@ class VodRepository(db: AppDatabase, private val clock: () -> Instant) {
         }
     }
 
+    /** [ref]'s episode row (its season, number and name), or null for a film or a missing episode. */
+    suspend fun episodeInfo(ref: VodRef): EpisodeEntity? =
+        if (ref.kind == VodKind.EPISODE) dao.episodeRow(ref.playlistId, ref.key) else null
+
+    /** A show's visible episodes in show-page order, read once. */
+    suspend fun episodesOnce(playlistId: Long, showKey: String): List<EpisodeEntity> =
+        sortEpisodes(dao.episodesOnce(playlistId, showKey), { it.season }, { it.episode }, { it.position })
+
+    /** The episode that follows [ref] on its show's page, or null (see [io.github.loopholetv.data.vod.nextEpisode]). */
+    suspend fun nextEpisode(ref: VodRef): VodRef? {
+        if (ref.kind != VodKind.EPISODE) return null
+        val current = dao.episodeRow(ref.playlistId, ref.key) ?: return null
+        val views = episodesOnce(ref.playlistId, current.showKey)
+            .map { EpisodeView(it.key, it.season, it.episode, it.name, null) }
+        val next = io.github.loopholetv.data.vod.nextEpisode(views, ref.key) ?: return null
+        return VodRef(VodKind.EPISODE, ref.playlistId, next.key)
+    }
+
     private fun recentSince(): Instant = clock().minus(Duration.ofDays(RECENT_DAYS.toLong()))
 
     private fun seasonsOf(episodes: List<EpisodeEntity>): List<Season> =

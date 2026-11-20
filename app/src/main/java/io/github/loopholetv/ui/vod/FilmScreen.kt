@@ -65,7 +65,7 @@ fun FilmScreen(
     // The page is composed afresh when the player closes; the button used last takes focus again.
     var lastButton by rememberSaveable { mutableStateOf<Int?>(null) }
     ui?.let { film ->
-        FilmContent(film, lastUsedButton = lastButton, onUsed = { lastButton = it }) { ms ->
+        FilmContent(film, lastUsedButton = lastButton, onUsed = { lastButton = it }, onToggleMyList = vm::toggleMyList) { ms ->
             starter.start(VodRef(VodKind.MOVIE, playlistId, key), ms)
         }
     }
@@ -77,6 +77,7 @@ internal fun FilmContent(
     ui: FilmUi,
     lastUsedButton: Int? = null,
     onUsed: (Int) -> Unit = {},
+    onToggleMyList: () -> Unit = {},
     onPlay: (startMs: Long) -> Unit,
 ) {
     val requesters = remember { List(2) { FocusRequester() } }
@@ -103,6 +104,8 @@ internal fun FilmContent(
                         },
                     )
                 }
+                // The label changes with the state but the pill stays put, so focus stays on it.
+                PillButton(label = myListLabel(ui.inMyList), selected = false, onClick = onToggleMyList)
             }
         }
     }

@@ -254,7 +254,7 @@ class SetupImportTest {
             mine.playback.copy(
                 bufferPreset = changedSettings().playback.bufferPreset,
                 audioLanguage = "de", subtitleLanguage = "fr",
-                subtitleStyle = changedSettings().playback.subtitleStyle, pipOnHome = true,
+                subtitleStyle = changedSettings().playback.subtitleStyle, pipOnHome = true, autoPlayNext = false,
             ),
             after.playback,
         )
