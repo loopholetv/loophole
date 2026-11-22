@@ -26,6 +26,13 @@ class PlayerKeyRouteTest {
         assertEquals(PlayerKeyRoute.Seek(1), route(bare, right))
     }
 
+    @Test fun lastChannelKeyRoutesToPrevious() {
+        val previous = PlayerKeyRoute.Action(PlayerAction.PREVIOUS_CHANNEL)
+        for (s in bareStates + bare.copy(overlayVisible = true)) {
+            assertEquals(previous, route(s, KeyEvent.KEYCODE_LAST_CHANNEL))
+        }
+    }
+
     @Test fun playPauseIgnoresTheSeekKeySetting() {
         val off = RemoteSettings(mediaKeysSeek = false)
         assertEquals(PlayerKeyRoute.TogglePause, route(bare, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, off))

@@ -13,7 +13,7 @@ import androidx.room.TypeConverters
         MyListEntity::class, ContinueDismissalEntity::class,
         ReminderEntity::class, SeriesRuleEntity::class, RecordingEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

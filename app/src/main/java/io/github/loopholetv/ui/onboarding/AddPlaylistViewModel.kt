@@ -59,7 +59,7 @@ data class AddPlaylistUi(
     val mac: String = MAC_PREFIX,
     val portalLogin: String = "",
     val portalPass: String = "",
-    // Identity values are only ever what the user typed (never generated).
+    // What the user typed; the repository derives blanks from the MAC only when a new portal is added.
     val serial: String = "",
     val deviceId: String = "",
     val deviceId2: String = "",

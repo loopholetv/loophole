@@ -46,6 +46,13 @@ internal class FakePortal(@Volatile var path: String = "/stalker_portal/server/l
     /** Actions that always answer `Authorization failed.`. */
     val authFailAlways: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
+    /** Actions that answer HTTP 401 exactly once. */
+    val http401Once: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    /** Actions that always answer HTTP 401. */
+    val http401Always: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    /** Actions that always answer HTTP 403. */
+    val http403Always: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     val requests: MutableList<RecordedRequest> = CopyOnWriteArrayList()
     private var tokenCounter = 1
 
@@ -73,6 +80,8 @@ internal class FakePortal(@Volatile var path: String = "/stalker_portal/server/l
         val cookie = request.getHeader("Cookie").orEmpty()
         if (!cookie.contains("mac=$expectedMac")) return text("Unauthorized request.")
         if (accessDenied) return text("Access denied.")
+        if (action in http401Always || http401Once.remove(action)) return MockResponse().setResponseCode(401).setBody("Unauthorized")
+        if (action in http403Always) return MockResponse().setResponseCode(403).setBody("Forbidden")
         if (action == "handshake") {
             return json("""{"js":{"$tokenKey":"$token","random":"0123abcdef","not_valid":0}}""")
         }

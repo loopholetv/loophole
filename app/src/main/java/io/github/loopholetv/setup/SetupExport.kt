@@ -160,6 +160,7 @@ internal class SetupExporter(
         portalDeviceId2 = portalDeviceId2,
         portalSignature = portalSignature,
         connectionsAllowed = connectionsAllowed,
+        xtreamFormat = xtreamFormat,
         file = file,
         guideLinks = links,
         channelEdits = channelEdits,

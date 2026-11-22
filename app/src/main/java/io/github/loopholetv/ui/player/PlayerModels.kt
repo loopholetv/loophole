@@ -3,6 +3,7 @@ package io.github.loopholetv.ui.player
 import android.view.KeyEvent
 import io.github.loopholetv.data.db.ChannelDao
 import io.github.loopholetv.data.db.ChannelEntity
+import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.ProgrammeEntity
 import io.github.loopholetv.data.db.label
@@ -64,6 +65,9 @@ const val ROW_EACH_SIDE = 15
 interface PlayerChannels {
     suspend fun byId(id: Long): ChannelEntity?
     suspend fun byNumber(n: Int): ChannelEntity?
+
+    /** The channel [ref] names now (a refresh may have given it a new row id), hidden or not. */
+    suspend fun byRef(ref: ChannelRef): ChannelEntity?
     suspend fun neighbour(current: ChannelEntity, scope: ChannelScope, direction: Int): ChannelEntity?
     suspend fun around(current: ChannelEntity, scope: ChannelScope, each: Int): List<ChannelEntity>
     suspend fun contains(channel: ChannelEntity, scope: ChannelScope): Boolean
@@ -75,6 +79,7 @@ interface PlayerChannels {
 internal class DaoPlayerChannels(private val dao: ChannelDao, private val scoped: ScopedChannels) : PlayerChannels {
     override suspend fun byId(id: Long) = dao.byId(id)
     override suspend fun byNumber(n: Int) = dao.byNumber(n)
+    override suspend fun byRef(ref: ChannelRef) = dao.byKey(ref.playlistId, ref.key)
     override suspend fun neighbour(current: ChannelEntity, scope: ChannelScope, direction: Int) =
         scoped.neighbour(current, scope, direction)
     override suspend fun around(current: ChannelEntity, scope: ChannelScope, each: Int) = scoped.around(current, scope, each)
@@ -148,6 +153,7 @@ internal fun PlayerViewModel.performPlayerRoute(route: PlayerKeyRoute) {
             PlayerAction.CHANNEL_UP -> channelUp()
             PlayerAction.CHANNEL_DOWN -> channelDown()
             PlayerAction.CHANNEL_LIST -> showOverlay()
+            PlayerAction.PREVIOUS_CHANNEL -> previousChannel()
             PlayerAction.GUIDE -> goToGuide()
             PlayerAction.QUICK_MENU -> openQuickMenu()
             PlayerAction.FAVOURITE -> toggleFavourite()

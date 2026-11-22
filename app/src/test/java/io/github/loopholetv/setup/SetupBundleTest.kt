@@ -282,6 +282,22 @@ class SetupBundleTest {
     }
 
     @Test
+    fun xtreamFormatRoundTrips() {
+        val base = sampleBundle()
+        val withFormat = base.copy(
+            playlists = base.playlists.map { if (it.type == PlaylistType.XTREAM) it.copy(xtreamFormat = "hls") else it },
+        )
+        val decoded = decode(SetupJson.encode(withFormat))!!
+        assertEquals("hls", decoded.playlists.first { it.type == PlaylistType.XTREAM }.xtreamFormat)
+        assertNull(decode(SetupJson.encode(base))!!.playlists.first { it.type == PlaylistType.XTREAM }.xtreamFormat)
+
+        val odd = withFormat.copy(
+            playlists = withFormat.playlists.map { if (it.type == PlaylistType.XTREAM) it.copy(xtreamFormat = "mkv") else it },
+        )
+        assertNull(decode(SetupJson.encode(odd))!!.playlists.first { it.type == PlaylistType.XTREAM }.xtreamFormat)
+    }
+
+    @Test
     fun aBundleWithoutANetworkFolderKeepsThisTvsStorage() {
         val target = AppSettings(
             recordStorage = StorageKind.SMB, smbHost = "mine.example.test", smbShare = "share", smbFolder = "rec",

@@ -206,10 +206,16 @@ class PlayerViewModel(
         combine(recordingIds, _ui.map { it?.channel?.id }.distinctUntilChanged()) { ids, id -> id != null && id in ids }
             .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /** The channel watched before this one; the previous-channel key and tile go back to it. */
+    private val _previous = MutableStateFlow<ChannelRef?>(null)
+
+    /** The remembered channel still exists and is visible; the quick menu's tile follows it. */
+    private val _previousAvailable = MutableStateFlow(false)
+
     private val menu = QuickMenuController(
         scope = viewModelScope,
         playback = playback,
-        itemsNow = { quickItems(pipSupported, startOver = catchup.startOverOffered(_ui.value?.channel)) },
+        itemsNow = { quickItems(pipSupported, startOver = catchup.startOverOffered(_ui.value?.channel), previous = _previousAvailable.value) },
         sleepTimer = sleepTimer,
         updatePlayback = updatePlayback,
         host = object : QuickMenuHost {
@@ -222,6 +228,7 @@ class PlayerViewModel(
                 recording = recording.value,
             )
             override fun showChannels() = showOverlay()
+            override fun previousChannel() = this@PlayerViewModel.previousChannel()
             override fun watchFromStart() = this@PlayerViewModel.watchFromStart()
             override fun toggleFavourite() = this@PlayerViewModel.toggleFavourite()
             override fun toggleCasting() {
@@ -330,6 +337,7 @@ class PlayerViewModel(
                 playback.tracks, _aspect, sleep, catchupBar.map { it == null }.distinctUntilChanged(),
                 cast.state.map { it is CastState.Casting }.distinctUntilChanged(),
                 recording.map { },
+                _previousAvailable,
             ).collect { menu.refresh() }
         }
         viewModelScope.launch { recordingChannels.catch { }.collect { recordingIds.value = it } }
@@ -420,16 +428,35 @@ class PlayerViewModel(
                     target == null -> showMessage("No channel $number")
                     target.id == _ui.value?.channel?.id -> showBanner()
                     else -> {
-                        if (scope != ChannelScope.All && !channels.contains(target, scope)) {
-                            scope = ChannelScope.All
-                            val label = groupLabel()
-                            update { it.copy(groupLabel = label) }
-                        }
+                        widenScopeFor(target)
                         switchTo(target, playNow = true)
                     }
                 }
             }
         }
+    }
+
+    /** Previous-channel key: back to the channel left last; pressing it again returns. Does nothing if that channel is gone or hidden. */
+    fun previousChannel() {
+        if (exited) return
+        viewModelScope.launch {
+            switching.withLock {
+                if (exited) return@withLock
+                val remembered = _previous.value ?: return@withLock
+                val target = channels.byRef(remembered)?.takeIf { it.visible } ?: return@withLock
+                if (target.id == _ui.value?.channel?.id) return@withLock
+                widenScopeFor(target)
+                switchTo(target, playNow = true)
+            }
+        }
+    }
+
+    /** Zapping runs through all channels once [target] lies outside the current group. */
+    private suspend fun widenScopeFor(target: ChannelEntity) {
+        if (scope == ChannelScope.All || channels.contains(target, scope)) return
+        scope = ChannelScope.All
+        val label = groupLabel()
+        update { it.copy(groupLabel = label) }
     }
 
     /** OK on a channel tile: plays it at once, staying full screen. */
@@ -444,6 +471,8 @@ class PlayerViewModel(
 
     private suspend fun switchTo(channel: ChannelEntity, playNow: Boolean, fromHistory: Boolean = false) {
         if (exited) return
+        _ui.value?.channel?.takeIf { it.id != channel.id }?.let { _previous.value = it.ref }
+        refreshPreviousAvailable()
         // A new channel starts live: the archive, its bar and its resume point are forgotten.
         catchup.clear()
         update {
@@ -619,6 +648,12 @@ class PlayerViewModel(
         if (dialogs.isOpen || menu.isOpen) return
         hideOverlay()
         menu.open()
+        viewModelScope.launch { refreshPreviousAvailable() }
+    }
+
+    private suspend fun refreshPreviousAvailable() {
+        val ref = _previous.value
+        _previousAvailable.value = ref != null && channels.byRef(ref)?.visible == true
     }
 
     fun dismissQuickMenu() {

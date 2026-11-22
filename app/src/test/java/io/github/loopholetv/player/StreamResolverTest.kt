@@ -132,6 +132,25 @@ class StreamResolverTest {
     ) = channel(playlistId = playlistId, url = url, ua = ua, referrer = referrer)
         .copy(key = key, catchupType = type, catchupDays = days, catchupSource = source, catchupCorrectionMinutes = correction)
 
+    @Test fun xtreamHlsFormatPlaysM3u8() = runBlocking {
+        playlists[3] = xtreamPlaylist(3).copy(xtreamFormat = "hls")
+        val live = channel(playlistId = 3, url = "http://example.test:8080/live/archiveuser/archivepass/42.ts")
+        assertEquals("http://example.test:8080/live/archiveuser/archivepass/42.m3u8", resolver().resolve(live).url)
+        // Back to MPEG-TS: the stored URL plays as it is.
+        playlists[3] = xtreamPlaylist(3)
+        assertEquals("http://example.test:8080/live/archiveuser/archivepass/42.ts", resolver().resolve(live).url)
+        // A URL that is not .ts is left alone.
+        playlists[3] = xtreamPlaylist(3).copy(xtreamFormat = "hls")
+        val bare = channel(playlistId = 3, url = "http://example.test:8080/live/archiveuser/archivepass/42")
+        assertEquals(bare.streamUrl, resolver().resolve(bare).url)
+    }
+
+    @Test fun xtreamHlsFormatCatchUpUsesM3u8() = runBlocking {
+        playlists[3] = xtreamPlaylist(3, ext = null).copy(xtreamFormat = "hls")
+        val s = resolver().resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!
+        assertEquals("http://example.test:8080/timeshift/archiveuser/archivepass/60/2026-11-10:20-00/42.m3u8", s.url)
+    }
+
     @Test fun xtreamArchiveUrlFromPlaylist() = runBlocking {
         playlists[3] = xtreamPlaylist(3)
         val s = resolver().resolveArchive(archiveChannel(3), archiveRequest, archiveNow)!!

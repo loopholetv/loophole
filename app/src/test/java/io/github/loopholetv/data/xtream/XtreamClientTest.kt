@@ -55,7 +55,7 @@ class XtreamClientTest {
         enqueue(res("auth_string_flags.json"))
         val a = client.authenticate(creds())
         assertEquals(2, a.maxConnections)
-        assertNull(a.expiresAt)
+        assertEquals(NEVER_EXPIRES, a.expiresAt)
     }
 
     @Test fun authenticateReadsServerInfo() = runTest {

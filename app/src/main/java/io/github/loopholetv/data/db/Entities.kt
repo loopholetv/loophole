@@ -67,6 +67,12 @@ data class PlaylistEntity(
     val connectionsAllowed: Int? = null,
     /** Xtream: the account's own connection limit, from the last login. */
     val accountMaxConnections: Int? = null,
+    /** Xtream: the live stream format, `hls` or null for MPEG-TS. */
+    val xtreamFormat: String? = null,
+    /** Xtream: the account's status text, from the last login. */
+    val accountStatus: String? = null,
+    /** Xtream: when the account expires, from the last login; null = unknown or never. */
+    val accountExpiresAt: Instant? = null,
 )
 
 @Entity(

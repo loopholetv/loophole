@@ -9,6 +9,7 @@ import io.github.loopholetv.data.repo.PORTAL_EPG_SOURCE
 import io.github.loopholetv.data.repo.announcedEpgUrls
 import io.github.loopholetv.data.repo.m3uSecrets
 import io.github.loopholetv.data.repo.playlistSecrets
+import io.github.loopholetv.data.xtream.NEVER_EXPIRES
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.record.DEFAULT_CONNECTIONS
 import io.github.loopholetv.util.redact
@@ -76,6 +77,7 @@ internal class EpgUiBuilder(
 /** Builds a Playlists row: "<N> channels · <N> films · <N> shows · On|Off · <last update or error>". */
 internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
     private val updated = DateTimeFormatter.ofPattern("d MMM HH:mm", locale).withZone(zone)
+    private val expires = DateTimeFormatter.ofPattern("d MMM yyyy", locale).withZone(zone)
 
     fun row(p: PlaylistEntity, count: Int, op: PlaylistOp, films: Int = 0, shows: Int = 0): PlaylistRowUi {
         val (status, isError) = status(p, op, films, shows)
@@ -93,8 +95,18 @@ internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
             secondaryText = "${contentCounts(count, films, shows, locale)} · ${onOff(p.enabled)} · $status",
             connectionsAllowed = p.connectionsAllowed,
             autoConnections = p.accountMaxConnections?.takeIf { it > 0 } ?: DEFAULT_CONNECTIONS,
+            xtreamFormat = p.xtreamFormat,
+            isXtream = p.type == PlaylistType.XTREAM,
+            accountRows = accountRows(p),
         )
     }
+
+    private fun accountRows(p: PlaylistEntity): List<Pair<String, String>> =
+        if (p.type != PlaylistType.XTREAM && p.type != PlaylistType.STALKER) emptyList() else listOfNotNull(
+            p.accountStatus?.takeIf { it.isNotBlank() }?.let { "Account" to it },
+            p.accountExpiresAt?.let { "Expires" to if (it == NEVER_EXPIRES) "Never" else expires.format(it) },
+            p.accountMaxConnections?.takeIf { it > 0 }?.let { "Connections" to it.toString() },
+        )
 
     /** The status text, and whether it reports a failure (shown in the error colour). */
     private fun status(p: PlaylistEntity, op: PlaylistOp, films: Int, shows: Int): Pair<String, Boolean> {

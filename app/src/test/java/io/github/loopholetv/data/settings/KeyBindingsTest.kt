@@ -69,7 +69,19 @@ class KeyBindingsTest {
         assertEquals(PlayerAction.NONE, b.player(89))
     }
 
+    @Test fun lastChannelKeyDefaultsToPreviousChannelAndSurvivesRoundTrip() {
+        assertEquals(PlayerAction.PREVIOUS_CHANNEL, KeyBindings.DEFAULT.player(KeyEvent.KEYCODE_LAST_CHANNEL))
+        assertTrue(isRemappable(KeyEvent.KEYCODE_LAST_CHANNEL))
+        assertEquals("Previous channel", PlayerAction.PREVIOUS_CHANNEL.label)
+        val b = KeyBindings(
+            player = mapOf(KeyEvent.KEYCODE_PROG_BLUE to PlayerAction.PREVIOUS_CHANNEL),
+            guide = emptyMap(),
+        )
+        assertEquals(b, decodeBindings(encodeBindings(b)))
+    }
+
     @Test fun keyNames() {
+        assertEquals("Last channel", keyName(KeyEvent.KEYCODE_LAST_CHANNEL))
         assertEquals("Rewind", keyName(89))
         assertEquals("Red button", keyName(183))
         assertEquals("Button 999", keyName(999))

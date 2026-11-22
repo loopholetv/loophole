@@ -94,6 +94,8 @@ data class SetupPlaylist(
     val portalSignature: String? = null,
     /** Streams this TV may open at once on the provider; null follows the account. */
     val connectionsAllowed: Int? = null,
+    /** Xtream live stream format: `hls`, or null for MPEG-TS. */
+    val xtreamFormat: String? = null,
     val file: SetupFile? = null,
     /** Added guide links, in order. */
     val guideLinks: List<String> = emptyList(),
@@ -343,7 +345,7 @@ internal object SetupFields {
         "name", "type", "url", "xtreamServer", "xtreamUser", "xtreamPass", "manualEpgUrl", "enabled", "userAgent", "updateHours",
         "updateOnStart", "useSourceEpg", "mac", "portalLogin", "portalPassword", "portalSerial", "portalDeviceId",
         "portalDeviceId2", "portalSignature",
-        "connectionsAllowed",
+        "connectionsAllowed", "xtreamFormat",
     )
 
     /**
@@ -353,7 +355,7 @@ internal object SetupFields {
     val PLAYLIST_NOT_COPIED = setOf(
         "id", "epgUrlsFromSource", "lastRefreshedAt", "lastError", "rekeyPending",
         "portalEndpoint", "portalToken", "xtreamTimeZone", "xtreamArchiveExt",
-        "accountMaxConnections",
+        "accountMaxConnections", "accountStatus", "accountExpiresAt",
     )
 
     val CHANNEL_EDIT_COPIED = setOf(
@@ -587,6 +589,7 @@ object SetupJson {
         w.name("portalDeviceId2").value(p.portalDeviceId2)
         w.name("portalSignature").value(p.portalSignature)
         w.name("connectionsAllowed").value(p.connectionsAllowed?.toLong())
+        w.name("xtreamFormat").value(p.xtreamFormat)
         w.name("file")
         val file = p.file
         if (file == null) {
@@ -772,6 +775,7 @@ object SetupJson {
             portalDeviceId2 = v.string("portalDeviceId2"),
             portalSignature = v.string("portalSignature"),
             connectionsAllowed = v.int("connectionsAllowed"),
+            xtreamFormat = v.string("xtreamFormat")?.takeIf { it == "hls" },
             file = file,
             guideLinks = links,
             channelEdits = channelEdits,

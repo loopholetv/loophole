@@ -168,6 +168,8 @@ class PlayerViewModelTest {
         fun edit(id: Long, f: (ChannelEntity) -> ChannelEntity) { all = all.map { if (it.id == id) f(it) else it } }
         override suspend fun byId(id: Long) = all.firstOrNull { it.id == id }
         override suspend fun byNumber(n: Int) = all.firstOrNull { it.guideNumber == n && it.visible }
+        override suspend fun byRef(ref: io.github.loopholetv.data.db.ChannelRef) =
+            all.firstOrNull { it.playlistId == ref.playlistId && it.key == ref.key }
         override suspend fun contains(channel: ChannelEntity, scope: ChannelScope) = inScope(scope).any { it.id == channel.id }
         override suspend fun neighbour(current: ChannelEntity, scope: ChannelScope, direction: Int): ChannelEntity? {
             val list = inScope(scope)
@@ -545,6 +547,128 @@ class PlayerViewModelTest {
         key(vm, chUp)
         settle()
         assertEquals(2L, vm.channelId())
+    }
+
+    private val last = KeyEvent.KEYCODE_LAST_CHANNEL
+
+    @Test fun previousChannelReturnsAndToggles() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 1)
+        runCurrent()
+        key(vm, chUp)
+        settle()
+        assertEquals(2L, vm.channelId())
+
+        assertTrue(key(vm, last))
+        assertEquals(1L, vm.channelId())
+        assertEquals(listOf(1L, 2L, 1L), playback.played)
+        // The channel left becomes the new previous: pressing again goes back.
+        key(vm, last)
+        assertEquals(2L, vm.channelId())
+        assertEquals(listOf(1L, 2L, 1L, 2L), playback.played)
+    }
+
+    @Test fun previousAfterSeveralZaps() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 1)
+        runCurrent()
+        key(vm, chUp); settle()
+        key(vm, chUp); settle()
+        key(vm, chUp); settle()
+        assertEquals(4L, vm.channelId())
+        key(vm, last)
+        assertEquals("the channel before the last switch", 3L, vm.channelId())
+        key(vm, last)
+        assertEquals(4L, vm.channelId())
+    }
+
+    @Test fun previousWithoutAnyHistoryDoesNothing() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 1)
+        runCurrent()
+        key(vm, last)
+        assertEquals(1L, vm.channelId())
+        assertEquals(listOf(1L), playback.played)
+    }
+
+    @Test fun previousGoneDoesNothing() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 1)
+        runCurrent()
+        key(vm, chUp); settle()
+        source.all = source.all.filter { it.id != 1L } // deleted
+        key(vm, last)
+        assertEquals(2L, vm.channelId())
+        assertEquals(listOf(1L, 2L), playback.played)
+
+        val hidden = vm(FakePlayback(), start = 1)
+        runCurrent()
+        key(hidden, chUp); settle()
+        source.edit(1L) { it.copy(visible = false) }
+        key(hidden, last)
+        assertEquals(2L, hidden.channelId())
+    }
+
+    @Test fun previousSurvivesARefreshThatReinsertsRows() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 1)
+        runCurrent()
+        key(vm, chUp); settle()
+        // A refresh re-inserts channel 1 under a new row id; its key is unchanged.
+        source.edit(1L) { it.copy(id = 101L) }
+        key(vm, last)
+        assertEquals(101L, vm.channelId())
+    }
+
+    @Test fun previousTileShowsOnlyWhileTheRememberedChannelIsVisible() = runTest {
+        val vm = vm(FakePlayback(), start = 1)
+        runCurrent()
+        vm.onLongOk(); runCurrent()
+        assertFalse(QuickItem.PREVIOUS in vm.menu().entries.map { it.item })
+        vm.dismissQuickMenu()
+
+        key(vm, chUp); settle()
+        vm.onLongOk(); runCurrent()
+        assertTrue(QuickItem.PREVIOUS in vm.menu().entries.map { it.item })
+        vm.dismissQuickMenu()
+
+        source.edit(1L) { it.copy(visible = false) }
+        vm.onLongOk(); runCurrent()
+        assertFalse(QuickItem.PREVIOUS in vm.menu().entries.map { it.item })
+        vm.dismissQuickMenu()
+
+        source.all = source.all.filter { it.id != 1L }
+        vm.onLongOk(); runCurrent()
+        assertFalse(QuickItem.PREVIOUS in vm.menu().entries.map { it.item })
+    }
+
+    @Test fun previousAcrossGroupsWidensScope() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, mixed, start = 1, scope = ChannelScope.Group(1, "News"))
+        runCurrent()
+        key(vm, KeyEvent.KEYCODE_4) // jumps to Sport's channel 4, widening to all channels
+        advanceTimeBy(NUMBER_ENTRY_IDLE_MS + 1)
+        runCurrent()
+        key(vm, last)
+        assertEquals(1L, vm.channelId())
+        assertEquals(listOf(1L, 4L, 1L), playback.played)
+        // Back in News, but the scope stays wide: Up from 1 is 2 (Sport).
+        key(vm, last)
+        key(vm, last)
+        assertEquals(1L, vm.channelId())
+        key(vm, chUp)
+        settle()
+        assertEquals(2L, vm.channelId())
+    }
+
+    @Test fun previousInsideTheGroupKeepsTheGroup() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, mixed, start = 1, scope = ChannelScope.Group(1, "News"))
+        runCurrent()
+        key(vm, chUp); settle()
+        key(vm, last)
+        assertEquals(1L, vm.channelId())
+        assertEquals("News", vm.state().groupLabel)
     }
 
     @Test fun numberJumpOutsideFavouritesSwitchesToAllChannels() = runTest {

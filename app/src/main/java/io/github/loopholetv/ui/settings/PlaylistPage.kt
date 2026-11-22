@@ -65,6 +65,8 @@ fun PlaylistPage(
             supporting = row.statusText,
             supportingIsError = row.statusIsError,
         )
+        // Read-only, but focusable so the D-pad can reach and read them.
+        row.accountRows.forEach { (label, value) -> ValueRow(label, value, {}) }
         host.Row(
             "Update interval",
             intervals.map { it.first },
@@ -86,6 +88,15 @@ fun PlaylistPage(
             { connectionsText(it, row.autoConnections) },
             key = "p$id:connections",
         ) { vm.setConnectionsAllowed(id, it) }
+        if (row.isXtream) {
+            host.Row(
+                RC_STREAM_FORMAT,
+                RC_STREAM_FORMAT_CHOICES,
+                row.xtreamFormat,
+                { streamFormatText(it) },
+                key = "p$id:format",
+            ) { vm.setXtreamFormat(id, it) }
+        }
         ValueRow("User agent", userAgentText(row.userAgent), { dialog = UA_KEY }, Modifier.focusRequester(host.requester(UA_KEY)))
         ActionRow("Groups and channels", onOpenEditor, Modifier.focusRequester(host.requester(EDITOR_KEY)))
         ActionRow("Delete playlist", { vm.requestDelete(id) }, Modifier.focusRequester(host.requester(DELETE_KEY)))

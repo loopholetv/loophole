@@ -459,6 +459,38 @@ class MigrationTest {
         }
     }
 
+    @Test fun migrate9To10AddsPlaylistColumns() = runTest {
+        helper.createDatabase(DB, 9).use { v9 ->
+            v9.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
+        }
+
+        // Validates the migrated schema against the exported schema 10.json.
+        helper.runMigrationsAndValidate(DB, 10, true, MIGRATION_9_10).close()
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            val dao = db.playlistDao()
+            val old = dao.byId(7)!!
+            assertNull(old.xtreamFormat)
+            assertNull(old.accountStatus)
+            assertNull(old.accountExpiresAt)
+            dao.setXtreamFormat(7, "hls")
+            dao.setAccountInfo(7, "Active", Instant.ofEpochSecond(1_900_000_000))
+            val set = dao.byId(7)!!
+            assertEquals("hls", set.xtreamFormat)
+            assertEquals("Active", set.accountStatus)
+            assertEquals(Instant.ofEpochSecond(1_900_000_000), set.accountExpiresAt)
+            dao.setXtreamFormat(7, null)
+            dao.setAccountInfo(7, null, null)
+            assertNull(dao.byId(7)!!.xtreamFormat)
+            assertNull(dao.byId(7)!!.accountExpiresAt)
+        } finally {
+            db.close()
+        }
+    }
+
     @Test fun migrate1To7ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 1).use { v1 ->
             v1.execSQL(

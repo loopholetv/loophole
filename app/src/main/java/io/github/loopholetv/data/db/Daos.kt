@@ -31,6 +31,12 @@ interface PlaylistDao {
     @Query("UPDATE playlists SET accountMaxConnections = :max WHERE id = :id")
     suspend fun setAccountMaxConnections(id: Long, max: Int?)
 
+    @Query("UPDATE playlists SET xtreamFormat = :f WHERE id = :id")
+    suspend fun setXtreamFormat(id: Long, f: String?)
+
+    @Query("UPDATE playlists SET accountStatus = :status, accountExpiresAt = :expiresAt WHERE id = :id")
+    suspend fun setAccountInfo(id: Long, status: String?, expiresAt: Instant?)
+
     @Query("UPDATE playlists SET connectionsAllowed = :n WHERE id = :id")
     suspend fun setConnectionsAllowed(id: Long, n: Int?)
 

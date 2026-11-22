@@ -302,6 +302,17 @@ class AddPlaylistViewModelTest {
         assertEquals(1, f.epgCalls)
     }
 
+    @Test fun editingNeverDerivesIdentity() = runTest {
+        val f = Fakes(stored = entity(8, PlaylistType.STALKER).copy(url = "http://portal.example.test", mac = "00:1A:79:00:00:01"))
+        val vm = f.vm(editId = 8)
+        vm.submit()
+        val edit = f.updateCalls.single().second as SourceEdit.Portal
+        assertNull(edit.cfg.serial)
+        assertNull(edit.cfg.deviceId)
+        assertNull(edit.cfg.deviceId2)
+        assertNull(edit.cfg.signature)
+    }
+
     @Test fun invalidMacBlocksSubmit() = runTest {
         val f = Fakes()
         val vm = f.vm()

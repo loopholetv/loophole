@@ -86,6 +86,13 @@ class StalkerClientTest {
         try { client.discover("$base/c/", mac); fail() } catch (_: StalkerProtocolException) {}
     }
 
+    @Test fun profileEndDateParsed() = runTest {
+        val s = client.authenticate(endpoint, cfg(), savedToken = null)
+        val expected = java.time.LocalDateTime.of(2030, 1, 1, 0, 0).atZone(java.time.ZoneId.systemDefault()).toInstant()
+        assertEquals(expected, s.accountExpiresAt)
+        assertNull(s.accountStatus)
+    }
+
     @Test fun handshakeReusesSavedTokenAndSendsMacCookie() = runTest {
         val s = client.authenticate(endpoint, cfg(), savedToken = "TOKEN-PLACEHOLDER-1")
         assertEquals("TOKEN-PLACEHOLDER-1", s.token)
@@ -184,6 +191,91 @@ class StalkerClientTest {
         try { client.createLink(s, cfg(), "ffmpeg http://localhost/ch/101_"); fail() } catch (_: StalkerAuthException) {}
         assertEquals(2, portal.count("create_link"))
         assertEquals(2, portal.count("handshake"))
+    }
+
+    @Test fun http401RehandshakesOnce() = runTest {
+        val s = session()
+        portal.http401Once += "get_genres"
+        portal.requests.clear()
+        client.channels(s, cfg()) { }
+        assertEquals(2, portal.count("get_genres"))
+        assertEquals(1, portal.count("handshake"))
+    }
+
+    @Test fun http401TwiceSurfaces() = runTest {
+        val s = session()
+        portal.http401Always += "get_genres"
+        portal.requests.clear()
+        try { client.channels(s, cfg()) { }; fail() } catch (e: StalkerAuthException) {
+            assertTrue(e.retryable)
+        }
+        assertEquals(2, portal.count("get_genres"))
+        assertEquals(1, portal.count("handshake"))
+    }
+
+    @Test fun http403TwiceSurfaces() = runTest {
+        val s = session()
+        portal.http403Always += "get_genres"
+        portal.requests.clear()
+        try { client.channels(s, cfg()) { }; fail() } catch (e: StalkerAuthException) {
+            assertTrue(e.retryable)
+        }
+        assertEquals(2, portal.count("get_genres"))
+        assertEquals(1, portal.count("handshake"))
+    }
+
+    @Test fun http403OnCreateLinkIsAChannelRefusalWithoutHandshake() = runTest {
+        val s = session()
+        portal.http403Always += "create_link"
+        portal.requests.clear()
+        try { client.createLink(s, cfg(), "ffmpeg http://localhost/ch/101_"); fail() } catch (e: StalkerLinkException) {
+            assertEquals("link_fault", e.code)
+        }
+        assertEquals(1, portal.count("create_link"))
+        assertEquals(0, portal.count("handshake"))
+    }
+
+    @Test fun http401OnCreateLinkIsAChannelRefusalWithoutHandshake() = runTest {
+        val s = session()
+        portal.http401Always += "create_link"
+        portal.requests.clear()
+        try { client.createLink(s, cfg(), "ffmpeg http://localhost/ch/101_"); fail() } catch (e: StalkerLinkException) {
+            assertEquals("link_fault", e.code)
+        }
+        assertEquals(1, portal.count("create_link"))
+        assertEquals(0, portal.count("handshake"))
+    }
+
+    @Test fun http401OnChannelListRehandshakesOnce() = runTest {
+        val s = session()
+        portal.http401Once += "get_all_channels"
+        portal.requests.clear()
+        client.channels(s, cfg()) { }
+        assertEquals(2, portal.count("get_all_channels"))
+        assertEquals(1, portal.count("handshake"))
+    }
+
+    @Test fun http401OnHandshakeDoesNotLoop() = runTest {
+        val s = session()
+        portal.expireToken()
+        portal.http401Always += "handshake"
+        portal.requests.clear()
+        try { client.createLink(s, cfg(), "ffmpeg http://localhost/ch/101_"); fail() } catch (_: StalkerProtocolException) {}
+        assertEquals(1, portal.count("handshake"))
+        assertEquals(1, portal.count("create_link"))
+    }
+
+    @Test fun existingPlaylistSendsNoDerivedFields() = runTest {
+        // A stored portal with blank identity columns refreshes exactly as before: no sn or device ids.
+        val stored = io.github.loopholetv.data.db.PlaylistEntity(
+            id = 1, name = "P", type = io.github.loopholetv.data.db.PlaylistType.STALKER, url = "$base/stalker_portal/c/",
+            xtreamServer = null, xtreamUser = null, xtreamPass = null, epgUrlsFromSource = "", manualEpgUrl = null,
+            lastRefreshedAt = null, lastError = null, mac = mac, portalSerial = "", portalDeviceId = null,
+        )
+        client.authenticate(endpoint, stored.portalConfig(), null)
+        val p = portal.ofAction("get_profile").single().requestUrl!!
+        for (k in listOf("device_id", "device_id2", "sn", "signature")) assertNull(k, p.queryParameter(k))
+        for (r in portal.requests) assertFalse(r.getHeader("Cookie")!!.contains("sn="))
     }
 
     @Test fun allChannelsParsedWithBooleansAndRelativeLogo() = runTest {

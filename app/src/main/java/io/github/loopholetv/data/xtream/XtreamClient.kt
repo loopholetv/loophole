@@ -178,6 +178,13 @@ class XtreamClient(private val http: OkHttpClient) {
         return InfoObject(fields, formats)
     }
 
+    /** Epoch seconds; absent, empty or 0 while the login reports a status is an unlimited account. */
+    private fun expiry(f: Map<String, String>): Instant? {
+        val raw = f["exp_date"]?.trim().orEmpty()
+        if (raw.isEmpty() || raw == "0") return if (f["status"] != null) NEVER_EXPIRES else null
+        return raw.toLongOrNull()?.let { Instant.ofEpochSecond(it) }
+    }
+
     private fun toAccount(user: InfoObject, server: InfoObject?): XtreamAccount {
         val f = user.fields
         if (f["auth"].toIntLenient() == 0) throw XtreamAuthException("Server rejected the credentials")
@@ -186,7 +193,7 @@ class XtreamClient(private val http: OkHttpClient) {
         return XtreamAccount(
             status = f["status"] ?: "",
             maxConnections = f["max_connections"].toIntLenient(),
-            expiresAt = f["exp_date"]?.toLongOrNull()?.let { Instant.ofEpochSecond(it) },
+            expiresAt = expiry(f),
             serverTimeZone = xtreamZone(s["timezone"], s["time_now"], s["timestamp_now"]?.toLongOrNull()),
             archiveExt = archiveExt(formats),
         )

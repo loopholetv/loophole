@@ -1,10 +1,12 @@
 package io.github.loopholetv.data.stalker
 
 import io.github.loopholetv.data.db.PlaylistEntity
+import java.time.Instant
 
 /**
  * One MAC portal account. The identity fields ([serial], [deviceId], [deviceId2], [signature]) are
- * sent only when the user typed them; they are never generated. Every value
+ * sent only when stored; they are derived from the MAC only when a new portal is added with them
+ * blank (see [withDerivedIdentity]), never for an existing one. Every value
  * except [portalUrl]'s path is a secret for `redact()`.
  */
 data class PortalConfig(
@@ -54,6 +56,10 @@ class StalkerSession(
     token: String,
     random: String?,
     watchdogSeconds: Int,
+    /** The portal's account text, when it sends one. */
+    val accountStatus: String? = null,
+    /** From the profile's `end_date`; null when the portal sends none or a zero date. */
+    val accountExpiresAt: Instant? = null,
 ) {
     @Volatile var token: String = token
         internal set

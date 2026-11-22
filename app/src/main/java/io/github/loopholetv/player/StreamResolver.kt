@@ -15,7 +15,9 @@ import io.github.loopholetv.data.stalker.playableUrl
 import io.github.loopholetv.data.stalker.portalRoot
 import io.github.loopholetv.data.catchup.CatchupMode
 import io.github.loopholetv.data.catchup.CatchupSpec
+import io.github.loopholetv.data.xtream.XTREAM_FORMAT_HLS
 import io.github.loopholetv.data.xtream.XtreamClient
+import io.github.loopholetv.data.xtream.applyXtreamFormat
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.data.catchup.CatchupUrls
 import io.github.loopholetv.data.catchup.XtreamArchive
@@ -93,6 +95,7 @@ class PlaylistStreamResolver(
     private val xtream: XtreamClient? = null,
     /** Stores the learned (zone, archive extension) for a playlist id. */
     private val storeArchiveInfo: suspend (Long, String?, String?) -> Unit = { _, _, _ -> },
+    private val storeAccountInfo: suspend (Long, String?, Instant?) -> Unit = { _, _, _ -> },
     private val storeMaxConnections: suspend (Long, Int?) -> Unit = { _, _ -> },
 ) : StreamResolver {
 
@@ -108,7 +111,11 @@ class PlaylistStreamResolver(
     override suspend fun resolve(channel: ChannelEntity): ResolvedStream {
         val p = playlist(channel.playlistId)
         lastLookup = channel.playlistId to p?.type
-        val url = if (p?.type == PlaylistType.STALKER) portalUrl(p, channel) else channel.streamUrl
+        val url = when (p?.type) {
+            PlaylistType.STALKER -> portalUrl(p, channel)
+            PlaylistType.XTREAM -> applyXtreamFormat(channel.streamUrl, p.xtreamFormat)
+            else -> channel.streamUrl
+        }
         // Read after the debounce/mint so a settings change made meanwhile applies.
         val s = settings()
         return ResolvedStream(
@@ -144,7 +151,7 @@ class PlaylistStreamResolver(
             if (server.isNullOrBlank() || user == null || pass == null) return null
             val known = if (p.xtreamTimeZone == null) learnArchiveInfo(p, server, user, pass) else null
             val zoneId = p.xtreamTimeZone ?: known?.first
-            val ext = p.xtreamArchiveExt ?: known?.second ?: "ts"
+            val ext = if (p.xtreamFormat == XTREAM_FORMAT_HLS) "m3u8" else p.xtreamArchiveExt ?: known?.second ?: "ts"
             val serverZone = zoneId?.let(::zoneOf) ?: zone()
             val archive = XtreamArchive(server, user, pass, channel.key, serverZone, ext)
             CatchupUrls.xtream(archive, request.from, request.until, maxOf(now, request.until))
@@ -192,6 +199,7 @@ class PlaylistStreamResolver(
             val account = api.authenticate(XtreamCredentials(server, user, pass), ua)
             storeArchiveInfo(p.id, account.serverTimeZone, account.archiveExt)
             storeMaxConnections(p.id, account.maxConnections)
+            storeAccountInfo(p.id, account.status.takeIf { it.isNotBlank() }, account.expiresAt)
             account.serverTimeZone to account.archiveExt
         } catch (e: CancellationException) {
             zoneAsked.remove(p.id)

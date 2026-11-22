@@ -14,6 +14,7 @@ import io.github.loopholetv.data.settings.KeyBindings
 import io.github.loopholetv.data.settings.PlayerAction
 import android.view.KeyEvent
 import io.github.loopholetv.data.settings.PlaybackSettings
+import io.github.loopholetv.data.xtream.NEVER_EXPIRES
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.record.storage.RecordingStorage
 import io.github.loopholetv.record.storage.NFS_REFUSED_MESSAGE
@@ -117,6 +118,7 @@ class SettingsViewModelTest {
         var storage: RecordingStorage? = null
         var internalFree: Long? = null
         val connectionsSet = mutableListOf<Pair<Long, Int?>>()
+        val formatSet = mutableListOf<Pair<Long, String?>>()
 
         fun vm(pipSupported: Boolean = false, permissions: () -> PermissionStates = { PermissionStates() }) = SettingsViewModel(
             playlists = playlists,
@@ -163,6 +165,7 @@ class SettingsViewModelTest {
             storageFor = { storage },
             internalFreeBytes = { internalFree },
             setConnectionsAllowed = { id, n -> connectionsSet += id to n },
+            setXtreamFormat = { id, f -> formatSet += id to f },
         )
     }
 
@@ -325,6 +328,24 @@ class SettingsViewModelTest {
         vm.setConnectionsAllowed(1, 2)
         vm.setConnectionsAllowed(1, null)
         assertEquals(listOf<Pair<Long, Int?>>(1L to 2, 1L to null), f.connectionsSet)
+    }
+
+    @Test fun streamFormatRowOnlyForXtream() = runTest {
+        val creds = XtreamCredentials("http://example.test:8080", "u", "p")
+        val f = Fakes(listOf(playlist(1), playlist(2, type = PlaylistType.XTREAM, url = null, xtream = creds)))
+        f.playlists.update { l -> l.map { if (it.id == 2L) it.copy(xtreamFormat = "hls") else it } }
+        val vm = f.vm()
+        val rows = vm.state.value.playlists.associateBy { it.id }
+        assertEquals(false, rows.getValue(1).isXtream)
+        assertEquals(true, rows.getValue(2).isXtream)
+        assertEquals("HLS", streamFormatText(rows.getValue(2).xtreamFormat))
+        assertEquals("MPEG-TS", streamFormatText(null))
+        assertEquals(listOf<String?>(null, "hls"), RC_STREAM_FORMAT_CHOICES)
+
+        vm.setXtreamFormat(2, "hls")
+        vm.setXtreamFormat(2, null)
+        vm.setXtreamFormat(2, "bogus")
+        assertEquals(listOf<Pair<Long, String?>>(2L to "hls", 2L to null), f.formatSet)
     }
 
     @Test fun permissionStatesAreReadAgainOnDemand() = runTest {
@@ -568,6 +589,32 @@ class SettingsViewModelTest {
         gate.complete(done)
         assertFalse(vm.state.value.epg.single().updating)
         assertEquals("EPG is successfully updated for 7 channels on 2/1/26 3:04 AM", vm.state.value.epg.single().statusText)
+    }
+
+    @Test fun accountRowsShowWhatIsKnown() = runTest {
+        val f = Fakes(listOf(playlist(1, type = PlaylistType.XTREAM), playlist(2, type = PlaylistType.XTREAM)))
+        f.playlists.update { l ->
+            l.map {
+                if (it.id == 1L) {
+                    it.copy(accountStatus = "Active", accountExpiresAt = Instant.parse("2030-03-04T10:00:00Z"), accountMaxConnections = 2)
+                } else it
+            }
+        }
+        val rows = f.vm().state.value.playlists.associateBy { it.id }
+        assertEquals(listOf("Account" to "Active", "Expires" to "4 Mar 2030", "Connections" to "2"), rows.getValue(1).accountRows)
+        assertEquals(emptyList<Pair<String, String>>(), rows.getValue(2).accountRows)
+    }
+
+    @Test fun unlimitedShowsNever() = runTest {
+        val f = Fakes(listOf(playlist(1, type = PlaylistType.STALKER)))
+        f.playlists.update { l -> l.map { it.copy(accountStatus = "Active", accountExpiresAt = NEVER_EXPIRES) } }
+        assertEquals(listOf("Account" to "Active", "Expires" to "Never"), f.vm().state.value.playlists.single().accountRows)
+    }
+
+    @Test fun m3uPlaylistShowsNoAccountRows() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.playlists.update { l -> l.map { it.copy(accountStatus = "Active", accountMaxConnections = 2) } }
+        assertEquals(emptyList<Pair<String, String>>(), f.vm().state.value.playlists.single().accountRows)
     }
 
     @Test fun channelCountShown() = runTest {

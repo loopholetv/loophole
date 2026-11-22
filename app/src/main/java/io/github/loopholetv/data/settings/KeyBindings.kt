@@ -8,6 +8,7 @@ enum class PlayerAction(val label: String) {
     CHANNEL_UP("Channel up"),
     CHANNEL_DOWN("Channel down"),
     CHANNEL_LIST("Channel list"),
+    PREVIOUS_CHANNEL("Previous channel"),
     GUIDE("TV guide"),
     QUICK_MENU("Quick menu"),
     FAVOURITE("Add/remove favourite"),
@@ -63,6 +64,7 @@ data class KeyBindings(
                 KeyEvent.KEYCODE_GUIDE to PlayerAction.GUIDE,
                 KeyEvent.KEYCODE_INFO to PlayerAction.CHANNEL_LIST,
                 KeyEvent.KEYCODE_CAPTIONS to PlayerAction.SUBTITLES,
+                KeyEvent.KEYCODE_LAST_CHANNEL to PlayerAction.PREVIOUS_CHANNEL,
             ),
             guide = mapOf(
                 KeyEvent.KEYCODE_CHANNEL_UP to GuideAction.PAGE_UP,
@@ -131,6 +133,7 @@ fun keyName(keyCode: Int): String = when (keyCode) {
     KeyEvent.KEYCODE_INFO -> "Info"
     KeyEvent.KEYCODE_GUIDE -> "Guide"
     KeyEvent.KEYCODE_CAPTIONS -> "Subtitles"
+    KeyEvent.KEYCODE_LAST_CHANNEL -> "Last channel"
     KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD -> "Skip back"
     KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD -> "Skip forward"
     KeyEvent.KEYCODE_MEDIA_STOP -> "Stop"

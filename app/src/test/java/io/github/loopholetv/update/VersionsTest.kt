@@ -43,6 +43,12 @@ class VersionsTest {
     }
 
     @Test
+    fun zeroTwelveIsNewerThanZeroEleven() {
+        assertTrue(isNewerVersion("v0.12.0", "0.11.0"))
+        assertFalse(isNewerVersion("v0.11.0", "0.12.0"))
+    }
+
+    @Test
     fun aPreReleaseIsOlderThanItsRelease() {
         assertTrue(SemVer(0, 4, 2) > SemVer(0, 4, 2, "test"))
         assertTrue(SemVer(0, 4, 2, "test") > SemVer(0, 4, 1))

@@ -26,6 +26,7 @@ import io.github.loopholetv.data.settings.defaultTvName
 import io.github.loopholetv.data.settings.effectivePastDays
 import io.github.loopholetv.data.settings.isRemappable
 import io.github.loopholetv.data.settings.PlaybackSettings
+import io.github.loopholetv.data.xtream.XTREAM_FORMAT_HLS
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.phone.PhoneJob
 import io.github.loopholetv.phone.PhoneJobPhase
@@ -89,6 +90,11 @@ data class PlaylistRowUi(
     val connectionsAllowed: Int? = null,
     /** What Auto means for this playlist: the account's limit, or one. */
     val autoConnections: Int = 1,
+    /** Xtream playlists only: how live streams are fetched; null = MPEG-TS, "hls". */
+    val xtreamFormat: String? = null,
+    val isXtream: Boolean = false,
+    /** Read-only "Account" / "Expires" / "Connections" label and value pairs, only for what the provider told us. */
+    val accountRows: List<Pair<String, String>> = emptyList(),
 ) {
     val busy: Boolean get() = op is PlaylistOp.Updating
 }
@@ -237,6 +243,7 @@ class SettingsViewModel(
     /** Reads the overlay and battery permissions now. */
     private val permissions: () -> PermissionStates = { PermissionStates() },
     private val setConnectionsAllowed: suspend (Long, Int?) -> Unit = { _, _ -> },
+    private val setXtreamFormat: suspend (Long, String?) -> Unit = { _, _ -> },
 ) : ViewModel() {
     private val settingsFlow = settings
     private val work: CoroutineScope get() = workScope ?: viewModelScope
@@ -431,6 +438,12 @@ class SettingsViewModel(
     fun setConnectionsAllowed(id: Long, n: Int?) {
         if (n != null && n !in 1..5) return
         work.launch { setConnectionsAllowed.invoke(id, n) }
+    }
+
+    /** `null` = MPEG-TS, "hls" otherwise; takes effect the next time a channel opens. */
+    fun setXtreamFormat(id: Long, format: String?) {
+        if (format != null && format != XTREAM_FORMAT_HLS) return
+        work.launch { setXtreamFormat.invoke(id, format) }
     }
 
     fun updatePlaylist(id: Long) {
@@ -766,6 +779,7 @@ class SettingsViewModel(
                     internalFreeBytes = { LocalDirStorage.internal(app)?.freeBytes() },
                     permissions = { PermissionStates(canDrawOverlays(app), ignoresBatteryOptimisations(app)) },
                     setConnectionsAllowed = { id, n -> c.db.playlistDao().setConnectionsAllowed(id, n) },
+                    setXtreamFormat = { id, f -> c.db.playlistDao().setXtreamFormat(id, f) },
                 ) as T
             }
         }

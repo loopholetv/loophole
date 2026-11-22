@@ -30,6 +30,10 @@ import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.UnknownHostException
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
@@ -178,7 +182,7 @@ class StalkerClient(
             2 -> throw StalkerAuthException("The portal rejected the login or password")
             else -> throw StalkerAuthException(refusal(profile.message, cfg, token))
         }
-        val session = StalkerSession(endpoint, token, random, profile.watchdog)
+        val session = StalkerSession(endpoint, token, random, profile.watchdog, profile.accountText, profile.endDate)
         // Some forks reject media until the watchdog has run once.
         try {
             events(session, cfg, init = true)
@@ -187,7 +191,7 @@ class StalkerClient(
         return session
     }
 
-    private class Profile(val status: Int, val watchdog: Int, val message: String?)
+    private class Profile(val status: Int, val watchdog: Int, val message: String?, val accountText: String?, val endDate: Instant?)
 
     private suspend fun getProfile(
         endpoint: String, cfg: PortalConfig, token: String, random: String?, notValid: String, secondStep: Boolean,
@@ -218,7 +222,19 @@ class StalkerClient(
         val watchdog = (map["watchdog_timeout"].str()?.toDoubleOrNull()?.toInt() ?: DEFAULT_WATCHDOG)
             .coerceIn(30, 3600)
         val message = (map["block_msg"].str() ?: map["msg"].str())?.takeIf { it.isNotBlank() }
-        return Profile(status, watchdog, message)
+        val accountText = map["account_status"].str()?.trim()?.takeIf { it.isNotEmpty() }
+        return Profile(status, watchdog, message, accountText, parseEndDate(map["end_date"].str()))
+    }
+
+    /** `yyyy-MM-dd HH:mm:ss` in the device zone (the portal sends no zone); empty or a zero date is unknown. */
+    private fun parseEndDate(text: String?): Instant? {
+        val t = text?.trim().orEmpty()
+        if (t.isEmpty() || t.startsWith("0000")) return null
+        return try {
+            LocalDateTime.parse(t, END_DATE_FORMAT).atZone(ZoneId.systemDefault()).toInstant()
+        } catch (_: DateTimeParseException) {
+            null
+        }
     }
 
     private fun refusal(portalText: String?, cfg: PortalConfig, token: String): String {
@@ -393,6 +409,7 @@ class StalkerClient(
             listOf("type" to "itv", "action" to "create_link"),
             encoded = listOf("cmd" to encodeCmd(cmd), "series" to "", "forced_storage" to "undefined",
                 "disable_ad" to "0", "download" to "0"),
+            refusalIsLinkFault = true,
         ) { jsTree(it) }
         val (linkCmd, error) = when (js) {
             is Map<*, *> -> js["cmd"].str().orEmpty() to js["error"].str().orEmpty()
@@ -500,24 +517,37 @@ class StalkerClient(
         override fun fillInStackTrace(): Throwable = this
     }
 
-    private class HttpStatusException(code: Int) : Exception("The portal answered HTTP $code")
+    private class HttpStatusException(val code: Int) : Exception("The portal answered HTTP $code")
 
-    /** An authorised call; on an auth-failure body: re-handshake [s] in place, retry once. */
+    /** Like [httpOk], but HTTP 401 and 403 count as a rejected session ([AuthFailure]). */
+    private inline fun <T> sessionCall(refusalIsLinkFault: Boolean = false, block: () -> T): T = try {
+        block()
+    } catch (e: HttpStatusException) {
+        if (e.code == 401 || e.code == 403) {
+            // A refused channel request is about the channel, not the session: no re-handshake.
+            if (refusalIsLinkFault) throw StalkerLinkException("link_fault")
+            throw AuthFailure()
+        }
+        throw StalkerProtocolException(e.message.orEmpty())
+    }
+
+    /** An authorised call; on an auth-failure body or HTTP 401/403: re-handshake [s] in place, retry once. */
     private suspend fun <T> authed(
         s: StalkerSession,
         cfg: PortalConfig,
         params: List<Pair<String, String>>,
         encoded: List<Pair<String, String>> = emptyList(),
+        refusalIsLinkFault: Boolean = false,
         parse: (Body) -> T,
     ): T {
         val generation = s.generation
         try {
-            return httpOk { exchange(s.endpoint, cfg, s.token, params, encoded, parse) }
+            return sessionCall(refusalIsLinkFault) { exchange(s.endpoint, cfg, s.token, params, encoded, parse) }
         } catch (_: AuthFailure) {
         }
         refresh(s, cfg, generation)
         return try {
-            httpOk { exchange(s.endpoint, cfg, s.token, params, encoded, parse) }
+            sessionCall(refusalIsLinkFault) { exchange(s.endpoint, cfg, s.token, params, encoded, parse) }
         } catch (_: AuthFailure) {
             throw StalkerAuthException("The portal rejected this device's session", retryable = true)
         }
@@ -727,6 +757,7 @@ class StalkerClient(
         const val VER = "ImageDescription: 0.2.18-r23-250; ImageDate: Fri Jan 15 15:20:44 EET 2016; " +
             "PORTAL version: 5.6.1; API Version: JS API version: 328; STB API version: 134; Player Engine version: 0x566"
         const val DEFAULT_WATCHDOG = 120
+        val END_DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
         const val MAX_PAGES = 1000
         const val MAX_TEXT = 2048L
         const val TIMEOUT = "The portal didn't answer in time"

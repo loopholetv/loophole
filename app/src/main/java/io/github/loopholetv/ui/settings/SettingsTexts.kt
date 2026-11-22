@@ -3,6 +3,7 @@ package io.github.loopholetv.ui.settings
 import io.github.loopholetv.data.net.UserAgents
 import io.github.loopholetv.data.repo.COPY_NOTICE_PREFIX
 import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
+import io.github.loopholetv.data.xtream.XTREAM_FORMAT_HLS
 import io.github.loopholetv.data.settings.AUDIO_DELAY_RANGE_MS
 import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
 import io.github.loopholetv.data.settings.AUDIO_DELAY_STEP_MS
@@ -215,6 +216,7 @@ internal const val RC_PAD_AFTER = "End late"
 internal const val RC_POPUPS = "Pop-ups over other apps"
 internal const val RC_STANDBY = "Keep recording in standby"
 internal const val RC_CONNECTIONS = "Connections allowed"
+internal const val RC_STREAM_FORMAT = "Stream format"
 
 internal const val RC_NOT_SET = "Not set"
 internal const val RC_NOT_SET_HINT = "Pick a network folder or a USB drive"
@@ -237,6 +239,11 @@ internal val RC_WHERE_CHOICES = listOf(StorageKind.SMB, StorageKind.NFS, Storage
 
 /** "Auto" first (null), then one to five streams. */
 internal val RC_CONNECTION_CHOICES: List<Int?> = listOf(null, 1, 2, 3, 4, 5)
+
+/** MPEG-TS (null) first, then HLS. */
+internal val RC_STREAM_FORMAT_CHOICES: List<String?> = listOf(null, XTREAM_FORMAT_HLS)
+
+internal fun streamFormatText(format: String?): String = if (format == XTREAM_FORMAT_HLS) "HLS" else "MPEG-TS"
 
 /** Row value of "Where to record"; internal storage adds its [internalFree] space when known. */
 internal fun storageKindText(kind: StorageKind, internalFree: Long?): String = when (kind) {

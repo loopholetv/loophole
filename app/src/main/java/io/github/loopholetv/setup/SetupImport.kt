@@ -283,6 +283,7 @@ internal class SetupImporter(
         portalDeviceId2 = portalDeviceId2,
         portalSignature = portalSignature,
         connectionsAllowed = connectionsAllowed,
+        xtreamFormat = xtreamFormat,
     )
 
     private fun SetupGroupEdit.toEntity(playlistId: Long) = GroupPrefsEntity(

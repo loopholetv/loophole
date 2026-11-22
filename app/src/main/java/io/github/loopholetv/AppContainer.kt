@@ -288,6 +288,7 @@ class AppContainer(context: Context) {
             xtream = xtream,
             storeArchiveInfo = db.playlistDao()::setArchiveInfo,
             storeMaxConnections = db.playlistDao()::setAccountMaxConnections,
+            storeAccountInfo = db.playlistDao()::setAccountInfo,
         )
     }
 

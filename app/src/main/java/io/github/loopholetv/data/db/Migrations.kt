@@ -195,8 +195,19 @@ val MIGRATION_8_9: Migration = SqlMigration(
     "ALTER TABLE `playlists` ADD COLUMN `accountMaxConnections` INTEGER",
 )
 
-val ALL_MIGRATIONS: Array<Migration> =
-    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+/** v9 → v10: the Xtream stream format and the account's status and expiry. SQL matches Room's schema 10 export. */
+val MIGRATION_9_10: Migration = SqlMigration(
+    9,
+    10,
+    "ALTER TABLE `playlists` ADD COLUMN `xtreamFormat` TEXT",
+    "ALTER TABLE `playlists` ADD COLUMN `accountStatus` TEXT",
+    "ALTER TABLE `playlists` ADD COLUMN `accountExpiresAt` INTEGER",
+)
+
+val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+    MIGRATION_8_9, MIGRATION_9_10,
+)
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */
 private class SqlMigration(from: Int, to: Int, private vararg val statements: String) : Migration(from, to) {

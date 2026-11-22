@@ -39,6 +39,13 @@ data class XtreamLiveStream(
 )
 
 /**
+ * Stored as an account's expiry when the provider reports none (no `exp_date`, or 0): the account
+ * never expires. A null expiry means the provider did not say. The settings page shows "Never".
+ */
+val NEVER_EXPIRES: Instant = Instant.EPOCH
+
+/**
+ * [expiresAt] is [NEVER_EXPIRES] for an unlimited account, null when the login has no status or date.
  * [serverTimeZone] is the zone of the provider's archive timestamps as resolved by [xtreamZone]
  * (an IANA id or a `+HH:MM` offset), null when the login doesn't say. [archiveExt] is `ts` or `m3u8`.
  */

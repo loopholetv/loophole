@@ -11,6 +11,7 @@ import io.github.loopholetv.data.db.addPlaylist
 import io.github.loopholetv.data.db.channel
 import io.github.loopholetv.data.db.insertChannels
 import io.github.loopholetv.data.db.loadAll
+import io.github.loopholetv.data.xtream.NEVER_EXPIRES
 import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.record.effectiveConnections
@@ -276,6 +277,35 @@ class PlaylistRepositoryTest {
         val p = db.playlistDao().byId(id)!!
         assertEquals("Europe/Berlin", p.xtreamTimeZone)
         assertEquals("ts", p.xtreamArchiveExt)
+    }
+
+    private fun serveLogin(userInfo: String) {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = when (request.requestUrl?.queryParameter("action")) {
+                    null -> """{"server_info":{"timezone":"Europe/Berlin"},"user_info":$userInfo}"""
+                    "get_live_categories" -> res("xtream/categories.json")
+                    "get_live_streams" -> res("xtream/live_streams.json")
+                    else -> return MockResponse().setResponseCode(404)
+                }
+                return MockResponse().setBody(body)
+            }
+        }
+    }
+
+    @Test fun xtreamAddStoresAccountInfo() = runTest {
+        serveLogin("""{"auth":1,"status":"Active","exp_date":"1893456000","max_connections":"2"}""")
+        val id = successOf(repo.addXtream("Xt", creds()) {}).playlistId
+        val p = db.playlistDao().byId(id)!!
+        assertEquals("Active", p.accountStatus)
+        assertEquals(Instant.ofEpochSecond(1893456000), p.accountExpiresAt)
+        assertEquals(2, p.accountMaxConnections)
+    }
+
+    @Test fun xtreamUnlimitedExpiryIsStoredAsNeverExpires() = runTest {
+        serveLogin("""{"auth":1,"status":"Active","exp_date":null}""")
+        val id = successOf(repo.addXtream("Xt", creds()) {}).playlistId
+        assertEquals(NEVER_EXPIRES, db.playlistDao().byId(id)!!.accountExpiresAt)
     }
 
     @Test fun xtreamAddStoresMaxConnections() = runTest {

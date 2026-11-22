@@ -115,6 +115,15 @@ class QuickMenuModelsTest {
         QuickItem.entries.forEach { assertEquals(it.label, quickIcon(it).name) }
     }
 
+    @Test fun previousShownOnlyWhenKnown() {
+        val without = quickItems(pipSupported = false)
+        assertFalse(QuickItem.PREVIOUS in without)
+        val with = quickItems(pipSupported = false, previous = true)
+        assertEquals(QuickItem.PREVIOUS, with[with.indexOf(QuickItem.CHANNELS) + 1])
+        assertEquals(without, with - QuickItem.PREVIOUS)
+        assertEquals("Previous channel", QuickItem.PREVIOUS.label)
+    }
+
     @Test fun startOverPlacedAfterChannels() {
         val items = quickItems(pipSupported = false, startOver = true)
         assertEquals(QuickItem.START_OVER, items[items.indexOf(QuickItem.CHANNELS) + 1])

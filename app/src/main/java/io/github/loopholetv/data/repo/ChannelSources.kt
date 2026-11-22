@@ -19,6 +19,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okio.BufferedSource
 import java.io.Closeable
+import java.time.Instant
 
 /** An opened source (HTTP status / login already checked) whose channels can be streamed once. */
 internal interface ChannelSource : Closeable {
@@ -31,8 +32,14 @@ internal interface ChannelSource : Closeable {
     /** Provider time zone and archive format learned while opening the source; null when it has none. */
     fun archiveInfo(): ArchiveInfo? = null
 
+    /** Account status and expiry learned while opening the source; null when it has none. */
+    fun accountInfo(): AccountInfo? = null
+
     override fun close() {}
 }
+
+/** [status] is the provider's text ("Active"); [expiresAt] is null when unknown, [NEVER_EXPIRES] when unlimited. */
+internal data class AccountInfo(val status: String?, val expiresAt: Instant?)
 
 /** [zone] is an IANA id or a `+HH:MM` offset; [ext] is the archive stream extension. */
 internal data class ArchiveInfo(val zone: String?, val ext: String, val maxConnections: Int? = null)
@@ -164,6 +171,8 @@ internal class XtreamSourceOpener(private val client: XtreamClient) {
             override fun noChannelsError(): ImportError = ImportError.EmptyPlaylist
 
             override fun archiveInfo() = ArchiveInfo(account.serverTimeZone, account.archiveExt, account.maxConnections)
+
+            override fun accountInfo() = AccountInfo(account.status.takeIf { it.isNotBlank() }, account.expiresAt)
         }
     }
 

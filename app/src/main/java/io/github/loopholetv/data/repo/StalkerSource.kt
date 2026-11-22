@@ -49,6 +49,8 @@ internal class StalkerSource(
     }
 
     override fun noChannelsError(): ImportError = ImportError.EmptyPlaylist
+
+    override fun accountInfo() = AccountInfo(session.accountStatus, session.accountExpiresAt)
 }
 
 /**

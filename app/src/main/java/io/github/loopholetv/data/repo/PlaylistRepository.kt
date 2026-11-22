@@ -12,9 +12,11 @@ import io.github.loopholetv.data.stalker.StalkerLinkException
 import io.github.loopholetv.data.stalker.StalkerProtocolException
 import io.github.loopholetv.data.stalker.StalkerSessions
 import io.github.loopholetv.data.stalker.StalkerUnreachableException
+import io.github.loopholetv.data.stalker.deriveIdentity
 import io.github.loopholetv.data.stalker.normaliseMac
 import io.github.loopholetv.data.stalker.portalConfig
 import io.github.loopholetv.data.stalker.stalkerSecrets
+import io.github.loopholetv.data.stalker.withDerivedIdentity
 import io.github.loopholetv.data.vod.ORPHAN_PROGRESS_DAYS
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.xtream.XtreamAuthException
@@ -149,7 +151,8 @@ class PlaylistRepository internal constructor(
      */
     suspend fun addStalker(name: String, cfg: PortalConfig, progress: (Int) -> Unit): ImportResult = mutex.withLock {
         val client = stalker ?: return@withLock unsupported()
-        val config = cfg.normalised()
+        // The one place a NEW portal is created: blank device details are derived here and saved.
+        val config = cfg.normalised().withDerivedIdentity()
         var token: String? = null
         runImport({ stalkerSecrets(config, token) }) {
             val endpoint = client.discover(config.portalUrl, config.mac)
@@ -193,7 +196,7 @@ class PlaylistRepository internal constructor(
      */
     suspend fun updateSource(playlistId: Long, edit: SourceEdit, progress: (Int) -> Unit): ImportResult = mutex.withLock {
         val old = requireNotNull(playlistDao.byId(playlistId)) { "Unknown playlist $playlistId" }
-        val next = edit.applyTo(newPlaylist(old.name, old.type))
+        val next = edit.applyTo(newPlaylist(old.name, old.type)).withFollowedIdentity(old)
         maintenance.setSource(
             id = playlistId, type = next.type, url = next.url,
             xtreamServer = next.xtreamServer, xtreamUser = next.xtreamUser, xtreamPass = next.xtreamPass,
@@ -377,6 +380,7 @@ class PlaylistRepository internal constructor(
             playlistDao.setArchiveInfo(id, it.zone, it.ext)
             playlistDao.setAccountMaxConnections(id, it.maxConnections)
         }
+        source.accountInfo()?.let { playlistDao.setAccountInfo(id, it.status, it.expiresAt) }
         if (rekey) playlistDao.setRekeyPending(id, false)
         ImportResult.Success(id, count)
     }
@@ -476,6 +480,27 @@ class PlaylistRepository internal constructor(
             xtreamPass = creds.password,
         )
         is SourceEdit.Portal -> blank.copy(type = PlaylistType.STALKER).withPortal(cfg.normalised())
+    }
+
+    /**
+     * A MAC change moves the device details that were derived from the old MAC to the new one.
+     * A detail that differs from what the old MAC derives (typed, or blank on an older portal) stays.
+     */
+    private fun PlaylistEntity.withFollowedIdentity(old: PlaylistEntity): PlaylistEntity {
+        if (type != PlaylistType.STALKER || old.type != PlaylistType.STALKER) return this
+        val oldMac = old.mac?.let { normaliseMac(it) } ?: return this
+        val newMac = mac?.let { normaliseMac(it) } ?: return this
+        if (newMac == oldMac) return this
+        val was = deriveIdentity(oldMac) ?: return this
+        val now = deriveIdentity(newMac) ?: return this
+        fun follow(stored: String?, next: String?, derivedOld: String, derivedNew: String) =
+            if (stored == derivedOld && (next.isNullOrBlank() || next == stored)) derivedNew else next
+        return copy(
+            portalSerial = follow(old.portalSerial, portalSerial, was.serial, now.serial),
+            portalDeviceId = follow(old.portalDeviceId, portalDeviceId, was.deviceId, now.deviceId),
+            portalDeviceId2 = follow(old.portalDeviceId2, portalDeviceId2, was.deviceId2, now.deviceId2),
+            portalSignature = follow(old.portalSignature, portalSignature, was.signature, now.signature),
+        )
     }
 
     private fun PlaylistEntity.withPortal(cfg: PortalConfig) = copy(

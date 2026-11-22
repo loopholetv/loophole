@@ -55,7 +55,8 @@ abstract class MaintenanceDao {
                xtreamServer = :xtreamServer, xtreamUser = :xtreamUser, xtreamPass = :xtreamPass,
                mac = :mac, portalLogin = :login, portalPassword = :password, portalSerial = :serial,
                portalDeviceId = :deviceId, portalDeviceId2 = :deviceId2, portalSignature = :signature,
-               portalEndpoint = NULL, portalToken = NULL, rekeyPending = 1
+               portalEndpoint = NULL, portalToken = NULL, rekeyPending = 1,
+               accountStatus = NULL, accountExpiresAt = NULL, accountMaxConnections = NULL
            WHERE id = :id""",
     )
     abstract suspend fun setSource(

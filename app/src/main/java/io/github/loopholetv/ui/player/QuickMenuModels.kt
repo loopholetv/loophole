@@ -42,6 +42,7 @@ enum class QuickItem(val label: String) {
     /** Labelled [CAST_STOP_LABEL] while this TV casts. */
     CAST("Cast to all TVs"),
     CHANNELS("Channels"),
+    PREVIOUS("Previous channel"),
     START_OVER("Watch from start"),
     VIDEO("Video"),
     AUDIO("Audio"),
@@ -78,13 +79,15 @@ fun castingLabel(followers: Int): String = when {
 
 /**
  * The tiles shown; picture-in-picture only where the device supports it, Watch from start only
- * while a channel with catch-up plays live ([startOver]).
+ * while a channel with catch-up plays live ([startOver]), Previous channel only once there is
+ * one to go back to ([previous]).
  */
-fun quickItems(pipSupported: Boolean, startOver: Boolean = false): List<QuickItem> =
+fun quickItems(pipSupported: Boolean, startOver: Boolean = false, previous: Boolean = false): List<QuickItem> =
     QuickItem.entries.filter {
         when (it) {
             QuickItem.PIP -> pipSupported
             QuickItem.START_OVER -> startOver
+            QuickItem.PREVIOUS -> previous
             else -> true
         }
     }
@@ -216,6 +219,9 @@ internal interface QuickMenuHost {
     /** Current values; the menu fills in the audio delay itself. */
     fun values(): QuickValues
     fun showChannels()
+
+    /** Goes back to the channel watched before this one. */
+    fun previousChannel()
     fun watchFromStart()
     fun toggleFavourite()
 
@@ -309,6 +315,7 @@ internal class QuickMenuController(
             QuickItem.SETTINGS -> close { host.send(PlayerEvent.OpenSettings) }
             QuickItem.PIP -> close { host.send(PlayerEvent.EnterPip) }
             QuickItem.CHANNELS -> close(host::showChannels)
+            QuickItem.PREVIOUS -> close(host::previousChannel)
             QuickItem.START_OVER -> close(host::watchFromStart)
             QuickItem.OPTIONS -> close(host::openOptions)
             QuickItem.STREAM_INFO -> close(host::showStreamInfo)

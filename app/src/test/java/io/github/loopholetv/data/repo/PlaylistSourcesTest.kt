@@ -233,6 +233,26 @@ class PlaylistSourcesTest {
         assertEquals("News 1", channels(id).single { it.key == "101" }.name)
     }
 
+    @Test fun addStalkerFillsBlankIdentity() = runTest {
+        val id = successOf(repo.addStalker("Portal", portalCfg.copy(mac = "00-1a-79-00-00-01")) {}).playlistId
+        val d = io.github.loopholetv.data.stalker.deriveIdentity("00:1A:79:00:00:01")!!
+        val row = playlist(id)
+        assertEquals(d.serial, row.portalSerial)
+        assertEquals(d.deviceId, row.portalDeviceId)
+        assertEquals(d.deviceId2, row.portalDeviceId2)
+        assertEquals(d.signature, row.portalSignature)
+    }
+
+    @Test fun addStalkerKeepsTypedIdentity() = runTest {
+        val d = io.github.loopholetv.data.stalker.deriveIdentity("00:1A:79:00:00:01")!!
+        val id = successOf(repo.addStalker("Portal", portalCfg.copy(serial = "MYSERIAL", deviceId = "MYDEVICE")) {}).playlistId
+        val row = playlist(id)
+        assertEquals("MYSERIAL", row.portalSerial)
+        assertEquals("MYDEVICE", row.portalDeviceId)
+        assertEquals(d.deviceId2, row.portalDeviceId2)
+        assertEquals(d.signature, row.portalSignature)
+    }
+
     @Test fun stalkerErrorsNeverContainSecrets() = runTest {
         val cfg = portalCfg.copy(login = "user1", password = "pass1", serial = "SER123456")
         val id = successOf(repo.addStalker("Portal", cfg) {}).playlistId
@@ -395,6 +415,92 @@ class PlaylistSourcesTest {
         assertTrue(portal.requests.any { it.requestUrl!!.encodedPath != portal.path })
         assertEquals("", portal.ofAction("handshake").first().requestUrl!!.queryParameter("token"))
         assertEquals("TOKEN-PLACEHOLDER-2", playlist(id).portalToken)
+    }
+
+    @Test fun editingTheMacMovesDerivedIdentityToTheNewMac() = runTest {
+        val id = successOf(repo.addStalker("Portal", portalCfg) {}).playlistId
+        val before = playlist(id)
+        val d = io.github.loopholetv.data.stalker.deriveIdentity("00:1A:79:00:00:02")!!
+        // The edit form hands back the stored details unchanged.
+        portal.expectedMac = "00:1A:79:00:00:02"
+        successOf(repo.updateSource(id, SourceEdit.Portal(portalCfg.copy(
+            mac = "00:1a:79:00:00:02", serial = before.portalSerial, deviceId = before.portalDeviceId,
+            deviceId2 = before.portalDeviceId2, signature = before.portalSignature,
+        ))) {})
+        val row = playlist(id)
+        assertEquals(d.serial, row.portalSerial)
+        assertEquals(d.deviceId, row.portalDeviceId)
+        assertEquals(d.deviceId2, row.portalDeviceId2)
+        assertEquals(d.signature, row.portalSignature)
+    }
+
+    @Test fun editingTheMacKeepsTypedIdentity() = runTest {
+        val id = successOf(repo.addStalker("Portal", portalCfg.copy(serial = "MYSERIAL")) {}).playlistId
+        val before = playlist(id)
+        val d = io.github.loopholetv.data.stalker.deriveIdentity("00:1A:79:00:00:02")!!
+        portal.expectedMac = "00:1A:79:00:00:02"
+        successOf(repo.updateSource(id, SourceEdit.Portal(portalCfg.copy(
+            mac = "00:1a:79:00:00:02", serial = "MYSERIAL", deviceId = before.portalDeviceId,
+            deviceId2 = before.portalDeviceId2, signature = before.portalSignature,
+        ))) {})
+        val row = playlist(id)
+        assertEquals("MYSERIAL", row.portalSerial)
+        assertEquals(d.deviceId, row.portalDeviceId)
+        assertEquals(d.signature, row.portalSignature)
+    }
+
+    @Test fun editingWithTheSameMacChangesNoIdentity() = runTest {
+        val id = successOf(repo.addStalker("Portal", portalCfg) {}).playlistId
+        val before = playlist(id)
+        successOf(repo.updateSource(id, SourceEdit.Portal(portalCfg.copy(
+            serial = before.portalSerial, deviceId = before.portalDeviceId,
+            deviceId2 = before.portalDeviceId2, signature = before.portalSignature,
+        ))) {})
+        val row = playlist(id)
+        assertEquals(before.portalSerial, row.portalSerial)
+        assertEquals(before.portalDeviceId, row.portalDeviceId)
+        assertEquals(before.portalSignature, row.portalSignature)
+    }
+
+    @Test fun editingTheMacOfAnOlderBlankPortalKeepsItBlank() = runTest {
+        val id = successOf(repo.addStalker("Portal", portalCfg) {}).playlistId
+        db.maintenanceDao().setSource(
+            id, io.github.loopholetv.data.db.PlaylistType.STALKER, portalCfg.portalUrl, null, null, null,
+            "00:1A:79:00:00:01", null, null, null, null, null, null,
+        )
+        portal.expectedMac = "00:1A:79:00:00:02"
+        successOf(repo.updateSource(id, SourceEdit.Portal(portalCfg.copy(mac = "00:1a:79:00:00:02"))) {})
+        val row = playlist(id)
+        assertNull(row.portalSerial)
+        assertNull(row.portalDeviceId)
+        assertNull(row.portalDeviceId2)
+        assertNull(row.portalSignature)
+    }
+
+    @Test fun refreshNeverDerivesIdentity() = runTest {
+        val id = successOf(repo.addStalker("Portal", portalCfg) {}).playlistId
+        db.maintenanceDao().setSource(
+            id, io.github.loopholetv.data.db.PlaylistType.STALKER, portalCfg.portalUrl, null, null, null,
+            "00:1A:79:00:00:01", null, null, null, null, null, null,
+        )
+        successOf(repo.refresh(id) {})
+        val row = playlist(id)
+        assertNull(row.portalSerial)
+        assertNull(row.portalDeviceId)
+    }
+
+    @Test fun editingASourceClearsTheStoredAccountDetails() = runTest {
+        val id = successOf(repo.addStalker("Portal", portalCfg) {}).playlistId
+        db.playlistDao().setAccountInfo(id, "Active", java.time.Instant.parse("2030-01-01T00:00:00Z"))
+        db.playlistDao().setAccountMaxConnections(id, 3)
+        db.maintenanceDao().setSource(
+            id, io.github.loopholetv.data.db.PlaylistType.STALKER, portalCfg.portalUrl, null, null, null,
+            "00:1A:79:00:00:01", null, null, null, null, null, null,
+        )
+        val row = playlist(id)
+        assertNull(row.accountStatus)
+        assertNull(row.accountExpiresAt)
+        assertNull(row.accountMaxConnections)
     }
 
     // --- user agents ---
