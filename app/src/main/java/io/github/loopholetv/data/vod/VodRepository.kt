@@ -67,6 +67,7 @@ class VodRepository(db: AppDatabase, private val clock: () -> Instant) {
         VodKind.EPISODE -> dao.episodeRow(ref.playlistId, ref.key)?.let {
             VodPlayable(ref, it.name, it.streamUrl, it.userAgent, it.referrer)
         }
+        VodKind.RECORDING -> null
     }
 
     /** [ref]'s episode row (its season, number and name), or null for a film or a missing episode. */

@@ -3,6 +3,11 @@ package io.github.loopholetv.data.settings
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import io.github.loopholetv.record.DEFAULT_PAD_AFTER_MIN
+import io.github.loopholetv.record.DEFAULT_PAD_BEFORE_MIN
+import io.github.loopholetv.record.DEFAULT_REMINDER_LEAD_MIN
+import io.github.loopholetv.record.REMINDER_LEAD_CHOICES
+import io.github.loopholetv.record.storage.StorageKind
 
 /** Longest TV name kept. */
 const val MAX_TV_NAME_LENGTH = 40
@@ -53,8 +58,42 @@ data class AppSettings(
     val onboardingSkipped: Boolean = false,
     val playback: PlaybackSettings = PlaybackSettings(),
     val remote: RemoteSettings = RemoteSettings(),
+    val recordStorage: StorageKind = StorageKind.NONE,
+    val smbHost: String = "",
+    val smbShare: String = "",
+    val smbFolder: String = "",
+    val smbUser: String = "",
+    val smbPassword: String = "",
+    val smbDomain: String = "",
+    val nfsHost: String = "",
+    val nfsExport: String = "",
+    val nfsFolder: String = "",
+    /** The chosen USB folder's tree address; empty when none. */
+    val usbTreeUri: String = "",
+    /** Minutes before a programme a reminder shows; one of [REMINDER_LEAD_CHOICES]. */
+    val reminderLeadMin: Int = DEFAULT_REMINDER_LEAD_MIN,
+    val reminderAutoSwitch: Boolean = false,
+    val padBeforeMin: Int = DEFAULT_PAD_BEFORE_MIN,
+    val padAfterMin: Int = DEFAULT_PAD_AFTER_MIN,
+    /** Whether this TV has already asked for the notification permission (it asks once). */
+    val askedNotifications: Boolean = false,
 ) {
+    /** Leaves out the SMB password. */
+    override fun toString(): String =
+        "AppSettings(playlistUpdateHours=$playlistUpdateHours, playlistUpdateOnStart=$playlistUpdateOnStart, " +
+            "epgUpdateHours=$epgUpdateHours, epgUpdateOnStart=$epgUpdateOnStart, " +
+            "epgUpdateOnPlaylistChange=$epgUpdateOnPlaylistChange, epgPastDays=$epgPastDays, " +
+            "epgStoreDescriptions=$epgStoreDescriptions, lastChannelOnStart=$lastChannelOnStart, " +
+            "confirmExit=$confirmExit, checkForUpdates=$checkForUpdates, lastGuideScope=$lastGuideScope, " +
+            "userAgent=$userAgent, udpProxy=$udpProxy, castAllowJoin=$castAllowJoin, castTvName=$castTvName, " +
+            "onboardingSkipped=$onboardingSkipped, playback=$playback, remote=$remote, " +
+            "recordStorage=$recordStorage, smbHost=$smbHost, smbShare=$smbShare, smbFolder=$smbFolder, " +
+            "smbUser=$smbUser, smbDomain=$smbDomain, nfsHost=$nfsHost, nfsExport=$nfsExport, nfsFolder=$nfsFolder, " +
+            "usbTreeUri=$usbTreeUri, reminderLeadMin=$reminderLeadMin, reminderAutoSwitch=$reminderAutoSwitch, " +
+            "padBeforeMin=$padBeforeMin, padAfterMin=$padAfterMin, askedNotifications=$askedNotifications)"
+
     companion object {
+        val PAD_CHOICES = listOf(0, 1, 2, 5, 10, 15, 30)
         val INTERVAL_HOURS = listOf(0, 3, 6, 12, 24, 48)
         val PAST_DAYS = listOf(AUTO_PAST_DAYS, 0, 1, 2, 3, 7)
     }

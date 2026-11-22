@@ -56,8 +56,9 @@ internal class PlayerCatchup(
     private val format: GuideFormat,
     private val scope: CoroutineScope,
     private val host: CatchupHost,
+    beforeOpen: suspend (ChannelEntity) -> Boolean = { true },
 ) {
-    val controller = CatchupController(playback, programmes, clock, elapsedMs, format.zone, scope, host::openLive)
+    val controller = CatchupController(playback, programmes, clock, elapsedMs, format.zone, scope, host::openLive, beforeOpen)
 
     val bar: StateFlow<CatchupBarUi?> =
         controller.ui.map { c -> c?.let { catchupBarUi(it, format) } }.stateIn(scope, SharingStarted.Eagerly, null)

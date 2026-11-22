@@ -16,6 +16,11 @@ import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.HistoryEntity
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.data.db.RecordingEntity
+import io.github.loopholetv.data.db.RecordingState
+import io.github.loopholetv.data.db.ReminderEntity
+import io.github.loopholetv.data.db.SeriesKind
+import io.github.loopholetv.data.db.SeriesRuleEntity
 import io.github.loopholetv.data.db.inMemoryDb
 import io.github.loopholetv.data.db.loadAll
 import io.github.loopholetv.data.repo.ImportResult
@@ -180,6 +185,67 @@ class SetupImportTest {
             .map { it.copy(videoDecoder = null, audioDecoder = null, externalPlayer = null) }
             .filterNot { it.isDefault() },
     )
+
+    @Test
+    fun importClearsPendingBookingsOfReplacedPlaylists() = runTest {
+        fillSource()
+        val sourceSettings = SettingsStore(dataStore(backgroundScope, "source"))
+        val targetSettings = SettingsStore(dataStore(backgroundScope, "target"))
+        val old = target.playlistDao().insert(playlist("Old", PlaylistType.M3U, "http://old.example.test/a.m3u"))
+        val other = target.playlistDao().insert(playlist("Other", PlaylistType.M3U, "http://other.example.test/a.m3u"))
+        val at = Instant.ofEpochSecond(1_800_000_000)
+        fun rec(playlist: Long, key: String, state: RecordingState, source: Long? = null) = RecordingEntity(
+            playlistId = playlist, channelKey = key, channelName = "Channel", epgChannelId = null, title = "Show $key",
+            subTitle = null, episodeKey = null, description = null, start = at, stop = at.plusSeconds(1800),
+            padBeforeMin = 1, padAfterMin = 5, state = state, sourcePlaylistId = source, sourceChannelKey = source?.let { "x" },
+            fileName = if (state == RecordingState.DONE) "$key.ts" else null, bytes = if (state == RecordingState.DONE) 100 else 0,
+            createdAt = at,
+        )
+        val dao = target.recordDao()
+        dao.upsertReminder(
+            ReminderEntity(
+                playlistId = old, channelKey = "a", channelName = "Channel", epgChannelId = null, title = "Film",
+                subTitle = null, episodeKey = null, start = at, stop = at.plusSeconds(3600),
+            ),
+        )
+        dao.upsertSeries(
+            SeriesRuleEntity(
+                kind = SeriesKind.RECORD, playlistId = old, channelKey = "a", channelName = "Channel", epgChannelId = null,
+                title = "Series", padBeforeMin = 1, padAfterMin = 5, createdAt = at,
+            ),
+        )
+        dao.insertRecording(rec(old, "scheduled", RecordingState.SCHEDULED))
+        dao.insertRecording(rec(old, "skipped", RecordingState.SKIPPED))
+        val done = dao.insertRecording(rec(old, "done", RecordingState.DONE))
+        // Booked on another playlist, to be recorded from the replaced one.
+        val viaOld = dao.insertRecording(rec(other, "via", RecordingState.DONE, source = old))
+        val bundle = SetupExporter(source, sourceSettings, files("source")).export("Living room").bundle
+
+        ok(SetupImporter(target, targetSettings, files("target")).import(bundle))
+
+        val live = target.setupDao().playlists().map { it.id }.toSet()
+        assertTrue(old !in live)
+        assertTrue(dao.observeReminders(Instant.EPOCH).first().isEmpty())
+        assertTrue(dao.allSeries().isEmpty())
+        assertTrue(dao.inState(RecordingState.SCHEDULED, RecordingState.SKIPPED).isEmpty())
+        // Finished recordings keep their rows and files; none is still sourced from a gone playlist.
+        assertEquals("done.ts", dao.recording(done)!!.fileName)
+        assertNull(dao.recording(viaOld)!!.sourcePlaylistId)
+        assertNull(dao.recording(viaOld)!!.sourceChannelKey)
+    }
+
+    @Test
+    fun importRearmsTheAlarmsOnce() = runTest {
+        fillSource()
+        val sourceSettings = SettingsStore(dataStore(backgroundScope, "source"))
+        val targetSettings = SettingsStore(dataStore(backgroundScope, "target"))
+        var rearmed = 0
+        val bundle = SetupExporter(source, sourceSettings, files("source")).export("Living room").bundle
+
+        ok(SetupImporter(target, targetSettings, files("target"), onReplaced = { rearmed++ }).import(bundle))
+
+        assertEquals(1, rearmed)
+    }
 
     @Test
     fun hasPlaylistsSaysWhetherAnyPlaylistExists() = runTest {

@@ -21,6 +21,7 @@ internal fun vodPlayerViewModelFactory(ref: VodRef, startMs: Long): ViewModelPro
             label = { next -> c.vod.episodeInfo(next)?.let { countdownLabel(it.season, it.episode, it.name) } },
             autoPlay = { c.settingsSnapshot.current.playback.autoPlayNext },
             nowMs = SystemClock::elapsedRealtime,
+            beforePlay = c.recordingCoordinator::beforeUserPlayVod,
         )
     }
 }

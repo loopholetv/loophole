@@ -21,7 +21,12 @@ import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodLibraryRepository
 import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.data.vod.VodRepository
+import io.github.loopholetv.data.db.ReminderEntity
+import io.github.loopholetv.ui.recordings.whenText
+import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -50,6 +55,17 @@ data class PosterModel(
     val subtitle: String?,
     val fraction: Float? = null,
     val play: VodPlay? = null,
+    /** Set on a reminder card: the showing it is for (the card then opens the guide there). */
+    val programme: ProgrammeTarget? = null,
+)
+
+/** A booked reminder as a card of My list: [startMs] is the showing's start, [timeText] when it airs. */
+data class ProgrammeTarget(
+    val reminderId: Long,
+    val playlistId: Long,
+    val channelKey: String,
+    val startMs: Long,
+    val timeText: String,
 )
 
 sealed interface VodRowModel {
@@ -82,11 +98,23 @@ class VodBrowseViewModel(
     private val repo: VodRepository,
     private val library: VodLibraryRepository,
     private val edits: ChannelEdits,
+    /** The reminders booked and not yet aired; they lead the My list row. */
+    reminders: Flow<List<ReminderEntity>> = flowOf(emptyList()),
+    private val clock: () -> Instant = Instant::now,
+    private val zone: ZoneId = ZoneId.systemDefault(),
+    /** The logo of a reminder's channel, if it has one. */
+    private val channelLogo: suspend (playlistId: Long, channelKey: String) -> String? = { _, _ -> null },
+    private val cancelReminder: suspend (id: Long) -> Unit = {},
 ) : ViewModel() {
     // One pager per category, kept so a row keeps its loaded pages when the category list changes.
     private val titleKind = if (kind == VodKind.MOVIE) TitleKind.FILM else TitleKind.SHOW
 
     private val pagers = HashMap<String?, Flow<PagingData<PosterModel>>>()
+
+    private val reminderCards: Flow<List<PosterModel>> = reminders.map { list ->
+        val now = clock()
+        list.filter { it.stop > now }.sortedBy { it.start }.map { it.card(now) }
+    }
 
     private val rowSource = (if (kind == VodKind.MOVIE) filmRows() else showRows())
         .shareIn(viewModelScope, SharingStarted.Eagerly, replay = 1)
@@ -109,6 +137,16 @@ class VodBrowseViewModel(
         viewModelScope.launch { library.setInMyList(titleKind, card.playlistId, card.key, inList) }
     }
 
+    fun cancelReminder(card: PosterModel) {
+        val id = card.programme?.reminderId ?: return
+        viewModelScope.launch { cancelReminder(id) }
+    }
+
+    private suspend fun ReminderEntity.card(now: Instant): PosterModel = PosterModel(
+        playlistId = playlistId, key = "reminder:$id", title = title, logo = channelLogo(playlistId, channelKey), subtitle = null,
+        programme = ProgrammeTarget(id, playlistId, channelKey, start.toEpochMilli(), whenText(start, now, zone)),
+    )
+
     fun dismissContinue(card: PosterModel) {
         viewModelScope.launch { library.dismissContinue(titleKind, card.playlistId, card.key) }
     }
@@ -125,16 +163,30 @@ class VodBrowseViewModel(
     }
 
     private fun filmRows(): Flow<List<VodRowModel>> =
-        combine(library.continueFilms(), library.myListFilms(), repo.recentFilms(), repo.filmCategories()) { cont, mine, recent, categories ->
-            continueRow(cont) + myListRow(mine.map { it.poster() }) + recentRow(recent.map { it.poster() }) +
+        combine(
+            library.continueFilms(), library.myListFilms(), reminderCards, repo.recentFilms(), repo.filmCategories(),
+        ) { cont, mine, due, recent, categories ->
+            continueRow(cont) + myListRow(due + mine.map { it.poster() }) + recentRow(recent.map { it.poster() }) +
                 categories.map { pagedRow(it) }
         }
 
     private fun showRows(): Flow<List<VodRowModel>> =
         combine(
-            library.continueShows(), library.myListShows(), repo.recentShows(), repo.showCount(null), repo.showCategories(),
-        ) { cont, mine, recent, uncategorised, categories ->
-            continueRow(cont) + myListRow(mine.map { it.poster() }) + recentRow(recent.map { it.poster() }) +
+            library.continueShows(), library.myListShows(), reminderCards, repo.recentShows(), repo.showCount(null),
+            repo.showCategories(),
+        ) { parts ->
+            @Suppress("UNCHECKED_CAST")
+            val cont = parts[0] as List<ContinueCard>
+            @Suppress("UNCHECKED_CAST")
+            val mine = parts[1] as List<ShowCard>
+            @Suppress("UNCHECKED_CAST")
+            val due = parts[2] as List<PosterModel>
+            @Suppress("UNCHECKED_CAST")
+            val recent = parts[3] as List<ShowCard>
+            val uncategorised = parts[4] as Int
+            @Suppress("UNCHECKED_CAST")
+            val categories = parts[5] as List<CategoryRow>
+            continueRow(cont) + myListRow(due + mine.map { it.poster() }) + recentRow(recent.map { it.poster() }) +
                 allShowsRow(uncategorised) + categories.map { pagedRow(it) }
         }
 
@@ -159,6 +211,7 @@ class VodBrowseViewModel(
         when (kind) {
             VodKind.MOVIE -> repo.films(category!!).map { page -> page.map { it.poster() } }
             VodKind.EPISODE -> repo.shows(category).map { page -> page.map { it.poster() } }
+            VodKind.RECORDING -> kotlinx.coroutines.flow.emptyFlow()
         }.cachedIn(viewModelScope)
     }
 
@@ -166,7 +219,12 @@ class VodBrowseViewModel(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
             val c = (extras[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
-            return VodBrowseViewModel(kind, c.vod, c.vodLibrary, c.channelEdits) as T
+            return VodBrowseViewModel(
+                kind, c.vod, c.vodLibrary, c.channelEdits,
+                reminders = c.scheduleRepository.upcomingReminders(),
+                channelLogo = { playlistId, key -> c.db.channelDao().byKey(playlistId, key)?.logo },
+                cancelReminder = c.scheduleRepository::cancelReminder,
+            ) as T
         }
     }
 }

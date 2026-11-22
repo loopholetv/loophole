@@ -136,18 +136,28 @@ object XmltvParser {
         var subTitle: String? = null
         var desc: String? = null
         var category: String? = null
+        var xmltvNs: String? = null
+        var onscreen: String? = null
         forEachChild(p) { name ->
             when (name) {
                 "title" -> if (title == null) title = readText(p).trim().ifEmpty { null } else skip(p)
                 "sub-title" -> if (subTitle == null) subTitle = readText(p).trim().ifEmpty { null } else skip(p)
                 "desc" -> if (desc == null) desc = readText(p).trim().ifEmpty { null } else skip(p)
                 "category" -> if (category == null) category = readText(p).trim().ifEmpty { null } else skip(p)
+                "episode-num" -> {
+                    val system = p.getAttributeValue(null, "system")?.trim()?.lowercase()
+                    val key = episodeKeyOf(system, readText(p))
+                    when (system) {
+                        "xmltv_ns" -> if (xmltvNs == null) xmltvNs = key
+                        "onscreen" -> if (onscreen == null) onscreen = key
+                    }
+                }
                 else -> skip(p)
             }
         }
         val t = title
         if (channel.isEmpty() || start == null || stop == null || !stop.isAfter(start) || t == null) return null
-        return XmltvProgramme(channel, start, stop, t, subTitle, desc, category)
+        return XmltvProgramme(channel, start, stop, t, subTitle, desc, category, xmltvNs ?: onscreen)
     }
 
     /** Calls [block] on each direct child START_TAG; [block] must consume the child (readText/skip). */
@@ -211,3 +221,23 @@ object XmltvParser {
         }
     }
 }
+
+/**
+ * A comparable episode label from one `<episode-num>`: `S<season>E<episode>` from the zero-based
+ * `xmltv_ns` form, the trimmed upper-cased text for `onscreen`, otherwise null.
+ */
+internal fun episodeKeyOf(system: String?, value: String): String? = when (system?.lowercase()) {
+    "xmltv_ns" -> {
+        val parts = value.split('.')
+        val season = parts.getOrNull(0)?.numberBeforeSlash()?.plus(1)
+        val episode = parts.getOrNull(1)?.numberBeforeSlash()?.plus(1)
+        buildString {
+            if (season != null) append('S').append(season)
+            if (episode != null) append('E').append(episode)
+        }.ifEmpty { null }
+    }
+    "onscreen" -> value.trim().uppercase().ifEmpty { null }
+    else -> null
+}
+
+private fun String.numberBeforeSlash(): Int? = substringBefore('/').trim().toIntOrNull()

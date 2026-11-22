@@ -56,12 +56,13 @@ sealed interface SettingsPage {
     data object Playback : SettingsPage { override val key = "playback" }
     data object Remote : SettingsPage { override val key = "remote" }
     data object Phone : SettingsPage { override val key = "phone" }
+    data object Recordings : SettingsPage { override val key = "recordings" }
     /** The buttons set up for [context], one row each. */
     data class RemoteButtons(val context: BindingContext) : SettingsPage { override val key = "remoteButtons:${context.key}" }
     data object About : SettingsPage { override val key = "about" }
 
     companion object {
-        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Remote, Phone, About).associateBy { it.key }
+        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Recordings, Remote, Phone, About).associateBy { it.key }
 
         /** Unknown or malformed keys give [Sections]. */
         fun fromKey(key: String): SettingsPage {
@@ -91,6 +92,7 @@ private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     SettingsPage.Playback -> "Playback"
     SettingsPage.Remote -> "Remote control"
     SettingsPage.Phone -> SECTION_COMPANION
+    SettingsPage.Recordings -> SECTION_RECORDINGS
     is SettingsPage.RemoteButtons -> context.title
     SettingsPage.About -> "About"
 }
@@ -110,11 +112,13 @@ fun SettingsPanel(
     onEditPlaylist: (playlistId: Long) -> Unit = {},
     /** Phone page → "Show QR code": the full-screen "Set up from your phone". */
     onShowPhoneQr: () -> Unit = {},
+    /** The page to open on ([SettingsPage.key]); the section list when null or unknown. */
+    startPage: String? = null,
     vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory),
 ) {
     val ui by vm.state.collectAsStateWithLifecycle()
 
-    var page by rememberSaveable(stateSaver = SettingsPage.Saver) { mutableStateOf<SettingsPage>(SettingsPage.Sections) }
+    var page by rememberSaveable(stateSaver = SettingsPage.Saver) { mutableStateOf(startPage?.let(SettingsPage::fromKey) ?: SettingsPage.Sections) }
     var lastSection by rememberSaveable(stateSaver = SettingsPage.Saver) { mutableStateOf<SettingsPage>(SettingsPage.Playlists) }
     // The row to focus when a page (re)opens: after Back from a sub-page, a dialog or a confirmation.
     var focusKey by rememberSaveable { mutableStateOf<String?>(null) }
@@ -204,6 +208,7 @@ fun SettingsPanel(
                 SettingsPage.Remote -> RemotePage(ui, vm, focusKey, consumeFocus, onOpen = { c -> go(SettingsPage.RemoteButtons(c), null) })
                 is SettingsPage.RemoteButtons -> RemoteButtonsPage(p.context, ui, vm, focusKey, consumeFocus)
                 SettingsPage.Phone -> PhonePage(ui, vm, onShowQr = onShowPhoneQr)
+                SettingsPage.Recordings -> RecordingsPage(ui, vm, focusKey, consumeFocus)
                 SettingsPage.About -> AboutPage()
             }
         }
@@ -220,7 +225,7 @@ internal fun playlistRowKey(id: Long) = "row:$id"
 internal fun PillButton(label: String, modifier: Modifier = Modifier, onFocus: () -> Unit = {}, onClick: () -> Unit) =
     OnboardingPillButton(label, selected = false, modifier = modifier, containerColor = Tokens.Surface, onFocus = onFocus, onClick = onClick)
 
-private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Remote, SettingsPage.Phone, SettingsPage.About)
+private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Recordings, SettingsPage.Remote, SettingsPage.Phone, SettingsPage.About)
 
 @Composable
 private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
@@ -231,6 +236,7 @@ private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
         SectionItem("Playlists", requesters.getValue(SettingsPage.Playlists)) { onOpen(SettingsPage.Playlists) }
         SectionItem("EPG", requesters.getValue(SettingsPage.Epg)) { onOpen(SettingsPage.Epg) }
         SectionItem("Playback", requesters.getValue(SettingsPage.Playback)) { onOpen(SettingsPage.Playback) }
+        SectionItem(SECTION_RECORDINGS, requesters.getValue(SettingsPage.Recordings)) { onOpen(SettingsPage.Recordings) }
         SectionItem("Remote control", requesters.getValue(SettingsPage.Remote)) { onOpen(SettingsPage.Remote) }
         SectionItem(SECTION_COMPANION, requesters.getValue(SettingsPage.Phone)) { onOpen(SettingsPage.Phone) }
         // Not focusable: D-pad moves straight from Companion to About.

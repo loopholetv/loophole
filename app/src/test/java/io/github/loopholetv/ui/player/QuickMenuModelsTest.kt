@@ -20,7 +20,7 @@ class QuickMenuModelsTest {
         val base = listOf(
             QuickItem.SEARCH, QuickItem.CAST, QuickItem.CHANNELS, QuickItem.VIDEO, QuickItem.AUDIO,
             QuickItem.AUDIO_DELAY, QuickItem.SUBTITLES, QuickItem.ASPECT, QuickItem.SLEEP, QuickItem.FAVOURITE,
-            QuickItem.OPTIONS, QuickItem.STREAM_INFO, QuickItem.SETTINGS,
+            QuickItem.RECORD, QuickItem.OPTIONS, QuickItem.STREAM_INFO, QuickItem.SETTINGS,
         )
         assertEquals(base, quickItems(pipSupported = false))
         assertEquals(

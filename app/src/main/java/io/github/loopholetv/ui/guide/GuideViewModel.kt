@@ -26,6 +26,10 @@ import io.github.loopholetv.data.db.label
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.data.db.toArg
 import io.github.loopholetv.data.repo.GuideKey
+import io.github.loopholetv.record.BookResult
+import io.github.loopholetv.record.Mark
+import io.github.loopholetv.record.MarkKey
+import io.github.loopholetv.record.bookedChannelIds
 import io.github.loopholetv.data.repo.channelListChanges
 import io.github.loopholetv.data.repo.guideKey
 import io.github.loopholetv.player.Playback
@@ -41,6 +45,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import io.github.loopholetv.ui.manage.EditActions
 import io.github.loopholetv.ui.manage.asEditActions
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -167,6 +172,9 @@ sealed interface GuideEvent {
 
     data object OpenSearch : GuideEvent
     data object OpenSettings : GuideEvent
+
+    /** A catch-up OK the stream budget let through later: open it full screen as [OkAction.PlayArchive] does. */
+    data class OpenArchive(val action: OkAction.PlayArchive) : GuideEvent
 }
 
 /** Guide actions that go on while their button is held. */
@@ -199,6 +207,18 @@ const val CHANNEL_RELOAD_DEBOUNCE_MS = 300L
 
 /** How long the start waits for the groups list before giving up on the remembered group. */
 private const val GROUPS_WAIT_MS = 2_000L
+
+/** The preview's notice is this and the channel's name. */
+const val PREVIEW_RECORDING_PREFIX = "Recording on "
+
+private const val WARNING_SEPARATOR = " \u00b7 "
+
+/** The booking's caveats as one line, or null when it has none. */
+internal fun BookResult.Booked.warning(): String? = listOfNotNull(
+    clash?.let { "Clashes with ${it.title}" },
+    fallback?.let { "from ${it.name}" },
+    "May not fit".takeIf { mayNotFit },
+).takeIf { it.isNotEmpty() }?.joinToString(WARNING_SEPARATOR)
 
 const val NOTICE_ADDED = "Added to favourites"
 const val NOTICE_REMOVED = "Removed from favourites"
@@ -264,7 +284,33 @@ class GuideViewModel(
     private val cast: CastControls = NoCast,
     /** Fires after every committed change to the channel list's tables (channels, favourites). */
     private val channelChanges: Flow<Unit> = emptyFlow(),
+    /** Told whether the guide (and so its preview) is on screen. */
+    private val previewVisible: (Boolean) -> Unit = {},
+    /**
+     * Asked before the preview opens a channel, live or (live false) from its archive; false when a
+     * recording keeps the provider's stream (it may ask the viewer first).
+     */
+    private val beforePlay: suspend (channel: ChannelEntity, live: Boolean) -> Boolean = { _, _ -> true },
+    /** What is booked on each guide cell (the reminder and recording markers). */
+    marks: Flow<Map<MarkKey, Mark>> = flowOf(emptyMap()),
+    /** Books and cancels reminders and recordings. */
+    private val schedule: ScheduleActions = NoSchedule,
+    /** The name of the channel whose recording holds the stream the preview would use; null otherwise. */
+    previewTaken: StateFlow<String?> = MutableStateFlow(null),
+    /** Channels with a recording running now (their options offer "Stop recording"). */
+    recordingChannelIds: Flow<Set<Long>> = flowOf(emptySet()),
+    /** A channel by playlist and key, for opening a showing from another screen. */
+    private val channelByKey: suspend (playlistId: Long, key: String) -> ChannelEntity? = { _, _ -> null },
+    /** The programmes on [channel] from shown time `at` on (time-shifted), the one airing then first. */
+    private val programmesFrom: suspend (channel: ChannelEntity, at: Instant) -> List<ProgrammeEntity> = { _, _ -> emptyList() },
 ) : ViewModel() {
+
+    /** The details of the showing [at] names, or null when its channel is gone or hidden, or the guide no longer lists it. */
+    suspend fun detailsAt(at: GuideAt): DetailsTarget? {
+        val channel = visibleOnly(channelByKey(at.playlistId, at.channelKey)) ?: return null
+        val programme = programmeAt(programmesFrom(channel, Instant.ofEpochMilli(at.startMs)), at.startMs) ?: return null
+        return DetailsTarget(channel, programme)
+    }
 
     /** True while this TV casts to the other TVs (the "Casting" banner shows). */
     val casting: StateFlow<Boolean> = cast.state.map { it is CastState.Casting }.distinctUntilChanged()
@@ -367,6 +413,74 @@ class GuideViewModel(
 
     val favourites: StateFlow<Set<ChannelRef>> = favouriteRefs
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** Reminders and recordings by guide cell (guide channel id and start), for the markers. */
+    val marks: StateFlow<Map<MarkKey, Mark>> = marks
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /** [marks] by guide channel, then programme start: a row looks its cells up without building keys. */
+    val marksByChannel: StateFlow<Map<String, Map<Instant, Mark>>> = this.marks
+        .map { all ->
+            val byChannel = HashMap<String, HashMap<Instant, Mark>>()
+            for ((k, mark) in all) byChannel.getOrPut(k.epgChannelId) { HashMap() }[Instant.ofEpochMilli(k.startMs)] = mark
+            byChannel as Map<String, Map<Instant, Mark>>
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    private val _bookingsChanged = MutableStateFlow(0)
+
+    /** Counts finished bookings and cancellations: a change under a stronger booking leaves [marks] equal, so lookups key on this too. */
+    val bookingsChanged: StateFlow<Int> = _bookingsChanged.asStateFlow()
+
+    suspend fun bookingsOf(c: ChannelEntity, p: ProgrammeEntity): CellBookings = schedule.bookingsFor(c, p)
+
+    /** Channels recording now. */
+    val recordingChannelIds: StateFlow<Set<Long>> = recordingChannelIds
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** Shown over the preview while a recording holds the stream. */
+    val previewNotice: StateFlow<String?> = previewTaken
+        .map { channel -> channel?.let { "$PREVIEW_RECORDING_PREFIX$it" } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, previewTaken.value?.let { "$PREVIEW_RECORDING_PREFIX$it" })
+
+    private val _bookingWarning = MutableStateFlow<String?>(null)
+
+    /** What a booking could not avoid ("Clashes with <title>", "from <playlist>", "May not fit"), under the buttons. */
+    val bookingWarning: StateFlow<String?> = _bookingWarning.asStateFlow()
+
+    fun clearBookingWarning() {
+        _bookingWarning.value = null
+    }
+
+    fun remind(c: ChannelEntity, p: ProgrammeEntity) = book { schedule.remind(c, p) }
+
+    fun remindSeries(c: ChannelEntity, p: ProgrammeEntity) = book { schedule.remindSeries(c, p) }
+
+    fun record(c: ChannelEntity, p: ProgrammeEntity) = book(clearWarning = false) { warn(schedule.record(c, p)) }
+
+    fun recordSeries(c: ChannelEntity, p: ProgrammeEntity) = book { schedule.recordSeries(c, p) }
+
+    fun recordNow(c: ChannelEntity) = book(clearWarning = false) { warn(schedule.recordNow(c)) }
+
+    fun stopRecording(c: ChannelEntity) = book { schedule.stopRecording(c) }
+
+    fun cancel(c: ChannelEntity, p: ProgrammeEntity, mark: Mark) = book { schedule.cancelFor(c, p, mark) }
+
+    /** Bookings run one at a time, in the order pressed (a second press never overtakes the first). */
+    private val bookings = Mutex()
+
+    /** A repeated Record press answers "already booked" and must not wipe the first one's warning, so those two keep it. */
+    private fun book(clearWarning: Boolean = true, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            if (clearWarning) _bookingWarning.value = null
+            runCatching { bookings.withLock { block() } }.onFailure { if (it is CancellationException) throw it }
+            _bookingsChanged.value++
+        }
+    }
+
+    private fun warn(result: BookResult) {
+        if (result is BookResult.Booked) _bookingWarning.value = result.warning()
+    }
 
     private val _notice = MutableStateFlow<String?>(null)
 
@@ -545,6 +659,7 @@ class GuideViewModel(
     }
 
     private fun stopPreview() {
+        newRequest()
         _previewing.value = null
         playback.stop()
     }
@@ -770,15 +885,19 @@ class GuideViewModel(
         ) {
             // While full screen is already opening for an earlier OK, a quick second one doesn't
             // release and reopen the stream (one connection at a time).
+            val action = OkAction.PlayArchive(channel.id, programme.start)
             if (!archivePending) {
-                _previewing.value = channel
-                playback.playArchive(channel, ArchiveRequest(programme.start, programme.stop))
+                val request = ArchiveRequest(programme.start, programme.stop)
+                // Nothing opens full screen until the gate answers; an answer that comes later opens it then.
+                val now = playChecked(channel, live = false, key = action, later = { _events.trySend(GuideEvent.OpenArchive(action)) }) {
+                    playback.playArchive(channel, request)
+                }
+                if (!now) return OkAction.Previewed
             }
-            return OkAction.PlayArchive(channel.id, programme.start)
+            return action
         }
         if (_previewing.value?.id != channel.id) {
-            _previewing.value = channel
-            playback.play(channel)
+            playChecked(channel, live = true, key = channel.id) { playback.play(channel) }
             return OkAction.Previewed
         }
         val now = clock()
@@ -865,7 +984,11 @@ class GuideViewModel(
             if (fresh == null) {
                 if (_previewing.value?.id == channel.id) _previewing.value = null
             } else if (_previewing.value?.id == channel.id) {
-                playback.play(fresh)
+                val request = newRequest()
+                // Still the wanted preview once the gate answers (the viewer may have moved on meanwhile).
+                if (beforePlay(fresh, true) && request == previewRequest && _previewing.value?.id == channel.id) {
+                    playback.play(fresh)
+                }
             }
         }
         return OkAction.Previewed
@@ -895,6 +1018,7 @@ class GuideViewModel(
      * so audio never plays under an idle preview pane.
      */
     fun onScreenStarted() {
+        previewVisible(true)
         playerPending = false
         archivePending = false
         refreshLatestEnd()
@@ -915,6 +1039,60 @@ class GuideViewModel(
         }
     }
 
+    /** The guide left the screen (full screen, another screen, or the app went to the background). */
+    fun onScreenStopped() {
+        previewVisible(false)
+        // A play still waiting for the gate must not start (or open full screen) once the guide has gone.
+        newRequest()
+    }
+
+    /** Counts preview requests, so a play allowed only after a question opens only if nothing newer was asked for. */
+    private var previewRequest = 0L
+
+    /** A newer preview request: any older one still waiting for the gate is dropped when it is answered. */
+    private fun newRequest(): Long {
+        waitingKey = null
+        return ++previewRequest
+    }
+
+    /** The [key] of a gated preview still waiting for its answer; the same OK again meanwhile is ignored. */
+    private var waitingKey: Any? = null
+
+    /**
+     * Previews [channel] with [play] once [beforePlay] allows it and it is still the latest request: only then
+     * does it become [previewing]. True when it played at once, without waiting; when it plays only after
+     * waiting, [later] runs too. A request with the [key] of one still waiting adds nothing.
+     */
+    private fun playChecked(
+        channel: ChannelEntity,
+        live: Boolean,
+        key: Any,
+        later: () -> Unit = {},
+        play: () -> Unit,
+    ): Boolean {
+        if (waitingKey == key) return false
+        val request = newRequest()
+        var waiting = false
+        var playedNow = false
+        val gated = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val allowed = try {
+                beforePlay(channel, live)
+            } finally {
+                if (waitingKey == key && request == previewRequest) waitingKey = null
+            }
+            if (!allowed || request != previewRequest) return@launch
+            _previewing.value = channel
+            play()
+            if (waiting) later() else playedNow = true
+        }
+        // Still running here: the gate is waiting (a lookup, or a question to the viewer).
+        if (gated.isActive) {
+            waiting = true
+            waitingKey = key
+        }
+        return playedNow
+    }
+
     /** Replays the previewing channel after a stop (app in the background). */
     private fun resumePreview() {
         val previous = _previewing.value ?: return
@@ -924,13 +1102,17 @@ class GuideViewModel(
             if (channel == null) {
                 _previewing.value = null
             } else {
-                playback.play(channel)
+                val request = newRequest()
+                if (beforePlay(channel, true) && request == previewRequest && _previewing.value?.id == previous.id) {
+                    playback.play(channel)
+                }
             }
         }
     }
 
     /** The preview and the focused row follow channel [id] (the player's channel). */
     private fun adopt(id: Long) {
+        newRequest()
         _refocus.value = id
         viewModelScope.launch {
             val channel = channelById(id) ?: return@launch
@@ -1023,6 +1205,15 @@ class GuideViewModel(
                     keyBindings = c.settingsStore.settings.map { it.remote.bindings }.distinctUntilChanged(),
                     cast = c.castController,
                     channelChanges = c.db.channelListChanges(),
+                    previewVisible = c.streamUses::setPreviewVisible,
+                    beforePlay = { ch, live -> c.recordingCoordinator.beforeUserPlay(ch, live) },
+                    // Collected per guide screen, so its reminder cut-off is fresh each time.
+                    marks = c.scheduleRepository.marks(),
+                    schedule = c.scheduleActions,
+                    previewTaken = c.recordingCoordinator.previewTaken,
+                    recordingChannelIds = c.recordingRunner.active.map { it.bookedChannelIds() },
+                    channelByKey = { playlistId, key -> channelDao.byKey(playlistId, key) },
+                    programmesFrom = { channel, at -> c.shiftedProgrammes.nowAndNext(channel, at) },
                 ) as T
             }
         }

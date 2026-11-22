@@ -13,6 +13,7 @@ import io.github.loopholetv.phone.PairingStore
 import io.github.loopholetv.phone.decodePairings
 import io.github.loopholetv.phone.encodePairings
 import io.github.loopholetv.util.takeCodePoints
+import io.github.loopholetv.record.REMINDER_LEAD_CHOICES
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -132,6 +133,22 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
             onboardingSkipped = this[ONBOARDING_SKIPPED] ?: d.onboardingSkipped,
             playback = readPlayback(),
             remote = readRemote(),
+            recordStorage = this[RECORD_STORAGE].validOr(d.recordStorage),
+            smbHost = this[SMB_HOST] ?: d.smbHost,
+            smbShare = this[SMB_SHARE] ?: d.smbShare,
+            smbFolder = this[SMB_FOLDER] ?: d.smbFolder,
+            smbUser = this[SMB_USER] ?: d.smbUser,
+            smbPassword = this[SMB_PASSWORD] ?: d.smbPassword,
+            smbDomain = this[SMB_DOMAIN] ?: d.smbDomain,
+            nfsHost = this[NFS_HOST] ?: d.nfsHost,
+            nfsExport = this[NFS_EXPORT] ?: d.nfsExport,
+            nfsFolder = this[NFS_FOLDER] ?: d.nfsFolder,
+            usbTreeUri = this[USB_TREE_URI] ?: d.usbTreeUri,
+            reminderLeadMin = this[REMINDER_LEAD_MIN].validOr(REMINDER_LEAD_CHOICES, d.reminderLeadMin),
+            reminderAutoSwitch = this[REMINDER_AUTO_SWITCH] ?: d.reminderAutoSwitch,
+            padBeforeMin = this[PAD_BEFORE_MIN].validOr(AppSettings.PAD_CHOICES, d.padBeforeMin),
+            padAfterMin = this[PAD_AFTER_MIN].validOr(AppSettings.PAD_CHOICES, d.padAfterMin),
+            askedNotifications = this[ASKED_NOTIFICATIONS] ?: d.askedNotifications,
         )
     }
 
@@ -193,6 +210,22 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         this[ONBOARDING_SKIPPED] = s.onboardingSkipped
         writePlayback(s.playback)
         writeRemote(s.remote)
+        this[RECORD_STORAGE] = s.recordStorage.name
+        this[SMB_HOST] = s.smbHost
+        this[SMB_SHARE] = s.smbShare
+        this[SMB_FOLDER] = s.smbFolder
+        this[SMB_USER] = s.smbUser
+        this[SMB_PASSWORD] = s.smbPassword
+        this[SMB_DOMAIN] = s.smbDomain
+        this[NFS_HOST] = s.nfsHost
+        this[NFS_EXPORT] = s.nfsExport
+        this[NFS_FOLDER] = s.nfsFolder
+        this[USB_TREE_URI] = s.usbTreeUri
+        this[REMINDER_LEAD_MIN] = s.reminderLeadMin
+        this[REMINDER_AUTO_SWITCH] = s.reminderAutoSwitch
+        this[PAD_BEFORE_MIN] = s.padBeforeMin
+        this[PAD_AFTER_MIN] = s.padAfterMin
+        this[ASKED_NOTIFICATIONS] = s.askedNotifications
     }
 
     private fun MutablePreferences.writeRemote(r: RemoteSettings) {
@@ -292,6 +325,22 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         val VOD_FILL_SKIPPED = stringSetPreferencesKey("vod_fill_skipped")
         val PHONE_PAIRINGS = stringPreferencesKey("phone_pairings")
         val PHONE_PORT = intPreferencesKey("phone_port")
+        val RECORD_STORAGE = stringPreferencesKey("record_storage")
+        val SMB_HOST = stringPreferencesKey("smb_host")
+        val SMB_SHARE = stringPreferencesKey("smb_share")
+        val SMB_FOLDER = stringPreferencesKey("smb_folder")
+        val SMB_USER = stringPreferencesKey("smb_user")
+        val SMB_PASSWORD = stringPreferencesKey("smb_password")
+        val SMB_DOMAIN = stringPreferencesKey("smb_domain")
+        val NFS_HOST = stringPreferencesKey("nfs_host")
+        val NFS_EXPORT = stringPreferencesKey("nfs_export")
+        val NFS_FOLDER = stringPreferencesKey("nfs_folder")
+        val USB_TREE_URI = stringPreferencesKey("usb_tree_uri")
+        val REMINDER_LEAD_MIN = intPreferencesKey("reminder_lead_min")
+        val REMINDER_AUTO_SWITCH = booleanPreferencesKey("reminder_auto_switch")
+        val PAD_BEFORE_MIN = intPreferencesKey("pad_before_min")
+        val PAD_AFTER_MIN = intPreferencesKey("pad_after_min")
+        val ASKED_NOTIFICATIONS = booleanPreferencesKey("asked_notifications")
         val EPG_PAST_DAYS_AUTO_APPLIED = booleanPreferencesKey("epg_past_days_auto_applied")
     }
 }

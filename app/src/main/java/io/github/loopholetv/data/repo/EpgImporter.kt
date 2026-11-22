@@ -123,6 +123,7 @@ internal class EpgImporter(
             subTitle = p.subTitle,
             description = if (storeDescriptions) p.description else null,
             category = p.category,
+            episodeKey = p.episodeKey,
             generation = generation,
         )
         if (batch.size >= BATCH_SIZE) flush()

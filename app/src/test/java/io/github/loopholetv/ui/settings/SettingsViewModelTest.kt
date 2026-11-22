@@ -15,6 +15,11 @@ import io.github.loopholetv.data.settings.PlayerAction
 import android.view.KeyEvent
 import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.xtream.XtreamCredentials
+import io.github.loopholetv.record.storage.RecordingStorage
+import io.github.loopholetv.record.storage.NFS_REFUSED_MESSAGE
+import io.github.loopholetv.record.storage.StorageKind
+import io.github.loopholetv.record.storage.StorageResult
+import io.github.loopholetv.record.storage.UnavailableStorage
 import io.github.loopholetv.phone.PhoneJob
 import io.github.loopholetv.phone.PhoneJobKind
 import io.github.loopholetv.phone.PhoneJobPhase
@@ -109,8 +114,11 @@ class SettingsViewModelTest {
         val phoneJob = MutableStateFlow<PhoneJob?>(null)
         val pairedPhones = MutableStateFlow(0)
         var forgetPhones: suspend () -> Unit = { pairedPhones.value = 0 }
+        var storage: RecordingStorage? = null
+        var internalFree: Long? = null
+        val connectionsSet = mutableListOf<Pair<Long, Int?>>()
 
-        fun vm(pipSupported: Boolean = false) = SettingsViewModel(
+        fun vm(pipSupported: Boolean = false, permissions: () -> PermissionStates = { PermissionStates() }) = SettingsViewModel(
             playlists = playlists,
             channelCounts = counts,
             epgStatus = { id -> statuses.map { it[id] } },
@@ -151,7 +159,190 @@ class SettingsViewModelTest {
             phoneJob = phoneJob,
             pairedPhones = pairedPhones,
             forgetPairedPhones = { forgetPhones() },
+            permissions = permissions,
+            storageFor = { storage },
+            internalFreeBytes = { internalFree },
+            setConnectionsAllowed = { id, n -> connectionsSet += id to n },
         )
+    }
+
+    @Test fun storageTestShowsResult() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.testStorage()
+        assertEquals(RC_NOT_SET_HINT, vm.state.value.storageTest.text)
+
+        f.storage = object : RecordingStorage by UnavailableStorage("smb://h/s", "NAS") {
+            override suspend fun test(): StorageResult = StorageResult.Ok
+        }
+        vm.testStorage()
+        assertEquals(RC_TEST_WORKS, vm.state.value.storageTest.text)
+        assertFalse(vm.state.value.storageTest.failed)
+
+        f.storage = UnavailableStorage("smb://h/s", "NAS", reason = NFS_REFUSED_MESSAGE)
+        vm.testStorage()
+        assertEquals(NFS_REFUSED_MESSAGE, vm.state.value.storageTest.text)
+        assertTrue(vm.state.value.storageTest.failed)
+    }
+
+    @Test fun changingTheStorageClearsAnOldTestResult() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        f.storage = UnavailableStorage("x", "x", reason = "Nope")
+        val vm = f.vm()
+        vm.testStorage()
+        assertEquals("Nope", vm.state.value.storageTest.text)
+        vm.setStorageKind(StorageKind.NFS)
+        assertNull(vm.state.value.storageTest.text)
+    }
+
+    @Test fun aTestStillRunningWhenTheStorageChangesIsIgnored() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val gate = kotlinx.coroutines.CompletableDeferred<StorageResult>()
+        var tests = 0
+        f.storage = object : RecordingStorage by UnavailableStorage("smb://h/s", "NAS") {
+            override suspend fun test(): StorageResult {
+                tests++
+                return gate.await()
+            }
+        }
+        val vm = f.vm()
+        vm.testStorage()
+        assertTrue(vm.state.value.storageTest.running)
+        // A second press while it runs does nothing.
+        vm.testStorage()
+        assertEquals(1, tests)
+        vm.setStorageKind(StorageKind.NFS)
+        assertFalse(vm.state.value.storageTest.running)
+        gate.complete(StorageResult.Failed("Old NAS"))
+        testScheduler.advanceUntilIdle()
+        assertNull(vm.state.value.storageTest.text)
+        // A new test can run.
+        vm.testStorage()
+        assertEquals(2, tests)
+    }
+
+    @Test fun aTestWhoseStorageChangedUnderItIsDropped() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val gate = kotlinx.coroutines.CompletableDeferred<StorageResult>()
+        f.storage = object : RecordingStorage by UnavailableStorage("smb://h/s", "NAS") {
+            // Ignores cancellation, as a blocking network call does.
+            override suspend fun test(): StorageResult = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gate.await() }
+        }
+        val vm = f.vm()
+        vm.testStorage()
+        // Changed elsewhere than through this page (a setup copy, say): the job still runs to the end.
+        f.settings.update { it.copy(recordStorage = StorageKind.NFS) }
+        gate.complete(StorageResult.Ok)
+        testScheduler.advanceUntilIdle()
+        assertNull(vm.state.value.storageTest.text)
+        assertFalse(vm.state.value.storageTest.running)
+    }
+
+    @Test fun aNewerFreeSpaceReadReplacesOneStillRunning() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val first = kotlinx.coroutines.CompletableDeferred<Long?>()
+        var reads = 0
+        f.storage = object : RecordingStorage by UnavailableStorage("smb://h/s", "NAS") {
+            override suspend fun freeBytes(): Long? = if (++reads == 1) first.await() else 2_000L
+        }
+        val vm = f.vm()
+        testScheduler.advanceUntilIdle()
+        vm.refreshStorageInfo()
+        vm.refreshStorageInfo()
+        testScheduler.advanceUntilIdle()
+        first.complete(1_000L)
+        testScheduler.advanceUntilIdle()
+        assertEquals(2_000L, vm.state.value.freeBytes)
+    }
+
+    @Test fun internalListedLastWithFreeSpace() = runTest {
+        assertEquals(
+            listOf(StorageKind.SMB, StorageKind.NFS, StorageKind.USB, StorageKind.INTERNAL),
+            RC_WHERE_CHOICES,
+        )
+        val internal = storageKindText(StorageKind.INTERNAL, 3L * 1024 * 1024 * 1024)
+        assertEquals("Internal storage (small on most TVs) · 3.0 GB free", internal)
+        assertEquals("Internal storage (small on most TVs)", storageKindText(StorageKind.INTERNAL, null))
+        assertEquals("Network folder (SMB)", storageKindText(StorageKind.SMB, 1))
+
+        val f = Fakes(listOf(playlist(1)))
+        f.internalFree = 5_000_000_000L
+        val vm = f.vm()
+        vm.refreshStorageInfo()
+        assertEquals(5_000_000_000L, vm.state.value.internalFreeBytes)
+    }
+
+    @Test fun recordingsRowsFollowTheStorageChoice() {
+        assertEquals(
+            listOf(RC_WHERE, RC_TEST, RC_FREE, RC_REMIND, RC_AUTO_SWITCH, RC_PAD_BEFORE, RC_PAD_AFTER, RC_POPUPS, RC_STANDBY),
+            recordingsRowLabels(StorageKind.NONE),
+        )
+        assertEquals(
+            listOf(RC_WHERE) + RC_SMB_FIELDS + listOf(RC_TEST, RC_FREE, RC_REMIND, RC_AUTO_SWITCH, RC_PAD_BEFORE, RC_PAD_AFTER, RC_POPUPS, RC_STANDBY),
+            recordingsRowLabels(StorageKind.SMB),
+        )
+        assertEquals(RC_NFS_FIELDS, recordingsRowLabels(StorageKind.NFS).filter { it in RC_NFS_FIELDS })
+    }
+
+    @Test fun smbFormSavesSettings() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.setStorageKind(StorageKind.SMB)
+        vm.saveSmb(SmbForm(" nas.local ", "tv", " Rec ", "me", "pw", "HOME"))
+        val s = f.settings.value
+        assertEquals(StorageKind.SMB, s.recordStorage)
+        assertEquals("nas.local", s.smbHost)
+        assertEquals("tv", s.smbShare)
+        assertEquals("Rec", s.smbFolder)
+        assertEquals("me", s.smbUser)
+        assertEquals("pw", s.smbPassword)
+        assertEquals("HOME", s.smbDomain)
+        assertEquals(SmbForm(s.smbHost, s.smbShare, s.smbFolder, s.smbUser, s.smbPassword, s.smbDomain), vm.state.value.options.smbForm())
+    }
+
+    @Test fun nfsFormSavesSettingsAndUsbStoresTheTree() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        vm.saveNfs(NfsForm("10.0.0.2 ", " /export/tv", "Rec"))
+        assertEquals(StorageKind.NFS, f.settings.value.recordStorage)
+        assertEquals("10.0.0.2", f.settings.value.nfsHost)
+        assertEquals("/export/tv", f.settings.value.nfsExport)
+        vm.setUsbTree("content://tree/usb")
+        assertEquals(StorageKind.USB, f.settings.value.recordStorage)
+        assertEquals("content://tree/usb", f.settings.value.usbTreeUri)
+    }
+
+    @Test fun connectionsAllowedAutoShowsAccountValue() = runTest {
+        val f = Fakes(listOf(playlist(1), playlist(2)))
+        f.playlists.update { l -> l.map { if (it.id == 1L) it.copy(accountMaxConnections = 3) else it } }
+        val vm = f.vm()
+        val rows = vm.state.value.playlists.associateBy { it.id }
+        assertEquals("Auto (3)", connectionsText(rows.getValue(1).connectionsAllowed, rows.getValue(1).autoConnections))
+        assertEquals("Auto (1)", connectionsText(rows.getValue(2).connectionsAllowed, rows.getValue(2).autoConnections))
+        assertEquals(listOf<Int?>(null, 1, 2, 3, 4, 5), RC_CONNECTION_CHOICES)
+        assertEquals("2", connectionsText(2, 3))
+
+        vm.setConnectionsAllowed(1, 2)
+        vm.setConnectionsAllowed(1, null)
+        assertEquals(listOf<Pair<Long, Int?>>(1L to 2, 1L to null), f.connectionsSet)
+    }
+
+    @Test fun permissionStatesAreReadAgainOnDemand() = runTest {
+        var granted = false
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm(permissions = { PermissionStates(overlay = granted, batteryUnrestricted = granted) })
+        assertFalse(vm.state.value.permissions.overlay)
+        granted = true
+        vm.refreshPermissions()
+        assertTrue(vm.state.value.permissions.overlay)
+        assertTrue(vm.state.value.permissions.batteryUnrestricted)
+    }
+
+    @Test fun settingsPageKeyAndRoute() {
+        assertEquals(SettingsPage.Recordings, SettingsPage.fromKey("recordings"))
+        assertEquals("recordings", SettingsPage.Recordings.key)
+        assertEquals("settings", io.github.loopholetv.ui.nav.Routes.settings())
+        assertEquals("settings?page=recordings", io.github.loopholetv.ui.nav.Routes.settings(SettingsPage.Recordings.key))
     }
 
     @Test fun generalCheckNowCallsUpdater() = runTest {

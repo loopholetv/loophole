@@ -322,7 +322,7 @@ class CastDiscovery(
         internal fun serviceName(id: String) = "Loophole-" + id.take(8)
 
         /** The fields that make a new service registration worthwhile when they change. */
-        private fun registrationKey(a: CastAnnounce) = listOf(a.name, a.status, a.castId, a.port)
+        private fun registrationKey(a: CastAnnounce) = listOf(a.name, a.status, a.castId, a.port, a.rec)
 
         /** How long to wait before re-registering: at least 1 s, and 5 s after the last one. */
         internal fun registerDelay(sinceLastMs: Long) =
@@ -344,6 +344,7 @@ class CastDiscovery(
             put("accepts", accepts.toString())
             put("seq", seq.toString())
             put("setup", setup.toString())
+            rec?.let { put("rec", it) }
             castId?.let { put("castId", it) }
             token?.let { put("token", it) }
             castStartedAtMs?.let { put("startedAt", it.toString()) }
@@ -363,6 +364,7 @@ class CastDiscovery(
                 castStartedAtMs = txt["startedAt"]?.toLongOrNull(),
                 seq = txt["seq"]?.toLongOrNull()?.takeIf { it >= 0 } ?: return null,
                 setup = txt["setup"]?.toIntOrNull()?.takeIf { it >= 0 } ?: 0,
+                rec = txt["rec"]?.takeIf { it.isNotEmpty() },
             )
             val castComplete = a.castId != null && a.token != null && a.castStartedAtMs != null
             return if (a.status == CastStatus.CASTING && !castComplete) null else a

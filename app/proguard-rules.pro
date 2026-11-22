@@ -40,3 +40,21 @@
 
 # --- Compose ---
 # Compose ships complete consumer rules; nothing app-specific is needed.
+
+# --- Network folders (smbj, NFS client) ---
+# smbj's event bus (mbassador) finds its handlers by annotation at run time. Neither library ships
+# consumer rules; their optional integrations (EL, OSGi, JBoss marshalling, Tomcat native SSL, logging
+# back ends) are not bundled, so silence the warnings for them.
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep class net.engio.mbassy.** { *; }
+-keepclassmembers class * { @net.engio.mbassy.listener.Handler <methods>; }
+-dontwarn javax.el.**
+-dontwarn org.apache.tomcat.jni.**
+-dontwarn org.jboss.marshalling.**
+-dontwarn org.osgi.**
+-dontwarn org.jboss.logging.**
+-dontwarn org.apache.commons.logging.**
+-dontwarn org.apache.log4j.**
+-dontwarn org.slf4j.**
+-dontwarn javax.security.auth.kerberos.**
+-dontwarn org.ietf.jgss.**

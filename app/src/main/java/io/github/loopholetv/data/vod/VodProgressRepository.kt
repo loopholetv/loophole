@@ -12,12 +12,14 @@ class VodProgressRepository(
     private val clock: () -> Instant,
 ) {
     suspend fun record(ref: VodRef, positionMs: Long, durationMs: Long?) {
+        if (ref.kind == VodKind.RECORDING) return
         val old = dao.get(ref.kind, ref.playlistId, ref.key)
         progressAfter(old, ref, positionMs, durationMs, clock())?.let { dao.upsert(it) }
     }
 
     /** Stores the end of a stream that played out; an unknown-length one starts from the beginning next time. */
     suspend fun recordEnd(ref: VodRef, positionMs: Long, durationMs: Long?) {
+        if (ref.kind == VodKind.RECORDING) return
         val old = dao.get(ref.kind, ref.playlistId, ref.key)
         progressAfterNaturalEnd(old, ref, positionMs, durationMs, clock())?.let { dao.upsert(it) }
     }

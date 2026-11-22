@@ -19,6 +19,9 @@ enum class CastStatus { IDLE, WATCHING, CASTING }
  *
  * [setup] is the version of the setup-copy protocol the TV speaks ([SETUP_VERSION]); TVs from
  * before it don't send the field, which reads as 0.
+ *
+ * [rec] is the secret that opens this TV's recordings to other TVs; set while it has at least one
+ * recording, absent otherwise and from TVs that predate recordings.
  */
 data class CastAnnounce(
     val id: String,
@@ -32,10 +35,12 @@ data class CastAnnounce(
     val seq: Long = 0,
     val v: Int = 1,
     val setup: Int = 0,
+    val rec: String? = null,
 ) {
     override fun toString() =
         "CastAnnounce(id=$id, name=$name, port=$port, status=$status, accepts=$accepts, castId=$castId, " +
-            "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, seq=$seq, v=$v, setup=$setup)"
+            "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, seq=$seq, v=$v, setup=$setup, " +
+            "rec=${if (rec == null) "null" else "***"})"
 
     companion object {
         /** The setup-copy protocol this build speaks. */
@@ -56,14 +61,17 @@ data class CastPeer(
     val lastSeenMs: Long,
     /** See [CastAnnounce.setup]; 0 for a TV that can't copy setups. */
     val setup: Int = 0,
+    /** See [CastAnnounce.rec]. */
+    val rec: String? = null,
 ) {
     override fun toString() =
         "CastPeer(id=$id, name=$name, host=$host, port=$port, status=$status, accepts=$accepts, castId=$castId, " +
             "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, lastSeenMs=$lastSeenMs, " +
-            "setup=$setup)"
+            "setup=$setup, rec=${if (rec == null) "null" else "***"})"
 }
 
-enum class StopReason { STOPPED, LEFT_APP, EXTERNAL_PLAYER }
+/** Why a cast ended. Only [STOPPED] re-opens what played; the others leave playback to whoever ended it. */
+enum class StopReason { STOPPED, LEFT_APP, EXTERNAL_PLAYER, RECORDING }
 
 sealed interface CastEvent {
     data class Playing(val castId: String, val epoch: Int, val path: String, val hls: Boolean) : CastEvent
@@ -100,6 +108,7 @@ object CastJson {
         name("seq").value(a.seq)
         name("v").value(a.v.toLong())
         name("setup").value(a.setup.toLong())
+        name("rec").value(a.rec)
     }
 
     /**
@@ -120,6 +129,7 @@ object CastJson {
             castStartedAtMs = f.long("startedAt"),
             seq = f.long("seq")?.takeIf { it >= 0 } ?: return@parse null,
             setup = f.int("setup") ?: 0,
+            rec = f.string("rec")?.takeIf { it.isNotEmpty() },
         )
         val castComplete = a.castId != null && a.token != null && a.castStartedAtMs != null
         if (a.status == CastStatus.CASTING && !castComplete) null else a
@@ -142,7 +152,8 @@ object CastJson {
         is CastEvent.Stopped -> write {
             name("e").value("stopped")
             name("castId").value(e.castId)
-            name("reason").value(e.reason.name)
+            // Followers on an older version know only the first three reasons; ending for a recording reads as a stop.
+            name("reason").value((if (e.reason == StopReason.RECORDING) StopReason.STOPPED else e.reason).name)
         }
         is CastEvent.Heartbeat -> write {
             name("e").value("heartbeat")

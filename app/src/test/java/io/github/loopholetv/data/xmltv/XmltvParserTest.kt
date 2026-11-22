@@ -42,6 +42,25 @@ class XmltvParserTest {
         assertEquals("News", p.category)
     }
 
+    @Test fun readsEpisodeNumXmltvNsFirst() {
+        val p = parse(res("epg.xml")).second.byTitle("Tom & Jerry")
+        assertEquals("S1E2", p.episodeKey)
+        val q = parseText(
+            """<tv><programme start="20261107113000" stop="20261107120000" channel="c"><title>X</title>
+            <episode-num system="onscreen">S09E09</episode-num><episode-num system="xmltv_ns">0.1.</episode-num>
+            <episode-num system="xmltv_ns">5.5.</episode-num></programme></tv>""",
+        ).second.single()
+        assertEquals("S1E2", q.episodeKey)
+    }
+
+    @Test fun episodeKeyOfCases() {
+        assertEquals("S1E2", episodeKeyOf("xmltv_ns", "0.1."))
+        assertEquals("E5", episodeKeyOf("xmltv_ns", ".4."))
+        assertEquals("S3E10", episodeKeyOf("xmltv_ns", "2.9/10.0/1"))
+        assertEquals("S01E02", episodeKeyOf("onscreen", " s01e02 "))
+        assertNull(episodeKeyOf("dd_progid", "EP1"))
+    }
+
     @Test fun timeWithoutOffsetIsUtc() {
         val p = parse(res("epg.xml")).second.byTitle("UTC Show")
         assertEquals(Instant.parse("2026-11-07T13:00:00Z"), p.start)

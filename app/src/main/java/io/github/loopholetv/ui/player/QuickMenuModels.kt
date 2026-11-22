@@ -50,6 +50,9 @@ enum class QuickItem(val label: String) {
     ASPECT("Aspect ratio"),
     SLEEP("Sleep timer"),
     FAVOURITE("Add to favourites"),
+
+    /** Labelled [RECORDING_LABEL] while this channel records; its list stops or extends the recording. */
+    RECORD("Record now"),
     OPTIONS("Channel options"),
     PIP("Picture-in-picture"),
 
@@ -57,6 +60,11 @@ enum class QuickItem(val label: String) {
     STREAM_INFO("Stream info"),
     SETTINGS("Settings"),
 }
+
+/** The record tile's label while the channel records. */
+const val RECORDING_LABEL = "Recording"
+const val STOP_RECORDING_LABEL = "Stop recording"
+const val EXTEND_RECORDING_LABEL = "Extend 30 min"
 
 /** The cast tile's label while this TV casts. */
 const val CAST_STOP_LABEL = "Stop casting"
@@ -112,11 +120,15 @@ data class QuickValues(
     val favourite: Boolean = false,
     /** This TV is casting (the cast tile offers to stop). */
     val casting: Boolean = false,
+    /** The channel playing is being recorded. */
+    val recording: Boolean = false,
 )
 
 private const val KEY_AUTO = "auto"
 private const val KEY_OFF = "off"
 private const val KEY_DEFAULT = "default"
+private const val KEY_STOP = "stop"
+private const val KEY_EXTEND = "extend"
 
 /** Track choices are keyed by their group id and index; never logged (ids can hold URL text). */
 private fun keyOf(id: TrackId) = "t:${id.groupId}#${id.trackIndex}"
@@ -140,6 +152,7 @@ fun quickEntries(items: List<QuickItem>, v: QuickValues): List<QuickEntry> = ite
     when (item) {
         QuickItem.FAVOURITE -> QuickEntry(item, if (v.favourite) OPTION_REMOVE_FAVOURITE else OPTION_ADD_FAVOURITE, null)
         QuickItem.CAST -> QuickEntry(item, if (v.casting) CAST_STOP_LABEL else item.label, null)
+        QuickItem.RECORD -> QuickEntry(item, if (v.recording) RECORDING_LABEL else item.label, null)
         else -> QuickEntry(item, item.label, quickValue(item, v))
     }
 }
@@ -179,6 +192,7 @@ fun quickChoices(item: QuickItem, v: QuickValues): List<QuickChoice> = when (ite
     QuickItem.ASPECT -> AspectMode.entries.map { QuickChoice(it.name, it.label, it == v.aspect) }
     QuickItem.SLEEP -> listOf(QuickChoice(KEY_OFF, "Off", v.sleep == SleepState.Off)) +
         SLEEP_PRESETS_MIN.map { QuickChoice(it.toString(), sleepPresetText(it), v.sleep.minutes() == it) }
+    QuickItem.RECORD -> listOf(QuickChoice(KEY_STOP, STOP_RECORDING_LABEL, false), QuickChoice(KEY_EXTEND, EXTEND_RECORDING_LABEL, false))
     else -> emptyList()
 }
 
@@ -207,6 +221,15 @@ internal interface QuickMenuHost {
 
     /** Starts casting to the other TVs, or stops the cast running. */
     fun toggleCasting()
+
+    /** Books the channel from now (its programme to the end, or an hour without guide data). */
+    fun recordNow()
+
+    /** Ends the recording running on the channel. */
+    fun stopRecording()
+
+    /** Runs the channel's recording [EXTEND_STEP_MIN] minutes longer. */
+    fun extendRecording()
     fun openOptions()
 
     /** Shows the stream info card over the video. */
@@ -289,6 +312,13 @@ internal class QuickMenuController(
             QuickItem.START_OVER -> close(host::watchFromStart)
             QuickItem.OPTIONS -> close(host::openOptions)
             QuickItem.STREAM_INFO -> close(host::showStreamInfo)
+            // Books at once while idle; while recording it opens the Stop / Extend list.
+            QuickItem.RECORD -> if (host.values().recording) {
+                open = Open(item, item)
+                refresh()
+            } else {
+                close(host::recordNow)
+            }
             QuickItem.FAVOURITE -> {
                 open = o.copy(focus = item, panel = null)
                 host.toggleFavourite()
@@ -323,6 +353,10 @@ internal class QuickMenuController(
                 sleepTimer?.cancel()
             } else {
                 key.toIntOrNull()?.takeIf { it in SLEEP_PRESETS_MIN }?.let { sleepTimer?.start(it) }
+            }
+            QuickItem.RECORD -> when (key) {
+                KEY_STOP -> host.stopRecording()
+                KEY_EXTEND -> host.extendRecording()
             }
             else -> Unit
         }

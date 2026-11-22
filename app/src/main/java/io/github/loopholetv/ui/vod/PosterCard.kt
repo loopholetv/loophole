@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +40,7 @@ import io.github.loopholetv.ui.common.okPress
 import io.github.loopholetv.ui.theme.Tokens
 
 val POSTER_WIDTH = 120.dp
+val PROGRAMME_CARD_WIDTH = 220.dp
 private val POSTER_SHAPE = RoundedCornerShape(8.dp)
 private const val FOCUSED_SCALE = 1.05f
 internal const val POSTER_PROGRESS_TAG = "poster-progress"
@@ -115,5 +118,70 @@ fun PosterCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * A landscape card for a booked programme: its channel's [channelLogo] (when it has one and it loads),
+ * the [title] and [timeText] (when it airs). OK calls [onClick], a long OK or Menu calls [onLongClick].
+ */
+@Composable
+fun ProgrammeCard(
+    channelLogo: String?,
+    title: String,
+    timeText: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var failed by remember(channelLogo) { mutableStateOf(false) }
+    Column(
+        modifier = modifier
+            .width(PROGRAMME_CARD_WIDTH)
+            .aspectRatio(16f / 9f)
+            .graphicsLayer {
+                val scale = if (focused) FOCUSED_SCALE else 1f
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(POSTER_SHAPE)
+            .background(Tokens.Surface)
+            .border(if (focused) 3.dp else 0.dp, if (focused) Tokens.Accent else Color.Transparent, POSTER_SHAPE)
+            .onFocusChanged { focused = it.isFocused }
+            .semantics(mergeDescendants = true) { }
+            .okPress(onClick, onLongClick)
+            .focusable()
+            .padding(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (channelLogo != null && !failed) {
+                val context = LocalPlatformContext.current
+                val request = remember(channelLogo) { ImageRequest.Builder(context).data(channelLogo).crossfade(false).build() }
+                AsyncImage(
+                    model = request,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    onError = { failed = true },
+                    modifier = Modifier.size(32.dp),
+                )
+            }
+            Text(
+                text = timeText,
+                style = MaterialTheme.typography.labelMedium,
+                color = Tokens.Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = if (channelLogo != null && !failed) 8.dp else 0.dp),
+            )
+        }
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = Tokens.OnBackground,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }

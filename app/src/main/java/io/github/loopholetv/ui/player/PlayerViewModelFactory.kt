@@ -9,6 +9,7 @@ import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.ui.guide.GuideFormat
+import io.github.loopholetv.record.bookedChannelIds
 import kotlinx.coroutines.flow.map
 import java.time.Instant
 import java.time.ZoneId
@@ -44,6 +45,9 @@ internal fun playerViewModelFactory(channelId: Long, scope: ChannelScope, archiv
                 archiveFrom = archiveFrom,
                 format = format,
                 cast = c.castController,
+                beforePlay = { ch, live -> c.recordingCoordinator.beforeUserPlay(ch, live) },
+                schedule = c.scheduleActions,
+                recordingChannels = c.recordingRunner.active.map { it.bookedChannelIds() },
             )
         }
     }

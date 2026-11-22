@@ -381,6 +381,60 @@ class CastControllerTest {
         assertEquals(2, wifiReleased)
     }
 
+    @Test fun heldServerSurvivesBackground() = runTest {
+        val c = controller()
+        assertNotNull(server.port)
+
+        c.holdServer(true)
+        c.onForeground(false)
+        runCurrent()
+        advanceTimeBy(CastController.DRAIN_MS + 1)
+        runCurrent()
+        assertNotNull(server.port)
+
+        // Releasing the hold while in the background stops it then.
+        c.holdServer(false)
+        assertNull(server.port)
+
+        // Without a hold, going to the background stops it as before.
+        foreground(c)
+        assertNotNull(server.port)
+        c.onForeground(false)
+        runCurrent()
+        advanceTimeBy(CastController.DRAIN_MS + 1)
+        runCurrent()
+        assertNull(server.port)
+    }
+
+    @Test fun holdingStartsTheServerWithoutTheAppEverOpened() = runTest {
+        val c = controller(foreground = false)
+        assertNull(server.port)
+
+        c.holdServer(true)
+        runCurrent()
+        assertNotNull(server.port)
+
+        c.holdServer(false)
+        assertNull(server.port)
+        assertNull(networkChanged)
+    }
+
+    @Test fun heldServerRebindsOnNetworkChangeInTheBackground() = runTest {
+        val c = controller(foreground = false)
+        c.holdServer(true)
+        runCurrent()
+        val port = server.port!!
+        assertNotNull(networkChanged)
+
+        addresses = listOf(loopback6, loopback)
+        networkChanged!!.invoke()
+        runCurrent()
+
+        assertEquals(port, server.port)
+        java.net.Socket(loopback6, port).close()
+        c.holdServer(false)
+    }
+
     @Test fun networkIsWatchedOnlyInTheForeground() = runTest {
         val c = controller()
         assertNotNull(networkChanged)
@@ -429,6 +483,34 @@ class CastControllerTest {
         assertEquals(listOf(true, true), playback.reopens)
         assertTrue(c.state.value is CastState.Casting)
         assertNotNull(server.port)
+    }
+
+    @Test fun recIsAnnouncedOnlyWhileJoiningIsAllowed() = runTest {
+        val rec = MutableStateFlow<String?>("rt")
+        val c = CastController(
+            backgroundScope, { "self" }, playback, host, discovery, table, client, server, { addresses },
+            settings, { "This TV" }, clock = { 5_000L }, recToken = rec,
+        )
+        foreground(c)
+        assertEquals("rt", c.selfAnnounce().rec)
+        settings.value = AppSettings(castAllowJoin = false)
+        runCurrent()
+        assertNull(c.selfAnnounce().rec)
+        settings.value = AppSettings(castAllowJoin = true)
+        runCurrent()
+        assertEquals("rt", c.selfAnnounce().rec)
+        rec.value = null
+        assertNull(c.selfAnnounce().rec)
+    }
+
+    @Test fun recIsNotAnnouncedBeforeSettingsLoad() = runTest {
+        val c = CastController(
+            backgroundScope, { "self" }, playback, host, discovery, table, client, server, { addresses },
+            kotlinx.coroutines.flow.MutableSharedFlow<AppSettings>(), { "This TV" }, clock = { 5_000L },
+            recToken = MutableStateFlow("rt"),
+        )
+        foreground(c)
+        assertNull(c.selfAnnounce().rec)
     }
 
     @Test fun onlyLoopbackIsNotAHomeNetwork() = runTest {

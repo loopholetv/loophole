@@ -27,22 +27,25 @@ internal sealed interface Opened {
     /** Set to an external player, but no link could be resolved; nothing plays. */
     data object ExternalFailed : Opened
 
-    /** No longer wanted by the time its settings were read (the user moved on). */
+    /** No longer wanted by the time its settings were read (the user moved on), or held back for a recording. */
     data object Dropped : Opened
 }
 
 /**
  * Starts channels for the full-screen player, honouring each channel's playback overrides: a
  * channel set to an external player is handed off instead of played. Handing off ends a cast this
- * TV is running first (the other TVs can't follow another app).
+ * TV is running first (the other TVs can't follow another app). Every open first asks [beforePlay],
+ * which may hold it while a recording has the provider's stream (false: nothing opens).
  */
 internal class ChannelOpener(
     private val playback: Playback,
     private val channelPlayback: (ChannelEntity) -> Flow<ChannelPlaybackPrefs>,
     private val cast: CastControls = NoCast,
+    private val beforePlay: suspend (ChannelEntity) -> Boolean = { true },
 ) {
     /** Opens [channel] unless [wanted] turns false while its overrides or link are read. */
     suspend fun open(channel: ChannelEntity, wanted: () -> Boolean): Opened {
+        if (!beforePlay(channel)) return Opened.Dropped
         val external = guard { channelPlayback(channel).first().externalPlayer }
         if (!wanted()) return Opened.Dropped
         if (external == null) {

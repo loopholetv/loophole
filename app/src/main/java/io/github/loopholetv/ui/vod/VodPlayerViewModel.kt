@@ -23,6 +23,7 @@ import io.github.loopholetv.player.catchup.SeekBatcher
 import io.github.loopholetv.ui.common.ChannelOption
 import io.github.loopholetv.ui.player.distinctLabels
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,6 +60,8 @@ class VodPlayerViewModel(
     private val next: suspend (VodRef) -> VodRef?,
     private val label: suspend (VodRef) -> String?,
     private val autoPlay: () -> Boolean,
+    /** Asked before the stream opens; false when a recording keeps the provider's stream (it may ask first). */
+    private val beforePlay: suspend (VodRef) -> Boolean = { true },
     private val nowMs: () -> Long,
 ) : ViewModel() {
     private val _bar = MutableStateFlow<VodBarUi?>(null)
@@ -133,7 +136,12 @@ class VodPlayerViewModel(
         opened = true
         lastSaveAt = nowMs()
         // In the background the stream stays closed; coming back opens it here.
-        if (screenStopped) lastPositionMs = startMs else playback.playVod(item, startMs)
+        if (screenStopped) {
+            lastPositionMs = startMs
+            return
+        }
+        if (!beforePlay(r) || finished || r != current) return
+        playback.playVod(item, startMs)
     }
 
     /** Looks up, once per item, the episode that follows it. */
@@ -395,7 +403,11 @@ class VodPlayerViewModel(
         if (finished) return
         if (leaveOnReturn) return exit()
         if (!opened || playback.state.value !is PlaybackState.Idle) return
-        playable?.let { playback.playVod(it, lastPositionMs) }
+        val item = playable ?: return
+        val r = current
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (beforePlay(r) && !finished && r == current) playback.playVod(item, lastPositionMs)
+        }
     }
 
     /** The screen is going away (the stream stops after this): note where it was. */

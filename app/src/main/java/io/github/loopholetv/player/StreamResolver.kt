@@ -93,6 +93,7 @@ class PlaylistStreamResolver(
     private val xtream: XtreamClient? = null,
     /** Stores the learned (zone, archive extension) for a playlist id. */
     private val storeArchiveInfo: suspend (Long, String?, String?) -> Unit = { _, _, _ -> },
+    private val storeMaxConnections: suspend (Long, Int?) -> Unit = { _, _ -> },
 ) : StreamResolver {
 
     /** Playlists whose zone was already asked for in this session, so a failed login isn't retried. */
@@ -190,6 +191,7 @@ class PlaylistStreamResolver(
             val ua = UserAgents.forDownload(p.userAgent, s.userAgent, defaultUa)
             val account = api.authenticate(XtreamCredentials(server, user, pass), ua)
             storeArchiveInfo(p.id, account.serverTimeZone, account.archiveExt)
+            storeMaxConnections(p.id, account.maxConnections)
             account.serverTimeZone to account.archiveExt
         } catch (e: CancellationException) {
             zoneAsked.remove(p.id)

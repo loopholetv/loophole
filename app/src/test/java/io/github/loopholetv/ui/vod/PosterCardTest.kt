@@ -37,4 +37,13 @@ class PosterCardTest {
 
         compose.onNodeWithTag(POSTER_PROGRESS_TAG, useUnmergedTree = true).assertDoesNotExist()
     }
+
+    @Test fun programmeCardShowsTitleAndTime() {
+        compose.setContent {
+            ProgrammeCard(channelLogo = null, title = "Evening News", timeText = "Today, 20:00", onClick = {}, onLongClick = {})
+        }
+
+        compose.onNodeWithText("Evening News").assertIsDisplayed()
+        compose.onNodeWithText("Today, 20:00").assertIsDisplayed()
+    }
 }

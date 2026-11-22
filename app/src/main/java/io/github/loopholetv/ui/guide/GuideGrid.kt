@@ -57,6 +57,7 @@ import io.github.loopholetv.data.db.displayName
 import io.github.loopholetv.data.repo.GuideKey
 import io.github.loopholetv.data.repo.guideKey
 import io.github.loopholetv.ui.theme.Tokens
+import io.github.loopholetv.record.Mark
 import java.time.Instant
 import kotlin.math.roundToInt
 
@@ -97,6 +98,7 @@ private fun rememberStripStyle(anchor: MutableState<Instant?>): StripStyle {
             rewind = with(density) {
                 RewindGlyph(REWIND_GLYPH_WIDTH.toPx(), REWIND_GLYPH_HEIGHT.toPx(), REWIND_GLYPH_GAP.toPx())
             },
+            markers = with(density) { MarkGlyphs(MARK_GLYPH_SIZE.toPx(), MARK_GLYPH_GAP.toPx()) },
         )
     }
 }
@@ -129,6 +131,8 @@ fun GuideGrid(
     onCopyFromAnotherTv: () -> Unit = {},
     /** Channels drawn with the ★ marker. */
     favourites: Set<ChannelRef> = emptySet(),
+    /** Reminders and recordings, drawn before the title of the programme they are booked for. */
+    marks: Map<String, Map<Instant, Mark>> = emptyMap(),
     /** The row being reordered (Move mode), outlined. */
     movingId: Long? = null,
     /** The window starts before "now" (see [GuideViewModel.pastWindow]). */
@@ -184,6 +188,7 @@ fun GuideGrid(
                             style = stripStyle,
                             actions = actions,
                             favourite = channel.ref in favourites,
+                            marks = marks,
                             moving = channel.id == movingId,
                             pastWindow = pastWindow,
                             stripModifier = Modifier
@@ -252,6 +257,7 @@ private fun GuideRow(
     style: StripStyle,
     actions: GridActions,
     favourite: Boolean,
+    marks: Map<String, Map<Instant, Mark>>,
     moving: Boolean,
     pastWindow: Boolean,
     stripModifier: Modifier,
@@ -260,6 +266,8 @@ private fun GuideRow(
     val key = channel.guideKey
     val loaded = if (key == null) emptyList() else slice.byKey[key]
     val known = key == null || key in slice.keys
+    // This row's marks by start, so a draw looks one up by the programme's own start (no key built per block).
+    val rowMarks = marks[key?.epgId] ?: emptyMap()
     val visible = remember(loaded, window) { loaded?.filter(window::overlaps) ?: emptyList() }
     // Worked out once per channel (and its limit once per clock tick), not on every draw.
     val catchup = remember(channel) { channel.catchup() }
@@ -294,6 +302,7 @@ private fun GuideRow(
             loading = !known,
             playable = playable,
             pastWindow = pastWindow,
+            marks = rowMarks,
         )
     }
 }

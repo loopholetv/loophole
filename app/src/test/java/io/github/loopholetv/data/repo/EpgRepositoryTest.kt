@@ -188,6 +188,41 @@ class EpgRepositoryTest {
         assertEquals(clock, first.start)
     }
 
+    @Test fun onCommittedCalledAfterSuccessOnly() = runTest {
+        val committed = mutableListOf<Long>()
+        val hooked = EpgRepository(db, http, now = { clock }, options = { EpgStoreOptions(pastDays = 7) }, onCommitted = { committed += it })
+        val id = standardSetup()
+        assertTrue(hooked.refresh(id) {}.ok)
+        assertEquals(listOf(id), committed)
+
+        serveCode("/guide.xml", 500)
+        assertFalse(hooked.refresh(id) {}.ok)
+        val noSource = playlist(emptyList())
+        assertFalse(hooked.refresh(noSource) {}.ok)
+        assertEquals(listOf(id), committed)
+    }
+
+    @Test fun aFailingHookKeepsTheStatusOkAndCancellationPropagates() = runTest {
+        val id = standardSetup()
+        val failing = EpgRepository(
+            db, http, now = { clock }, options = { EpgStoreOptions(pastDays = 7) },
+            onCommitted = { throw IllegalStateException("http://secret.example/x") },
+        )
+        assertTrue(failing.refresh(id) {}.ok)
+
+        val cancelling = EpgRepository(
+            db, http, now = { clock }, options = { EpgStoreOptions(pastDays = 7) },
+            onCommitted = { throw kotlinx.coroutines.CancellationException("stop") },
+        )
+        var cancelled = false
+        try {
+            cancelling.refresh(id) {}
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            cancelled = true
+        }
+        assertTrue(cancelled)
+    }
+
     @Test fun statusReportsMatchedCount() = runTest {
         serve(
             "/guide.xml",
@@ -966,6 +1001,26 @@ class EpgRepositoryTest {
         assertFalse(failed.ok)
         assertEquals("Couldn't reach the TV guide server.", failed.message)
         assertEquals(listOf("Show"), stored("p.1").map { it.title })
+    }
+
+    @Test fun importedProgrammesCarryTheEpisodeKey() = runTest {
+        val id = playlist(emptyList(), type = PlaylistType.STALKER)
+        channels(id, "Portal One" to "p.1")
+        val portal = EpgRepository(
+            db, http, now = { clock },
+            portalEpg = { _, emit ->
+                emit(io.github.loopholetv.data.xmltv.XmltvChannel("p.1", listOf("Portal One"), null))
+                emit(
+                    io.github.loopholetv.data.xmltv.XmltvProgramme(
+                        "p.1", clock, clock.plusSeconds(1800), "Show", null, null, null, episodeKey = "S1E2",
+                    ),
+                )
+            },
+        )
+
+        assertTrue(portal.refresh(id) {}.ok)
+
+        assertEquals(listOf<String?>("S1E2"), stored("p.1").map { it.episodeKey })
     }
 
     @Test fun stalkerSecretsCoverPortalAddresses() = runTest {

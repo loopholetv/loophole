@@ -79,6 +79,13 @@ fun PlaylistPage(
             { s -> choiceText(onStarts, s) { onOff(it ?: false) } },
             key = "p$id:onStart",
         ) { vm.setPlaylistOnStart(id, it) }
+        host.Row(
+            RC_CONNECTIONS,
+            RC_CONNECTION_CHOICES,
+            row.connectionsAllowed,
+            { connectionsText(it, row.autoConnections) },
+            key = "p$id:connections",
+        ) { vm.setConnectionsAllowed(id, it) }
         ValueRow("User agent", userAgentText(row.userAgent), { dialog = UA_KEY }, Modifier.focusRequester(host.requester(UA_KEY)))
         ActionRow("Groups and channels", onOpenEditor, Modifier.focusRequester(host.requester(EDITOR_KEY)))
         ActionRow("Delete playlist", { vm.requestDelete(id) }, Modifier.focusRequester(host.requester(DELETE_KEY)))

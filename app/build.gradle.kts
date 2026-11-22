@@ -30,8 +30,8 @@ android {
         applicationId = "io.github.loopholetv"
         minSdk = 25
         targetSdk = 37
-        versionCode = 15
-        versionName = "0.10.0"
+        versionCode = 16
+        versionName = "0.11.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -76,6 +76,10 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // The Robolectric suite outgrew Gradle's default 512 MB test heap.
+            it.maxHeapSize = "2g"
+        }
     }
 
     packaging {
@@ -104,6 +108,7 @@ dependencies {
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.documentfile)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.foundation)
@@ -134,6 +139,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.moshi)
     implementation(libs.zxing.core)
+    implementation(libs.smbj)
+    implementation(libs.nfs.client)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
 

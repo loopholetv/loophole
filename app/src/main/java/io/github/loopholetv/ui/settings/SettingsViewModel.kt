@@ -1,5 +1,8 @@
 package io.github.loopholetv.ui.settings
 
+import android.content.Context
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -29,8 +32,13 @@ import io.github.loopholetv.phone.PhoneJobPhase
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.player.asSetting
 import io.github.loopholetv.player.parseUdpProxy
+import io.github.loopholetv.record.storage.LocalDirStorage
+import io.github.loopholetv.record.storage.RecordingStorage
+import io.github.loopholetv.record.storage.StorageKind
+import io.github.loopholetv.record.storage.StorageResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +46,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -47,6 +56,7 @@ import io.github.loopholetv.update.UpdateAction
 import io.github.loopholetv.update.UpdateCardUi
 import io.github.loopholetv.update.UpdateStatus
 import io.github.loopholetv.update.cardFor
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import java.time.ZoneId
 import java.util.Locale
@@ -75,6 +85,10 @@ data class PlaylistRowUi(
     val statusIsError: Boolean = false,
     /** "1,360 channels · On · Updated 9 Nov 14:05". */
     val secondaryText: String = "",
+    /** The streams this TV may open at once on the provider; null = Auto. */
+    val connectionsAllowed: Int? = null,
+    /** What Auto means for this playlist: the account's limit, or one. */
+    val autoConnections: Int = 1,
 ) {
     val busy: Boolean get() = op is PlaylistOp.Updating
 }
@@ -107,7 +121,31 @@ data class SettingsUi(
     val pairedPhones: Int = 0,
     /** Shown on "Forget paired phones" after forgetting them failed; null otherwise. */
     val forgetPhonesError: String? = null,
+    /** "Test" on the Recordings page. */
+    val storageTest: StorageTestUi = StorageTestUi(),
+    /** Free space of the chosen storage; null when unknown or none is chosen. */
+    val freeBytes: Long? = null,
+    /** Free space of internal storage, shown beside its choice. */
+    val internalFreeBytes: Long? = null,
+    val permissions: PermissionStates = PermissionStates(),
 )
+
+/** The last "Test" of the chosen storage: [text] is "Works" or the storage's own plain-words message. */
+data class StorageTestUi(val running: Boolean = false, val text: String? = null, val failed: Boolean = false)
+
+/** What the two system permissions are now. */
+data class PermissionStates(val overlay: Boolean = false, val batteryUnrestricted: Boolean = false)
+
+/** The network folder form of an SMB share. */
+data class SmbForm(val host: String, val share: String, val folder: String, val user: String, val password: String, val domain: String) {
+    override fun toString() = "SmbForm(host=$host, share=$share, folder=$folder)"
+}
+
+data class NfsForm(val host: String, val export: String, val folder: String)
+
+fun AppSettings.smbForm() = SmbForm(smbHost, smbShare, smbFolder, smbUser, smbPassword, smbDomain)
+
+fun AppSettings.nfsForm() = NfsForm(nfsHost, nfsExport, nfsFolder)
 
 const val FORGET_PHONES_FAILED = "Couldn't forget paired phones. Try again."
 
@@ -134,6 +172,10 @@ private data class Ops(
     val confirmRemoveSource: Long? = null,
     val maxCatchupDays: Int? = null,
     val forgetPhonesFailed: Boolean = false,
+    val storageTest: StorageTestUi = StorageTestUi(),
+    val freeBytes: Long? = null,
+    val internalFreeBytes: Long? = null,
+    val permissions: PermissionStates = PermissionStates(),
 )
 
 /** Films and shows a playlist holds. */
@@ -189,8 +231,21 @@ class SettingsViewModel(
     phoneJob: Flow<PhoneJob?> = flowOf(null),
     pairedPhones: Flow<Int> = flowOf(0),
     private val forgetPairedPhones: suspend () -> Unit = {},
+    /** The storage the settings choose, or null when none is set up. */
+    private val storageFor: (AppSettings) -> RecordingStorage? = { null },
+    private val internalFreeBytes: suspend () -> Long? = { null },
+    /** Reads the overlay and battery permissions now. */
+    private val permissions: () -> PermissionStates = { PermissionStates() },
+    private val setConnectionsAllowed: suspend (Long, Int?) -> Unit = { _, _ -> },
 ) : ViewModel() {
+    private val settingsFlow = settings
     private val work: CoroutineScope get() = workScope ?: viewModelScope
+
+    /** The storage Test running, if any. */
+    private var testJob: Job? = null
+
+    /** The free-space read running, if any. */
+    private var infoJob: Job? = null
     private val ops = MutableStateFlow(Ops())
     private val epgBuilder = EpgUiBuilder(xtreamEpgUrl, zone, locale)
     private val rowText = PlaylistRowText(zone, locale)
@@ -234,6 +289,10 @@ class SettingsViewModel(
             updateCard = o.updateCard,
             pairedPhones = phoneNow.paired,
             forgetPhonesError = if (o.forgetPhonesFailed) FORGET_PHONES_FAILED else null,
+            storageTest = o.storageTest,
+            freeBytes = o.freeBytes,
+            internalFreeBytes = o.internalFreeBytes,
+            permissions = o.permissions,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUi())
 
@@ -262,6 +321,116 @@ class SettingsViewModel(
             }
             ops.update { it.copy(maxCatchupDays = days) }
         }
+        refreshPermissions()
+        refreshStorageInfo()
+    }
+
+    /** Reads the overlay and battery permissions again (the page is on screen again). */
+    fun refreshPermissions() {
+        val now = try {
+            permissions()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            PermissionStates()
+        }
+        ops.update { it.copy(permissions = now) }
+    }
+
+    /** Reads the free space of the chosen storage and of internal storage; a newer read replaces one still running. */
+    fun refreshStorageInfo() {
+        infoJob?.cancel()
+        infoJob = work.launch {
+            val internal = safeBytes { internalFreeBytes() }
+            val chosen = storageFor(settingsFlow.first())
+            val free = chosen?.let { s -> safeBytes { s.freeBytes() } }
+            ops.update { it.copy(internalFreeBytes = internal, freeBytes = free) }
+        }
+    }
+
+    private suspend fun safeBytes(read: suspend () -> Long?): Long? = try {
+        read()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Writes, reads back and deletes a test file in the chosen storage; the result shows under "Test". */
+    fun testStorage() {
+        if (ops.value.storageTest.running || testJob?.isActive == true) return
+        ops.update { it.copy(storageTest = StorageTestUi(running = true)) }
+        testJob = work.launch {
+            val me = coroutineContext.job
+            try {
+                val tested = settingsFlow.first()
+                val storage = storageFor(tested)
+                val result = when {
+                    storage == null -> StorageTestUi(text = RC_NOT_SET_HINT, failed = true)
+                    else -> try {
+                        when (val r = storage.test()) {
+                            StorageResult.Ok -> StorageTestUi(text = RC_TEST_WORKS)
+                            is StorageResult.Failed -> StorageTestUi(text = r.message, failed = true)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // Never the exception's own text: it may carry a user name.
+                        StorageTestUi(text = RC_TEST_FAILED, failed = true)
+                    }
+                }
+                val free = storage?.let { s -> safeBytes { s.freeBytes() } }
+                // The storage changed while it ran: the result is about a storage no longer chosen.
+                if (storageOf(settingsFlow.first()) == storageOf(tested)) {
+                    ops.update { it.copy(storageTest = result, freeBytes = free ?: it.freeBytes) }
+                }
+            } finally {
+                // However it ended, Test can be pressed again; a newer test's own state is left alone.
+                if (testJob == null || testJob === me) {
+                    ops.update { o -> if (o.storageTest.running) o.copy(storageTest = o.storageTest.copy(running = false)) else o }
+                }
+            }
+        }
+    }
+
+    /** What decides where recordings go: a change to any of it makes a test result stale. */
+    private fun storageOf(s: AppSettings) = listOf(
+        s.recordStorage, s.smbHost, s.smbShare, s.smbFolder, s.smbUser, s.smbPassword, s.smbDomain,
+        s.nfsHost, s.nfsExport, s.nfsFolder, s.usbTreeUri,
+    )
+
+    /** A changed storage setting: the old test result no longer applies, and the free space is read again. */
+    private fun changeStorage(transform: (AppSettings) -> AppSettings) {
+        testJob?.cancel()
+        testJob = null
+        ops.update { it.copy(storageTest = StorageTestUi(), freeBytes = null) }
+        work.launch {
+            updateSettings(transform)
+            refreshStorageInfo()
+        }
+    }
+
+    fun setStorageKind(kind: StorageKind) = changeStorage { it.copy(recordStorage = kind) }
+
+    /** Chooses the network folder and saves its form (trimmed; the password as typed). */
+    fun saveSmb(f: SmbForm) = changeStorage {
+        it.copy(
+            recordStorage = StorageKind.SMB, smbHost = f.host.trim(), smbShare = f.share.trim(), smbFolder = f.folder.trim(),
+            smbUser = f.user.trim(), smbPassword = f.password, smbDomain = f.domain.trim(),
+        )
+    }
+
+    fun saveNfs(f: NfsForm) = changeStorage {
+        it.copy(recordStorage = StorageKind.NFS, nfsHost = f.host.trim(), nfsExport = f.export.trim(), nfsFolder = f.folder.trim())
+    }
+
+    /** The picked drive folder; it becomes the place to record. */
+    fun setUsbTree(uri: String) = changeStorage { it.copy(recordStorage = StorageKind.USB, usbTreeUri = uri) }
+
+    /** `null` = Auto; one to five otherwise. */
+    fun setConnectionsAllowed(id: Long, n: Int?) {
+        if (n != null && n !in 1..5) return
+        work.launch { setConnectionsAllowed.invoke(id, n) }
     }
 
     fun updatePlaylist(id: Long) {
@@ -593,6 +762,10 @@ class SettingsViewModel(
                     phoneJob = c.phoneJobs.current,
                     pairedPhones = c.settingsStore.pairedCount,
                     forgetPairedPhones = { c.phonePairing.forgetAll() },
+                    storageFor = c.storageFactory::current,
+                    internalFreeBytes = { LocalDirStorage.internal(app)?.freeBytes() },
+                    permissions = { PermissionStates(canDrawOverlays(app), ignoresBatteryOptimisations(app)) },
+                    setConnectionsAllowed = { id, n -> c.db.playlistDao().setConnectionsAllowed(id, n) },
                 ) as T
             }
         }
@@ -614,3 +787,8 @@ private suspend fun playlistOfChannel(channelId: Long, lookUp: suspend (Long) ->
 } catch (_: Exception) {
     null
 }
+
+private fun canDrawOverlays(context: Context): Boolean = Settings.canDrawOverlays(context)
+
+private fun ignoresBatteryOptimisations(context: Context): Boolean =
+    (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isIgnoringBatteryOptimizations(context.packageName) == true

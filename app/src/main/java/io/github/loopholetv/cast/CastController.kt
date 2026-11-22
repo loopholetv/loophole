@@ -95,6 +95,8 @@ class CastController(
     private val inviteMs: Long = INVITE_MS,
     private val drainMs: Long = DRAIN_MS,
     private val settleMs: Long = SETTLE_MS,
+    /** The secret that opens this TV's recordings to other TVs, while it has any; announced as [CastAnnounce.rec]. */
+    private val recToken: StateFlow<String?> = MutableStateFlow(null),
 ) : CastView {
     /** One followed cast; replaced, never reused. */
     private class Follow(val peer: CastPeer, val selfId: String) {
@@ -143,6 +145,9 @@ class CastController(
 
     private var foreground = false
 
+    /** See [holdServer]. */
+    private var serverHeld = false
+
     /** False for the first [settleMs] after coming to the foreground: sightings are gathered only. */
     private var settled = false
 
@@ -165,6 +170,7 @@ class CastController(
     private val declined = HashSet<String>()
 
     private var foregroundJob: Job? = null
+    private var heldJob: Job? = null
     private var castJob: Job? = null
     private var inviteJob: Job? = null
     private var follow: Follow? = null
@@ -190,22 +196,52 @@ class CastController(
         if (foreground) enterForeground() else leaveForeground()
     }
 
+    /**
+     * True: the server stays up when the app goes to the background (a recording is being kept, and other
+     * TVs reach it through the server). False: it stops then, or right now when already in the background.
+     * Casting and following still end on leaving the foreground. Main thread.
+     */
+    fun holdServer(hold: Boolean) {
+        if (hold == serverHeld) return
+        serverHeld = hold
+        if (hold) {
+            // An alarm can start a recording with the app never opened: the server still has to come up.
+            if (!foreground) heldJob = scope.launch { ensureServer() }
+        } else if (!foreground) {
+            heldJob?.cancel()
+            heldJob = null
+            closeNetworkWatch()
+            server.stop()
+        }
+    }
+
+    /** Loads this TV's id, starts the server when it isn't up, and watches the network. False without an id. */
+    private suspend fun ensureServer(): Boolean {
+        val id = try {
+            idLoad.await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return false // No id, no casting this time.
+        }
+        me = id
+        startServer()
+        if (networkWatch == null) networkWatch = watchNetwork { scope.launch { onNetworkChanged() } }
+        return true
+    }
+
+    private fun closeNetworkWatch() {
+        networkWatch?.let { runCatching { it.close() } }
+        networkWatch = null
+    }
+
     private fun enterForeground() {
         seen.clear()
         settled = false
         // Entries kept from before the background can describe casts that ended long ago.
         table.prune()
         foregroundJob = scope.launch {
-            val id = try {
-                idLoad.await()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                return@launch // No id, no casting this time.
-            }
-            me = id
-            startServer()
-            networkWatch = watchNetwork { scope.launch { onNetworkChanged() } }
+            if (!ensureServer()) return@launch
             table.prune()
             discovery.start(::selfAnnounce)
             launch {
@@ -216,8 +252,8 @@ class CastController(
             launch {
                 combine(table.peers, latestSettings.filterNotNull(), ::Pair).collect { (list, s) -> onPeers(list, s) }
             }
-            combine(_state, playback.state, latestSettings.filterNotNull()) { _, _, s ->
-                listOf(selfStatus(host.active.value), s.castAllowJoin, s.castTvName)
+            combine(_state, playback.state, latestSettings.filterNotNull(), recToken) { _, _, s, rec ->
+                listOf(selfStatus(host.active.value), s.castAllowJoin, s.castTvName, rec)
             }.distinctUntilChanged().collect { discovery.refresh() }
         }
     }
@@ -247,7 +283,7 @@ class CastController(
      * server moves to the new addresses, keeping its port when it can, and the others are told.
      */
     private fun onNetworkChanged() {
-        if (!foreground || me == null) return
+        if ((!foreground && !serverHeld) || me == null) return
         val addresses = binds()
         if (server.port == null || addresses != boundAddresses) {
             val port = server.port ?: 0
@@ -262,8 +298,7 @@ class CastController(
     private fun leaveForeground() {
         foregroundJob?.cancel()
         foregroundJob = null
-        networkWatch?.let { runCatching { it.close() } }
-        networkWatch = null
+        if (!serverHeld) closeNetworkWatch()
         clearInvite(decline = false)
         discovery.stop()
         follow?.let { end(it, message = null, notifyHost = true, decline = false, stopPlayback = true) }
@@ -272,7 +307,7 @@ class CastController(
             casting?.join()
             // Lets the last events reach the followers before their connections close.
             if (casting != null) delay(drainMs)
-            if (!this@CastController.foreground) server.stop()
+            if (!this@CastController.foreground && !serverHeld) server.stop()
         }
     }
 
@@ -579,6 +614,7 @@ class CastController(
             castStartedAtMs = session?.startedAtMs,
             seq = 0,
             setup = CastAnnounce.SETUP_VERSION,
+            rec = recToken.value?.takeIf { s?.castAllowJoin == true },
         )
         if (now != announced) {
             announced = now
@@ -603,7 +639,7 @@ class CastController(
         const val NO_NETWORK_MESSAGE = "Connect this TV to your home network to cast."
 
         fun stoppedMessage(name: String, reason: StopReason): String = when (reason) {
-            StopReason.STOPPED, StopReason.LEFT_APP -> "$name stopped casting"
+            StopReason.STOPPED, StopReason.LEFT_APP, StopReason.RECORDING -> "$name stopped casting"
             StopReason.EXTERNAL_PLAYER -> "$name switched to another player"
         }
 

@@ -92,6 +92,7 @@ internal fun VodBrowse(
     onOpen: (playlistId: Long, key: String) -> Unit,
     onPlay: (VodPlay) -> Unit,
     onBack: () -> Unit,
+    onOpenReminder: (ProgrammeTarget) -> Unit = {},
 ) {
     val rows by vm.rows.collectAsStateWithLifecycle()
     val hidden by vm.hidden.collectAsStateWithLifecycle()
@@ -104,6 +105,7 @@ internal fun VodBrowse(
         onOpen = onOpen, onBack = onBack,
         myListKeys = myListKeys, onPlay = onPlay,
         onSetInMyList = vm::setInMyList, onDismissContinue = vm::dismissContinue,
+        onOpenReminder = onOpenReminder, onCancelReminder = vm::cancelReminder,
     )
 }
 
@@ -128,6 +130,8 @@ internal fun VodBrowseContent(
     onPlay: (VodPlay) -> Unit = {},
     onSetInMyList: (PosterModel, Boolean) -> Unit = { _, _ -> },
     onDismissContinue: (PosterModel) -> Unit = {},
+    onOpenReminder: (ProgrammeTarget) -> Unit = {},
+    onCancelReminder: (PosterModel) -> Unit = {},
 ) {
     var lastOpened by rememberSaveable { mutableStateOf(lastOpenedSeed) }
     // The last opened card's place in its row: a Continue watching card may be gone on return.
@@ -158,7 +162,10 @@ internal fun VodBrowseContent(
     }
     val open: (VodRowModel, Int, PosterModel) -> Unit = { row, index, card ->
         val play = card.play
-        if (row is VodRowModel.Continue && play != null) {
+        val programme = card.programme
+        if (programme != null) {
+            onOpenReminder(programme)
+        } else if (row is VodRowModel.Continue && play != null) {
             noteOpened(row, index, card)
             onPlay(play)
         } else {
@@ -272,7 +279,9 @@ internal fun VodBrowseContent(
         val row = t.row
         val card = t.card
         val inMyList = row is VodRowModel.MyList || KeyRef(card.playlistId, card.key) in myListKeys
-        val choices = buildList {
+        val choices = if (card.programme != null) {
+            listOf(ChannelOption(OPTION_CANCEL_REMINDER) { options = null; onCancelReminder(card) })
+        } else buildList {
             if (row is VodRowModel.Continue) {
                 add(ChannelOption(OPTION_REMOVE_CONTINUE) { options = null; onDismissContinue(card) })
                 add(ChannelOption(OPTION_OPEN_PAGE) { options = null; openPage(row, t.index, card) })
@@ -320,6 +329,7 @@ private fun AllHiddenNote(onShowHidden: () -> Unit, onFocused: () -> Unit) {
 
 private fun canHide(row: VodRowModel) = row is VodRowModel.Paged && row.category != null
 
+const val OPTION_CANCEL_REMINDER = "Cancel reminder"
 const val OPTION_REMOVE_CONTINUE = "Remove from Continue watching"
 const val OPTION_OPEN_PAGE = "Open page"
 const val OPTION_ADD_MY_LIST = "Add to My list"
@@ -400,6 +410,12 @@ private fun CardRow(
                 val card = cards.get(i)
                 if (card == null) {
                     Box(Modifier.width(POSTER_WIDTH).aspectRatio(2f / 3f))
+                } else if (card.programme != null) {
+                    ProgrammeCard(
+                        channelLogo = card.logo, title = card.title, timeText = card.programme.timeText,
+                        onClick = { onOpen(i, card) }, onLongClick = { onLongClick(i, card) },
+                        modifier = Modifier.focusRequester(requesters.requesterFor(cardId(rowId, card))),
+                    )
                 } else {
                     PosterCard(
                         title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction,

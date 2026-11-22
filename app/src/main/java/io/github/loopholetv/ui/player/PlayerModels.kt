@@ -28,6 +28,14 @@ const val EXTERNAL_RESOLVE_FAILED = "Couldn't open this channel in the other pla
 
 /** A channel's aspect ratio could not be saved; the saved one stays. */
 const val ASPECT_SAVE_FAILED = "Couldn't save the aspect ratio."
+/** The small badge over the video while the channel records. */
+const val REC_BADGE = "● REC"
+const val ALREADY_BOOKED = "Already booked"
+
+/** The message for an idle Record now that found the programme already covered. */
+fun alreadyRecording(title: String) = "Already recording $title"
+
+const val RECORDING_CHANGE_FAILED = "Couldn't change the recording."
 
 /** The channel's external player is no longer installed. */
 const val EXTERNAL_LAUNCH_FAILED = "That player isn't installed any more. Playing here instead."

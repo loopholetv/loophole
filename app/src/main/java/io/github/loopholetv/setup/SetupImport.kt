@@ -74,6 +74,8 @@ internal class SetupImporter(
     private val overlay: ChannelOverlay = ChannelOverlay(db),
     /** Runs inside the transaction right after the settings edit (a test seam for a failing commit). */
     private val afterSettingsWritten: suspend () -> Unit = {},
+    /** Runs after a committed import (the booking alarms are set again for what is left). */
+    private val onReplaced: suspend () -> Unit = {},
 ) {
     /**
      * Once started, an import finishes (or fails cleanly) even if the caller goes away. Imports
@@ -135,6 +137,7 @@ internal class SetupImporter(
             discard(staged, moved)
             return SetupImportResult.Failed
         }
+        runCatching { onReplaced() }
         withContext(Dispatchers.IO) {
             for (p in replaced) {
                 runCatching { files.deleteCopy(p.id) }
@@ -171,7 +174,8 @@ internal class SetupImporter(
     private suspend fun restore(previous: AppSettings) {
         val copied = SetupSettings.from(previous)
         try {
-            settings.update { copied.applyTo(it) }
+            // The storage too: a bundle without a network folder leaves it alone, but one with it changed it.
+            settings.update { copied.applyTo(it).withStorageOf(previous) }
         } catch (_: Exception) {
             // Nothing more can be done; the next import or settings change overwrites them.
         }
@@ -196,6 +200,8 @@ internal class SetupImporter(
         val unmatched = HashMap<String, ArrayDeque<PlaylistEntity>>()
         old.forEach { p -> p.identity()?.let { unmatched.getOrPut(it) { ArrayDeque() }.addLast(p) } }
 
+        // Playlist ids change: bookings made on the replaced playlists go with them. Finished recordings stay.
+        db.recordDao().deletePendingForPlaylists(old.map { it.id })
         dao.deleteAllPlaylists()
         val ids = LongArray(b.playlists.size)
         val links = ArrayList<EpgSourceEntity>()
@@ -276,6 +282,7 @@ internal class SetupImporter(
         portalDeviceId = portalDeviceId,
         portalDeviceId2 = portalDeviceId2,
         portalSignature = portalSignature,
+        connectionsAllowed = connectionsAllowed,
     )
 
     private fun SetupGroupEdit.toEntity(playlistId: Long) = GroupPrefsEntity(

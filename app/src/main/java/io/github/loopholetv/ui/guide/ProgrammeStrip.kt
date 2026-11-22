@@ -17,9 +17,11 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.nativeCanvas
@@ -31,6 +33,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import io.github.loopholetv.data.db.ProgrammeEntity
+import io.github.loopholetv.record.Mark
 import io.github.loopholetv.ui.common.KeyPhase
 import io.github.loopholetv.ui.common.OkPressAction
 import io.github.loopholetv.ui.common.OkPressTracker
@@ -63,6 +66,8 @@ class StripStyle(
     val anchor: MutableState<Instant?>,
     /** Drawn before the title of a programme that can be watched from the archive. */
     val rewind: RewindGlyph,
+    /** Drawn before the title of a programme with a reminder or a recording booked. */
+    val markers: MarkGlyphs,
 ) {
     private val metrics = paint.fontMetrics
     val ellipsisWidth: Float = paint.measureText(ELLIPSIS)
@@ -96,6 +101,46 @@ class RewindGlyph(val width: Float, val height: Float, val gap: Float) {
     val path: Path = rewindGlyphPath(width, height)
 }
 
+/** The booking markers' box (a clock or a disc) and the series sign after it. */
+val MARK_GLYPH_SIZE = 10.dp
+val MARK_GLYPH_GAP = 4.dp
+
+/**
+ * The reminder and recording markers, built once per density. A reminder is a clock, a recording a red
+ * disc, a recording now a disc with a ring around it; a series adds a small ring after the sign.
+ */
+class MarkGlyphs(val size: Float, val gap: Float) {
+    val clock: Path = Path().apply {
+        val r = size / 2f
+        // Face as a ring: the outer circle minus the inner one.
+        fillType = PathFillType.EvenOdd
+        addOval(Rect(0f, 0f, size, size))
+        addOval(Rect(size * 0.15f, size * 0.15f, size * 0.85f, size * 0.85f))
+        // Hands: up from the centre, then right.
+        val t = size * 0.1f
+        addRect(Rect(r - t / 2f, size * 0.25f, r + t / 2f, r + t / 2f))
+        addRect(Rect(r - t / 2f, r - t / 2f, size * 0.75f, r + t / 2f))
+    }
+    val disc: Path = Path().apply { addOval(Rect(size * 0.15f, size * 0.15f, size * 0.85f, size * 0.85f)) }
+    val ring: Path = Path().apply {
+        fillType = PathFillType.EvenOdd
+        addOval(Rect(0f, 0f, size, size))
+        addOval(Rect(size * 0.15f, size * 0.15f, size * 0.85f, size * 0.85f))
+    }
+    val seriesRing: Path = Path().apply {
+        fillType = PathFillType.EvenOdd
+        val s = size * 0.6f
+        addOval(Rect(0f, 0f, s, s))
+        addOval(Rect(s * 0.2f, s * 0.2f, s * 0.8f, s * 0.8f))
+    }
+    val seriesWidth: Float = size * 0.6f
+
+    /** Width taken by the sign for [mark] with its gap. */
+    fun width(mark: Mark): Float = size + gap + if (mark.isSeries()) seriesWidth + gap / 2f else 0f
+}
+
+private fun Mark.isSeries() = this == Mark.REMINDER_SERIES || this == Mark.RECORDING_SERIES
+
 private val Radius = 4.dp
 private val Gap = 2.dp
 private val TextInset = 10.dp
@@ -128,6 +173,8 @@ fun ProgrammeStrip(
     pastWindow: Boolean = false,
     /** Held OK or Menu (the row's channel options); a hold never also clicks. */
     onLongPress: () -> Unit = {},
+    /** What is booked, by programme start (this row's guide channel only; empty when nothing is). */
+    marks: Map<Instant, Mark> = emptyMap(),
 ) {
     // How far back this row goes (as rowEarliest); null: no further than "now".
     val earliest = playable?.from
@@ -236,7 +283,7 @@ fun ProgrammeStrip(
                 }
             }
             .focusable()
-            .drawBehind { drawStrip(programmes, window, now, selected, focused, loading, playable, style, layouts) },
+            .drawBehind { drawStrip(programmes, window, now, selected, focused, loading, playable, marks, style, layouts) },
     )
 }
 
@@ -249,6 +296,7 @@ private fun DrawScope.drawStrip(
     focused: Boolean,
     loading: Boolean,
     playable: PlayableRange?,
+    marks: Map<Instant, Mark>,
     style: StripStyle,
     layouts: LayoutCache,
 ) {
@@ -257,7 +305,7 @@ private fun DrawScope.drawStrip(
     val inset = TextInset.toPx()
     if (programmes.isEmpty()) {
         block(0f, size.width, if (focused) Tokens.FocusFill else Tokens.Surface, radius)
-        if (!loading) label(NO_INFO_ID, NO_INFO, 0f, size.width, inset, LabelTone.Plain, focused, false, style, layouts)
+        if (!loading) label(NO_INFO_ID, NO_INFO, 0f, size.width, inset, LabelTone.Plain, focused, false, null, style, layouts)
         return
     }
     layouts.trimTo(programmes.size)
@@ -278,7 +326,7 @@ private fun DrawScope.drawStrip(
         }
         block(x, w, fill, radius)
         val tone = if (ended && !archived) LabelTone.Dim else LabelTone.Plain
-        label(p.id, p.title, x, w, inset, tone, isSelected, archived, style, layouts)
+        label(p.id, p.title, x, w, inset, tone, isSelected, archived, marks[p.start], style, layouts)
     }
 }
 
@@ -297,11 +345,22 @@ private fun DrawScope.label(
     tone: LabelTone,
     highlighted: Boolean,
     rewind: Boolean,
+    mark: Mark?,
     style: StripStyle,
     layouts: LayoutCache,
 ) {
     var left = x + inset
     var room = (w - 2 * inset).toInt()
+    // The booking mark goes first, when the block has room for it.
+    if (mark != null) {
+        val markers = style.markers
+        val taken = markers.width(mark)
+        if (room >= taken + 8) {
+            drawMark(mark, left, markers, highlighted)
+            left += taken
+            room -= taken.toInt()
+        }
+    }
     val glyph = style.rewind
     // The rewind mark goes before the title, when the block has room for it.
     if (rewind && room >= glyph.width + glyph.gap + 8) {
@@ -321,6 +380,26 @@ private fun DrawScope.label(
         else -> style.textColor
     }
     drawContext.canvas.nativeCanvas.drawText(shown, left, style.baseline(size.height), paint)
+}
+
+private fun DrawScope.drawMark(mark: Mark, left: Float, g: MarkGlyphs, highlighted: Boolean) {
+    val top = (size.height - g.size) / 2f
+    val red = Tokens.Error
+    translate(left, top) {
+        when (mark) {
+            Mark.REMINDER, Mark.REMINDER_SERIES -> drawPath(g.clock, if (highlighted) Tokens.OnFocus else Tokens.Accent)
+            Mark.RECORDING, Mark.RECORDING_SERIES -> drawPath(g.disc, red)
+            Mark.RECORDING_NOW -> {
+                drawPath(g.disc, red)
+                drawPath(g.ring, red)
+            }
+        }
+        if (mark.isSeries()) {
+            translate(g.size + g.gap / 2f, g.size - g.seriesWidth) {
+                drawPath(g.seriesRing, if (mark == Mark.RECORDING_SERIES) red else if (highlighted) Tokens.OnFocus else Tokens.Accent)
+            }
+        }
+    }
 }
 
 /** [text] cut to [room] pixels with a trailing ellipsis when it does not fit. */

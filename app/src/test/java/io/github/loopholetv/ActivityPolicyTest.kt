@@ -42,6 +42,7 @@ class ActivityPolicyTest {
     @Test fun pipClosesAboveVodPlayer() {
         assertTrue(shouldCloseAbovePlayerForPip(inPip = true, currentRoute = Routes.SETTINGS))
         assertFalse(shouldCloseAbovePlayerForPip(inPip = true, currentRoute = Routes.VOD_PLAYER))
+        assertFalse(shouldCloseAbovePlayerForPip(inPip = true, currentRoute = Routes.RECORDING_PLAYER))
     }
 
     @Test fun sleepExpiryLeavesPipWindowOnly() {

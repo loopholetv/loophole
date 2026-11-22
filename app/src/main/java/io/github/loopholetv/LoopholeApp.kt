@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -57,12 +58,18 @@ open class LoopholeApp : Application(), RefreshRunnerProvider {
 
     override fun onCreate() {
         super.onCreate()
+        io.github.loopholetv.record.Notifications.ensureChannels(this)
         // WorkManager is initialised by its default App Startup provider, which runs before onCreate.
         container.refreshScheduler.observe(
             container.settingsStore.settings,
             container.playlistRepository.playlists(),
             applicationScope,
         )
+        // Alarms after this point (and the recovery below) reach the recording coordinator.
+        container.alarmDispatch.recordings = container.recordingCoordinator
+        container.alarmDispatch.reminders = { id -> container.reminders.onAlarm(id) }
+        // Bookings survive a restart: recover what was running, then set the alarms again.
+        applicationScope.launch { container.recoverAndRearm() }
         // Watch history: channels played for 10 s or more, wherever playback started.
         container.historyRecorder.start(applicationScope)
         // Turning off or deleting the playing channel's playlist stops playback.

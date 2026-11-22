@@ -91,6 +91,18 @@ class StartDestinationTest {
     }
 
     @Test
+    fun aHandoverReplacesThePlayerThatAsked() {
+        val options = handoverToRecordingOptions()
+        assertEquals(Routes.PLAYER, options.popUpToRoute)
+        assertTrue(options.isPopUpToInclusive())
+        assertTrue(options.shouldLaunchSingleTop())
+        assertTrue(isOverlayRoute(Routes.SETTINGS))
+        assertTrue(isOverlayRoute(Routes.TVS))
+        assertTrue(isOverlayRoute(Routes.PHONE_SETUP))
+        assertFalse(isOverlayRoute(Routes.PLAYER))
+    }
+
+    @Test
     fun noPlaylistStartsAtOnboarding() {
         assertEquals(Routes.ONBOARDING, startDestination(hasPlaylist = false, skipped = false))
     }
@@ -284,6 +296,7 @@ class StartDestinationTest {
     @Test
     fun vodPlayerHoldsAutoJoin() = runTest {
         assertTrue(holdsAutoJoin(Routes.VOD_PLAYER))
+        assertTrue(holdsAutoJoin(Routes.RECORDING_PLAYER))
         assertTrue(holdsAutoJoin(Routes.ONBOARDING))
         assertTrue(holdsAutoJoin(null))
         assertFalse(holdsAutoJoin(Routes.PLAYER))

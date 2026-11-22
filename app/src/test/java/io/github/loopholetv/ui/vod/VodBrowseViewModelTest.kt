@@ -205,4 +205,49 @@ class VodBrowseViewModelTest {
 
         assertEquals(listOf("Action"), vm.rows.first { r -> r.none { it is VodRowModel.Continue } }.map { it.title })
     }
+
+    private fun reminder(id: Long, playlist: Long, startMin: Long, lengthMin: Long = 60) = io.github.loopholetv.data.db.ReminderEntity(
+        id = id, playlistId = playlist, channelKey = "c$id", channelName = "Channel $id", epgChannelId = null, title = "Show $id",
+        subTitle = null, episodeKey = null, start = now.plusSeconds(startMin * 60), stop = now.plusSeconds((startMin + lengthMin) * 60),
+    )
+
+    @Test fun remindersLeadMyListUntilAired() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f3", "Action"))
+        library.setInMyList(TitleKind.FILM, a, "f3", true)
+        val reminders = kotlinx.coroutines.flow.MutableStateFlow(listOf(reminder(1, a, startMin = 30), reminder(2, a, startMin = 90)))
+        val vm = main.keep(
+            VodBrowseViewModel(VodKind.MOVIE, repo, library, edits, reminders = reminders, clock = { now }, channelLogo = { _, _ -> "http://l.test/x.png" }),
+        )
+
+        val cards = (vm.rows.first { r -> r.any { it is VodRowModel.MyList } && (r.first() as VodRowModel.MyList).cards.size == 3 }
+            .first() as VodRowModel.MyList).cards
+
+        assertEquals(listOf("Show 1", "Show 2", "f3"), cards.map { it.title })
+        val first = cards.first().programme!!
+        assertEquals(a, first.playlistId)
+        assertEquals("c1", first.channelKey)
+        assertEquals(now.plusSeconds(30 * 60).toEpochMilli(), first.startMs)
+        assertEquals(1L, first.reminderId)
+        assertEquals("http://l.test/x.png", cards.first().logo)
+        assertEquals(null, cards.last().programme)
+
+        // The first one has aired: it leaves the row.
+        reminders.value = listOf(reminder(1, a, startMin = -90), reminder(2, a, startMin = 90))
+        val after = (vm.rows.first { r -> (r.first() as? VodRowModel.MyList)?.cards?.size == 2 }.first() as VodRowModel.MyList).cards
+        assertEquals(listOf("Show 2", "f3"), after.map { it.title })
+    }
+
+    @Test fun remindersAloneStillMakeAMyListRow() = runTest {
+        val a = db.addPlaylist()
+        insertShows(show(a, "s1", category = "Drama"))
+        val vm = main.keep(
+            VodBrowseViewModel(VodKind.EPISODE, repo, library, edits, reminders = kotlinx.coroutines.flow.flowOf(listOf(reminder(1, a, 30))), clock = { now }),
+        )
+
+        val row = vm.rows.first { r -> r.any { it is VodRowModel.MyList } }.first() as VodRowModel.MyList
+
+        assertEquals(MY_LIST_ROW_TITLE, row.title)
+        assertEquals(listOf("Show 1"), row.cards.map { it.title })
+    }
 }

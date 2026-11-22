@@ -127,6 +127,7 @@ class VodPlayerViewModelTest {
         start: VodRef = ref,
         autoPlay: Boolean = true,
         dao: FakeProgressDao = FakeProgressDao(),
+        beforePlay: suspend (VodRef) -> Boolean = { true },
     ): Rig {
         val playback = FakePlayback()
         val progress = VodProgressRepository(dao) { Instant.ofEpochSecond(1_000_000) }
@@ -137,12 +138,29 @@ class VodPlayerViewModelTest {
                 next = nextOf,
                 label = { "Next: ${it.key}" },
                 autoPlay = { autoPlay },
+                beforePlay = beforePlay,
             ) { testScheduler.currentTime },
         )
         val events = mutableListOf<VodPlayerEvent>()
         backgroundScope.launch(dispatcher) { vm.events.collect { events += it } }
         runCurrent()
         return Rig(playback, dao, vm, events)
+    }
+
+    @Test fun filmOpensOnlyOnceTheRecordingLetsGo() = runTest(dispatcher) {
+        val answer = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        val asked = mutableListOf<VodRef>()
+        val r = rig(startMs = 5_000, beforePlay = { asked += it; answer.await() })
+        assertEquals(listOf(ref), asked)
+        assertEquals(emptyList<Pair<VodPlayable, Long>>(), r.playback.opened)
+        answer.complete(true)
+        runCurrent()
+        assertEquals(listOf(item to 5_000L), r.playback.opened)
+    }
+
+    @Test fun filmHeldBackOpensNothing() = runTest(dispatcher) {
+        val r = rig(beforePlay = { false })
+        assertEquals(emptyList<Pair<VodPlayable, Long>>(), r.playback.opened)
     }
 
     @Test fun retryThenBackBeforeItLoadsKeepsTheLastPosition() = runTest(dispatcher) {

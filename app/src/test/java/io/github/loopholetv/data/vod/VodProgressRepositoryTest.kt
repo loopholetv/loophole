@@ -50,6 +50,13 @@ class VodProgressRepositoryTest {
         assertNull(repo.observe(ref).first())
     }
 
+    @Test fun aRecordingIsNeverRecorded() = runTest {
+        val ref = VodRef(VodKind.RECORDING, -1, "rec:1")
+        repo.record(ref, 120_000, 3_600_000)
+        repo.recordEnd(ref, 3_600_000, 3_600_000)
+        assertEquals(0, db.rowCount("vod_progress"))
+    }
+
     private fun episode(p: Long, key: String, show: String) =
         EpisodeEntity(p, key, show, "G", key, 1, 1, null, "u", null, null, null, 0, now)
 

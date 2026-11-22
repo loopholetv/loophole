@@ -31,9 +31,14 @@ import io.github.loopholetv.player.SleepTimer
 import io.github.loopholetv.player.StreamTags
 import io.github.loopholetv.player.catchup.PlayMode
 import io.github.loopholetv.player.catchup.ProgrammeLookup
+import io.github.loopholetv.record.BookResult
+import io.github.loopholetv.record.EXTEND_STEP_MIN
 import io.github.loopholetv.ui.guide.GuideFormat
+import io.github.loopholetv.ui.guide.NoSchedule
+import io.github.loopholetv.ui.guide.ScheduleActions
 import io.github.loopholetv.ui.manage.ChannelEdit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -44,6 +49,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
@@ -111,6 +117,15 @@ class PlayerViewModel(
     format: GuideFormat = GuideFormat(true, ZoneId.systemDefault()),
     /** Casting what plays here to the other TVs (the quick menu's cast tile). */
     private val cast: CastControls = NoCast,
+    /**
+     * Asked before a channel opens here, live or (live false) from its archive; false when a recording
+     * keeps the provider's stream (it may ask the viewer first).
+     */
+    private val beforePlay: suspend (channel: ChannelEntity, live: Boolean) -> Boolean = { _, _ -> true },
+    /** Books, stops and extends recordings (the quick menu's record tile). */
+    private val schedule: ScheduleActions = NoSchedule,
+    /** Ids of the channels recording now. */
+    recordingChannels: Flow<Set<Long>> = flowOf(emptySet()),
 ) : ViewModel() {
 
     private val toggle = toggleFavourite
@@ -184,6 +199,13 @@ class PlayerViewModel(
     /** Whether the stream info card shows over the video (the quick menu's Stream info; Back hides it). */
     val streamInfoShown: StateFlow<Boolean> = _streamInfoShown.asStateFlow()
 
+    private val recordingIds = MutableStateFlow<Set<Long>>(emptySet())
+
+    /** Whether the channel playing is being recorded (the "● REC" badge, the record tile). */
+    val recording: StateFlow<Boolean> =
+        combine(recordingIds, _ui.map { it?.channel?.id }.distinctUntilChanged()) { ids, id -> id != null && id in ids }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     private val menu = QuickMenuController(
         scope = viewModelScope,
         playback = playback,
@@ -197,6 +219,7 @@ class PlayerViewModel(
                 sleep = sleep.value,
                 favourite = _ui.value?.favourite == true,
                 casting = cast.state.value is CastState.Casting,
+                recording = recording.value,
             )
             override fun showChannels() = showOverlay()
             override fun watchFromStart() = this@PlayerViewModel.watchFromStart()
@@ -204,6 +227,17 @@ class PlayerViewModel(
             override fun toggleCasting() {
                 if (cast.state.value is CastState.Casting) cast.stopCasting() else cast.startCasting()
             }
+            override fun recordNow() = bookRecording {
+                val title = _ui.value?.now?.title?.takeIf { t -> t.isNotBlank() } ?: it.displayName
+                showMessage(
+                    when (schedule.recordNow(it)) {
+                        is BookResult.Booked -> "Recording $title"
+                        BookResult.AlreadyBooked -> if (recording.value) alreadyRecording(title) else ALREADY_BOOKED
+                    },
+                )
+            }
+            override fun stopRecording() = bookRecording { schedule.stopRecording(it) }
+            override fun extendRecording() = bookRecording { schedule.extend(it, EXTEND_STEP_MIN) }
             override fun openOptions() { _ui.value?.channel?.let(::openOptions) }
             override fun showStreamInfo() { _streamInfoShown.value = true }
             override fun saveAspect(mode: AspectMode) {
@@ -236,7 +270,7 @@ class PlayerViewModel(
         cast.state.map { (it as? CastState.Casting)?.followers }
             .stateIn(viewModelScope, SharingStarted.Eagerly, (cast.state.value as? CastState.Casting)?.followers)
 
-    private val opener = ChannelOpener(playback, channelPlayback, cast)
+    private val opener = ChannelOpener(playback, channelPlayback, cast) { beforePlay(it, true) }
 
     private val catchup = PlayerCatchup(
         playback, programmeLookup ?: airingLookup(nowAndNext), clock, elapsedMs, format, viewModelScope,
@@ -251,6 +285,7 @@ class PlayerViewModel(
             // Dropped if an archive starts while the channel's settings are read.
             override fun openLive(channel: ChannelEntity) { viewModelScope.launch { open(channel, liveOnly = true) } }
         },
+        beforeOpen = { beforePlay(it, false) },
     )
 
     private val numbers = NumberEntry(viewModelScope, { _ui.value?.numberEntry }, { e -> update { it.copy(numberEntry = e) } }, ::jump)
@@ -294,8 +329,10 @@ class PlayerViewModel(
             merge(
                 playback.tracks, _aspect, sleep, catchupBar.map { it == null }.distinctUntilChanged(),
                 cast.state.map { it is CastState.Casting }.distinctUntilChanged(),
+                recording.map { },
             ).collect { menu.refresh() }
         }
+        viewModelScope.launch { recordingChannels.catch { }.collect { recordingIds.value = it } }
         viewModelScope.launch { remote.catch { }.collect { remoteSettings = it } }
         // Not lifecycle-bound: the expiry is not replayed, and the exit must not be missed.
         sleepTimer?.let { timer ->
@@ -464,6 +501,11 @@ class PlayerViewModel(
         return false
     }
 
+    /** Plays [c] live here once [beforePlay] allows it; at once when there is nothing to ask. */
+    private fun playChecked(c: ChannelEntity) {
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) { if (beforePlay(c, true)) playback.play(c) }
+    }
+
     /** The other player opened: back to the guide, whose preview stays stopped. */
     fun onExternalLaunched() {
         previewHold.hold()
@@ -478,7 +520,7 @@ class PlayerViewModel(
         notPlayedHere = false
         savedState[KEY_HANDED_OFF] = false
         showMessage(EXTERNAL_LAUNCH_FAILED)
-        playback.play(c)
+        playChecked(c)
         update { it.withPlayback(playback.state.value) }
     }
 
@@ -487,7 +529,7 @@ class PlayerViewModel(
         val job = settleJob ?: return
         job.cancel()
         settleJob = null
-        _ui.value?.channel?.let(playback::play)
+        _ui.value?.channel?.let(::playChecked)
     }
 
     /**
@@ -502,7 +544,7 @@ class PlayerViewModel(
         val live = _ui.value?.channel?.takeIf { toLive && settleJob == null && isRecording(it) }
         catchup.clear()
         if (exited) return
-        if (live != null) playback.play(live) else flushPendingZap()
+        if (live != null) playChecked(live) else flushPendingZap()
         numbers.cancel()
         exited = true
     }
@@ -732,6 +774,20 @@ class PlayerViewModel(
         }
     }
 
+    /** Runs a booking change for the channel playing; a failure leaves the recording as it was. */
+    private fun bookRecording(change: suspend (ChannelEntity) -> Unit) {
+        val c = _ui.value?.channel ?: return
+        viewModelScope.launch {
+            try {
+                change(c)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                showMessage(RECORDING_CHANGE_FAILED)
+            }
+        }
+    }
+
     private fun showMessage(text: String) {
         update { it.copy(message = text) }
         messageJob?.cancel()
@@ -745,7 +801,7 @@ class PlayerViewModel(
         if (exited) return
         settleJob?.cancel()
         settleJob = null
-        _ui.value?.channel?.let(playback::play)
+        _ui.value?.channel?.let(::playChecked)
     }
 
     /**
@@ -851,7 +907,7 @@ class PlayerViewModel(
     fun onScreenStarted() {
         if (exited || !started || notPlayedHere) return
         val ui = _ui.value ?: return
-        if (!catchup.onStarted(ui.channel) && playback.state.value is PlaybackState.Idle) playback.play(ui.channel)
+        if (!catchup.onStarted(ui.channel) && playback.state.value is PlaybackState.Idle) playChecked(ui.channel)
     }
 
     override fun onCleared() {

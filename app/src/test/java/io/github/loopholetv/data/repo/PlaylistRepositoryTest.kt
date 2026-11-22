@@ -13,6 +13,7 @@ import io.github.loopholetv.data.db.insertChannels
 import io.github.loopholetv.data.db.loadAll
 import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.data.xtream.XtreamCredentials
+import io.github.loopholetv.record.effectiveConnections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -277,6 +278,26 @@ class PlaylistRepositoryTest {
         assertEquals("ts", p.xtreamArchiveExt)
     }
 
+    @Test fun xtreamAddStoresMaxConnections() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = when (request.requestUrl?.queryParameter("action")) {
+                    null -> """{"server_info":{"timezone":"Europe/Berlin"},
+                        "user_info":{"auth":1,"status":"Active","max_connections":"2","allowed_output_formats":["ts"]}}"""
+                    "get_live_categories" -> res("xtream/categories.json")
+                    "get_live_streams" -> res("xtream/live_streams.json")
+                    else -> return MockResponse().setResponseCode(404)
+                }
+                return MockResponse().setBody(body)
+            }
+        }
+        val id = successOf(repo.addXtream("Xt", creds()) {}).playlistId
+        val p = db.playlistDao().byId(id)!!
+        assertEquals(2, p.accountMaxConnections)
+        assertEquals(2, p.effectiveConnections())
+        assertEquals(1, p.copy(connectionsAllowed = 1).effectiveConnections())
+    }
+
     @Test fun tvArchiveWithZeroDaysIsNotCatchup() = runTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -500,6 +521,36 @@ class PlaylistRepositoryTest {
         repo.delete(id)
         assertTrue(repo.playlists().first().isEmpty())
         assertEquals(0, totalChannels())
+    }
+
+    @Test fun deleteDropsPendingBookingsButKeepsFinishedRecordings() = runTest {
+        val id = addFive()
+        val now = java.time.Instant.parse("2026-11-22T20:00:00Z")
+        fun row(start: Long, state: io.github.loopholetv.data.db.RecordingState) = io.github.loopholetv.data.db.RecordingEntity(
+            playlistId = id, channelKey = "k", channelName = "C", epgChannelId = null, title = "T", subTitle = null,
+            episodeKey = null, description = null, start = now.plusSeconds(start), stop = now.plusSeconds(start + 60),
+            padBeforeMin = 1, padAfterMin = 5, state = state, createdAt = now,
+        )
+        val dao = db.recordDao()
+        dao.insertRecording(row(0, io.github.loopholetv.data.db.RecordingState.SCHEDULED))
+        dao.insertRecording(row(100, io.github.loopholetv.data.db.RecordingState.DONE))
+        dao.insertRecording(row(200, io.github.loopholetv.data.db.RecordingState.SKIPPED))
+        val other = db.addPlaylist("Other")
+        dao.insertRecording(
+            row(300, io.github.loopholetv.data.db.RecordingState.DONE)
+                .copy(playlistId = other, sourcePlaylistId = id, sourceChannelKey = "k"),
+        )
+        dao.upsertReminder(
+            io.github.loopholetv.data.db.ReminderEntity(
+                playlistId = id, channelKey = "k", channelName = "C", epgChannelId = null, title = "T",
+                subTitle = null, episodeKey = null, start = now, stop = now.plusSeconds(60),
+            ),
+        )
+        repo.delete(id)
+        val left = dao.observeRecordings().first()
+        assertEquals(listOf(io.github.loopholetv.data.db.RecordingState.DONE, io.github.loopholetv.data.db.RecordingState.DONE), left.map { it.state })
+        assertTrue(left.none { it.sourcePlaylistId != null || it.sourceChannelKey != null })
+        assertTrue(dao.observeReminders(Instant.EPOCH).first().isEmpty())
     }
 
     // --- navigation ---

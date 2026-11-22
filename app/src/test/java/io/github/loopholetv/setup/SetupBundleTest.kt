@@ -18,6 +18,7 @@ import io.github.loopholetv.data.settings.SubtitleColour
 import io.github.loopholetv.data.settings.SubtitleEdge
 import io.github.loopholetv.data.settings.SubtitleSize
 import io.github.loopholetv.data.settings.SubtitleStyle
+import io.github.loopholetv.record.storage.StorageKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -61,7 +62,7 @@ internal fun sampleBundle(secret: String = SECRET): SetupBundle = SetupBundle(
             name = "Portal", type = PlaylistType.STALKER, url = "http://portal.example.test/c/",
             mac = "00:1A:79:$secret", portalLogin = "login-$secret", portalPassword = "pw-$secret",
             portalSerial = "serial-$secret", portalDeviceId = "dev-$secret", portalDeviceId2 = "dev2-$secret",
-            portalSignature = "sig-$secret",
+            portalSignature = "sig-$secret", connectionsAllowed = 2,
         ),
         SetupPlaylist(
             name = "File", type = PlaylistType.M3U_FILE,
@@ -91,6 +92,11 @@ internal fun changedSettings(secret: String = SECRET): AppSettings = AppSettings
         subtitleStyle = SubtitleStyle(SubtitleSize.LARGE, SubtitleColour.YELLOW, SubtitleBackground.BLACK, SubtitleEdge.SHADOW),
         pipOnHome = true, autoPlayNext = false,
     ),
+    recordStorage = StorageKind.SMB, smbHost = "nas.example.test", smbShare = "tv", smbFolder = "rec",
+    smbUser = "u-$secret", smbPassword = "p-$secret", smbDomain = "HOME",
+    nfsHost = "nfs.example.test", nfsExport = "/export", nfsFolder = "rec2",
+    usbTreeUri = "content://usb/$secret", reminderLeadMin = 5, reminderAutoSwitch = true,
+    padBeforeMin = 2, padAfterMin = 15,
     remote = RemoteSettings(
         mediaKeysSeek = false, rwRewindsLive = false, leftRightSeek = false, leftRewindsLive = true,
         bindings = KeyBindings(
@@ -256,13 +262,113 @@ class SetupBundleTest {
     }
 
     @Test
+    fun usbStorageIsNotCopied() {
+        val usb = SetupSettings.from(AppSettings(recordStorage = StorageKind.USB, usbTreeUri = "content://usb/x"))
+        assertEquals(StorageKind.NONE, usb.recordStorage)
+        assertEquals(StorageKind.NONE, SetupSettings.from(AppSettings(recordStorage = StorageKind.INTERNAL)).recordStorage)
+        assertEquals("", usb.applyTo(AppSettings(usbTreeUri = "")).usbTreeUri)
+        assertEquals("content://usb/mine", usb.applyTo(AppSettings(usbTreeUri = "content://usb/mine")).usbTreeUri)
+
+        val smb = changedSettings()
+        val bundle = sampleBundle()
+        val decoded = decode(SetupJson.encode(bundle))!!
+        assertEquals(StorageKind.SMB, decoded.settings.recordStorage)
+        val applied = decoded.settings.applyTo(AppSettings())
+        assertEquals(smb.smbUser, applied.smbUser)
+        assertEquals(smb.smbPassword, applied.smbPassword)
+        assertEquals(smb.smbHost, applied.smbHost)
+        assertEquals(StorageKind.NFS, SetupSettings.from(AppSettings(recordStorage = StorageKind.NFS)).recordStorage)
+        assertEquals(2, decoded.playlists.first { it.type == PlaylistType.STALKER }.connectionsAllowed)
+    }
+
+    @Test
+    fun aBundleWithoutANetworkFolderKeepsThisTvsStorage() {
+        val target = AppSettings(
+            recordStorage = StorageKind.SMB, smbHost = "mine.example.test", smbShare = "share", smbFolder = "rec",
+            smbUser = "me", smbPassword = "pw-mine", smbDomain = "home", nfsHost = "nfs-mine.example.test",
+            nfsExport = "/mine", nfsFolder = "f", usbTreeUri = "content://usb/mine",
+        )
+        val none = SetupSettings.from(AppSettings(recordStorage = StorageKind.USB, usbTreeUri = "content://usb/x"))
+        assertEquals(StorageKind.NONE, none.recordStorage)
+        assertStorageKept(target, none.applyTo(target))
+    }
+
+    @Test
+    fun aNetworkFolderIsAppliedOntoATvWithNone() {
+        val applied = SetupSettings.from(changedSettings()).applyTo(AppSettings(recordStorage = StorageKind.NONE))
+        assertEquals(StorageKind.SMB, applied.recordStorage)
+        assertEquals("nas.example.test", applied.smbHost)
+        assertEquals(changedSettings().smbUser, applied.smbUser)
+        assertEquals(changedSettings().smbPassword, applied.smbPassword)
+        // SMB was chosen: the NFS settings neither travel nor change here.
+        assertEquals("", applied.nfsHost)
+    }
+
+    @Test
+    fun anSmbBundleKeepsTheTargetsNfsSettings() {
+        val target = AppSettings(recordStorage = StorageKind.NFS, nfsHost = "nfs-mine.example.test", nfsExport = "/mine", nfsFolder = "f")
+        val applied = SetupSettings.from(changedSettings()).applyTo(target)
+        assertEquals(StorageKind.SMB, applied.recordStorage)
+        assertEquals("nas.example.test", applied.smbHost)
+        assertEquals(listOf("nfs-mine.example.test", "/mine", "f"), listOf(applied.nfsHost, applied.nfsExport, applied.nfsFolder))
+    }
+
+    @Test
+    fun anNfsBundleKeepsTheTargetsSmbLogin() {
+        val nfs = changedSettings().copy(recordStorage = StorageKind.NFS)
+        val target = AppSettings(recordStorage = StorageKind.SMB, smbHost = "mine.example.test", smbUser = "me", smbPassword = "pw-mine")
+        val applied = SetupSettings.from(nfs).applyTo(target)
+        assertEquals(StorageKind.NFS, applied.recordStorage)
+        assertEquals("nfs.example.test", applied.nfsHost)
+        assertEquals(listOf("mine.example.test", "me", "pw-mine"), listOf(applied.smbHost, applied.smbUser, applied.smbPassword))
+    }
+
+    @Test
+    fun onlyTheChosenProtocolTravels() {
+        val sent = changedSettings()
+        val nfs = String(SetupJson.encode(sampleBundle().copy(settings = SetupSettings.from(sent.copy(recordStorage = StorageKind.NFS)))))
+        assertTrue(nfs.contains("\"smbPassword\":\"\""))
+        assertTrue(nfs.contains("\"smbUser\":\"\""))
+        assertFalse(nfs.contains("nas.example.test"))
+        assertTrue(nfs.contains("nfs.example.test"))
+        val smb = SetupSettings.from(sent)
+        assertEquals("", smb.nfsHost)
+        assertEquals(sent.smbPassword, smb.smbPassword)
+        val usb = SetupSettings.from(sent.copy(recordStorage = StorageKind.USB))
+        assertEquals(listOf("", "", ""), listOf(usb.smbPassword, usb.smbHost, usb.nfsHost))
+    }
+
+    @Test
+    fun anOlderBundleWithoutStorageFieldsKeepsThisTvsStorage() {
+        val fields = "recordStorage|smbHost|smbShare|smbFolder|smbUser|smbPassword|smbDomain|nfsHost|nfsExport|nfsFolder"
+        val json = String(SetupJson.encode(sampleBundle())).replace(Regex(",\"($fields)\":\"(?:[^\"\\\\]|\\\\.)*\""), "")
+        assertFalse(json.contains("smbHost"))
+        val decoded = decode(json.toByteArray())!!
+        val target = AppSettings(recordStorage = StorageKind.NFS, nfsHost = "nfs-mine.example.test", nfsExport = "/mine", smbPassword = "pw")
+        assertStorageKept(target, decoded.settings.applyTo(target))
+        decoded.discardFiles()
+    }
+
+    private fun assertStorageKept(target: AppSettings, result: AppSettings) {
+        assertEquals(target.recordStorage, result.recordStorage)
+        assertEquals(
+            listOf(target.smbHost, target.smbShare, target.smbFolder, target.smbUser, target.smbPassword, target.smbDomain),
+            listOf(result.smbHost, result.smbShare, result.smbFolder, result.smbUser, result.smbPassword, result.smbDomain),
+        )
+        assertEquals(listOf(target.nfsHost, target.nfsExport, target.nfsFolder), listOf(result.nfsHost, result.nfsExport, result.nfsFolder))
+        assertEquals(target.usbTreeUri, result.usbTreeUri)
+    }
+
+    @Test
     fun settingsCopyOnlyTheCopiedValues() {
         val from = changedSettings()
         val onto = AppSettings(castTvName = "Bedroom", lastGuideScope = "all")
         val result = SetupSettings.from(from).applyTo(onto)
         assertEquals(
             from.copy(
-                lastGuideScope = "all", castAllowJoin = onto.castAllowJoin, castTvName = "Bedroom",
+                lastGuideScope = "all", castAllowJoin = onto.castAllowJoin, castTvName = "Bedroom", usbTreeUri = onto.usbTreeUri,
+                // SMB is chosen: the NFS settings stay this TV's own.
+                nfsHost = onto.nfsHost, nfsExport = onto.nfsExport, nfsFolder = onto.nfsFolder,
                 playback = from.playback.copy(
                     videoDecoder = onto.playback.videoDecoder, audioDecoder = onto.playback.audioDecoder,
                     autoFrameRate = onto.playback.autoFrameRate, preferSurround = onto.playback.preferSurround,

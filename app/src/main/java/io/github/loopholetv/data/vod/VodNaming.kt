@@ -1,6 +1,10 @@
 package io.github.loopholetv.data.vod
 
-enum class VodKind { MOVIE, EPISODE }
+/**
+ * [RECORDING] only names a recording being played; it has no progress, history or provider
+ * connection, and is never stored.
+ */
+enum class VodKind { MOVIE, EPISODE, RECORDING }
 
 /** Identifies one on-demand item within a playlist. */
 data class VodRef(val kind: VodKind, val playlistId: Long, val key: String)

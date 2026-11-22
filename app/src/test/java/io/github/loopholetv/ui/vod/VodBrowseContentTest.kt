@@ -368,4 +368,49 @@ class VodBrowseContentTest {
         compose.onNodeWithText("Dra 0").assertIsFocused()
         compose.onAllNodes(isFocused()).assertCountEquals(1)
     }
+
+    private fun reminderRow() = VodRowModel.MyList(
+        MY_LIST_ROW_TITLE,
+        listOf(
+            PosterModel(
+                1, "reminder:5", "Evening News", null, null,
+                programme = ProgrammeTarget(5, 1, "c1", 1_000L, "Today, 20:00"),
+            ),
+        ),
+    )
+
+    @Test fun okOnAReminderCardOpensItsShowingInTheGuide() {
+        var opened: ProgrammeTarget? = null
+        compose.setContent {
+            VodBrowseContent(
+                heading = "Movies", rows = listOf(reminderRow()), hidden = emptyList<HiddenCategory>(),
+                onHideCategory = {}, onShowCategory = {}, onOpen = { _, _ -> }, onBack = {},
+                onOpenReminder = { opened = it },
+            )
+        }
+        settle("Evening News")
+
+        press(Key.DirectionCenter)
+
+        assertEquals(ProgrammeTarget(5, 1, "c1", 1_000L, "Today, 20:00"), opened)
+    }
+
+    @Test fun menuOnAReminderCardOffersOnlyToCancelIt() {
+        var cancelled: PosterModel? = null
+        compose.setContent {
+            VodBrowseContent(
+                heading = "Movies", rows = listOf(reminderRow()), hidden = emptyList<HiddenCategory>(),
+                onHideCategory = {}, onShowCategory = {}, onOpen = { _, _ -> }, onBack = {},
+                onCancelReminder = { cancelled = it },
+            )
+        }
+        settle("Evening News")
+
+        press(Key.Menu)
+
+        compose.onNodeWithText(OPTION_ADD_MY_LIST).assertDoesNotExist()
+        compose.onNodeWithText(OPTION_REMOVE_MY_LIST).assertDoesNotExist()
+        choose(OPTION_CANCEL_REMINDER)
+        assertEquals("reminder:5", cancelled?.key)
+    }
 }

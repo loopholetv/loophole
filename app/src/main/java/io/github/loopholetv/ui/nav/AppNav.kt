@@ -32,6 +32,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.loopholetv.cast.CastState
 import io.github.loopholetv.ui.cast.CastFollowScreen
+import io.github.loopholetv.data.db.ChannelRef
+import io.github.loopholetv.record.PromptChoice
+import io.github.loopholetv.record.RecordPrompt
+import io.github.loopholetv.ui.recordings.HoldsStreamDialog
+import io.github.loopholetv.ui.recordings.RecordWarningCard
+import io.github.loopholetv.ui.recordings.ReminderCard
 import io.github.loopholetv.ui.cast.CastInviteCard
 import io.github.loopholetv.ui.cast.InviteKeys
 import io.github.loopholetv.ui.cast.TvsPanel
@@ -44,6 +50,7 @@ import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.channelScopeFromArg
 import io.github.loopholetv.data.db.toArg
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +66,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.dialog
 import androidx.navigation.navArgument
+import io.github.loopholetv.ui.guide.GuideAt
 import io.github.loopholetv.ui.guide.GuideScreen
 import io.github.loopholetv.phone.PhoneJob
 import io.github.loopholetv.phone.PhoneJobKind
@@ -71,12 +79,15 @@ import io.github.loopholetv.ui.vod.VodPlayerScreen
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.ui.search.SearchScreen
+import io.github.loopholetv.ui.settings.SettingsPage
 import io.github.loopholetv.ui.settings.SettingsPanel
 import io.github.loopholetv.setup.SetupState
 import io.github.loopholetv.ui.setup.SetupOverlay
 import io.github.loopholetv.ui.theme.Tokens
 import io.github.loopholetv.ui.vod.FilmScreen
 import io.github.loopholetv.ui.vod.MoviesScreen
+import io.github.loopholetv.ui.recordings.RecordingPlayerScreen
+import io.github.loopholetv.ui.recordings.RecordingsScreen
 import io.github.loopholetv.ui.vod.ShowScreen
 import io.github.loopholetv.ui.vod.VOD_LAST_EPISODE
 import io.github.loopholetv.ui.vod.takeLastEpisode
@@ -85,10 +96,12 @@ import io.github.loopholetv.ui.vod.SeriesScreen
 object Routes {
     const val ONBOARDING = "onboarding"
     const val GUIDE = "guide"
-    const val SETTINGS = "settings"
+    /** The settings panel; `page` is a [io.github.loopholetv.ui.settings.SettingsPage] key to open on. */
+    const val SETTINGS = "settings?page={page}"
     const val SEARCH = "search"
     const val MOVIES = "movies"
     const val SERIES = "series"
+    const val RECORDINGS = "recordings"
     /** A film's page; the key (which may hold slashes) is URL-encoded in the concrete route. */
     const val FILM = "film/{playlistId}/{key}"
     /** A show's page; the key is encoded like a film's. */
@@ -109,6 +122,9 @@ object Routes {
     /** Full-screen playback of a film or episode; `start` is where it begins, in ms. */
     const val VOD_PLAYER = "vod/play/{kind}/{playlistId}/{key}?start={start}"
 
+    /** Full-screen playback of a recording; `peer` is the other TV's id (absent: this TV's own), `live` starts at the end. */
+    const val RECORDING_PLAYER = "recording/play/{id}?peer={peer}&live={live}"
+
     const val ARG_CHANNEL_ID = "channelId"
     const val ARG_SCOPE = "scope"
     const val ARG_ARCHIVE_FROM = "archiveFrom"
@@ -117,6 +133,28 @@ object Routes {
     const val ARG_PLAYLIST_ID = "playlistId"
     const val ARG_KEY = "key"
     const val ARG_START = "start"
+    const val ARG_ID = "id"
+    const val ARG_PEER = "peer"
+    const val ARG_LIVE = "live"
+
+    val settingsArguments = listOf(
+        navArgument(ARG_PAGE) { type = NavType.StringType; nullable = true; defaultValue = null },
+    )
+
+    val recordingPlayerArguments = listOf(
+        navArgument(ARG_ID) { type = NavType.LongType },
+        navArgument(ARG_PEER) { type = NavType.StringType; nullable = true; defaultValue = null },
+        navArgument(ARG_LIVE) { type = NavType.BoolType; defaultValue = false },
+    )
+
+    const val ARG_PAGE = "page"
+
+    /** Settings on its first page, or on the page with key [page]. */
+    fun settings(page: String? = null): String = "settings" + if (page != null) "?page=${encodeKey(page)}" else ""
+
+    /** Concrete route for recording [id], on TV [peerId] when it is not this one. */
+    fun recordingPlayer(id: Long, peerId: String? = null, live: Boolean = false): String =
+        "recording/play/$id?live=$live" + if (peerId != null) "&peer=${encodeKey(peerId)}" else ""
 
     val vodPlayerArguments = listOf(
         navArgument(ARG_KIND) { type = NavType.StringType },
@@ -169,7 +207,7 @@ object Routes {
 
 /** The film or episode a [Routes.VOD_PLAYER] entry plays; null when its arguments are missing or unknown. */
 fun vodRefFromArgs(args: Bundle?): VodRef? {
-    val kind = args?.getString(Routes.ARG_KIND)?.let { name -> VodKind.entries.firstOrNull { it.name == name } } ?: return null
+    val kind = args?.getString(Routes.ARG_KIND)?.let { name -> VodKind.entries.firstOrNull { it.name == name && it != VodKind.RECORDING } } ?: return null
     val key = args.getString(Routes.ARG_KEY) ?: return null
     return VodRef(kind, args.getLong(Routes.ARG_PLAYLIST_ID), key)
 }
@@ -187,6 +225,25 @@ fun playlistFormEditId(arg: Long?): Long? = arg?.takeIf { it != NO_EDIT }
 /** Search opened from the player takes its place, so Back from Search returns to the guide. */
 fun searchFromPlayerOptions(): NavOptions = navOptions {
     popUpTo(Routes.PLAYER) { inclusive = true }
+    launchSingleTop = true
+}
+
+/**
+ * Into a recording that holds the channel being asked for: the player that asked is replaced, so Back
+ * returns to the screen below it instead of asking again.
+ */
+fun handoverToRecordingOptions(): NavOptions = navOptions {
+    popUpTo(Routes.PLAYER) { inclusive = true }
+    launchSingleTop = true
+}
+
+/** Destinations drawn over the screen below them: a handover closes them first. */
+fun isOverlayRoute(route: String?): Boolean =
+    route == Routes.SETTINGS || route == Routes.TVS || route == Routes.PHONE_SETUP || route == Routes.PLAYLIST_FORM
+
+/** The live channel replaces the recording that just finished under the viewer. */
+fun recordingToLiveOptions(): NavOptions = navOptions {
+    popUpTo(Routes.RECORDING_PLAYER) { inclusive = true }
     launchSingleTop = true
 }
 
@@ -211,6 +268,15 @@ fun followNavFor(following: Boolean, currentRoute: String?): FollowNav = when {
     following && currentRoute != Routes.CAST_FOLLOW -> FollowNav.ENTER
     !following && currentRoute == Routes.CAST_FOLLOW -> FollowNav.LEAVE
     else -> FollowNav.NONE
+}
+
+/** The guide's saved-state key for a showing to open there (a [GuideAt], encoded). */
+internal const val GUIDE_OPEN_AT = "guideOpenAt"
+
+/** Back to the guide, which then focuses [at]'s channel and shows its details. */
+internal fun NavHostController.openInGuide(at: GuideAt) {
+    runCatching { getBackStackEntry(Routes.GUIDE) }.getOrNull()?.savedStateHandle?.set(GUIDE_OPEN_AT, at.encode())
+    popBackStack(Routes.GUIDE, inclusive = false)
 }
 
 /** From the follow screen back to the guide (or whatever is under it when there is no guide). */
@@ -278,7 +344,8 @@ class PhoneHandoffOnce {
  * Where this TV must not join a cast on its own: the first-start screens, and a film or episode
  * playing (a stream from the provider is never shared, and following a cast would cut it off).
  */
-fun holdsAutoJoin(route: String?): Boolean = isFirstStartRoute(route) || route == Routes.VOD_PLAYER
+fun holdsAutoJoin(route: String?): Boolean =
+    isFirstStartRoute(route) || route == Routes.VOD_PLAYER || route == Routes.RECORDING_PLAYER
 
 /**
  * Holds joining a cast on its own ([hold] true) while [routes] is on a screen [holdsOn] names, or
@@ -301,6 +368,9 @@ fun AppNav(
     startDestination: String,
     startPlayback: StartSlot = StartSlot(null),
     confirmExit: Boolean = false,
+    /** A channel a reminder asked to open; [onPlayChannelHandled] clears it once taken. */
+    playChannel: ChannelRef? = null,
+    onPlayChannelHandled: () -> Unit = {},
 ) {
     val container = (LocalContext.current.applicationContext as LoopholeApp).container
     LaunchedEffect(navController, container) {
@@ -321,6 +391,48 @@ fun AppNav(
     LaunchedEffect(inPip, navController) {
         if (shouldCloseAbovePlayerForPip(inPip, navController.currentDestination?.route)) {
             navController.popBackStack(Routes.PLAYER, inclusive = false)
+        }
+    }
+    // A recording holds the channel being asked for: take the viewer into it, near the live edge.
+    // In picture-in-picture it waits, unconsumed, and is taken up when the window is back.
+    LaunchedEffect(navController, container, inPip) {
+        if (inPip) return@LaunchedEffect
+        val coordinator = container.recordingCoordinator
+        coordinator.handover.filterNotNull().collect {
+            // A stale one (left while away, or its recording already ended) is dropped.
+            val h = coordinator.consumeHandover() ?: return@collect
+            while (isOverlayRoute(navController.currentDestination?.route) && navController.popBackStack()) Unit
+            navController.navigate(Routes.recordingPlayer(h.recordingId, live = true), handoverToRecordingOptions())
+        }
+    }
+    // A reminder's Watch, a notification's tap and a failed take-over all open a channel through the
+    // normal player route, where the connection gate applies.
+    val openChannel: suspend (ChannelRef) -> Unit = remember(navController, container) {
+        { ref ->
+            val channel = container.db.channelDao().byKey(ref.playlistId, ref.key)
+            if (channel != null) {
+                while (isOverlayRoute(navController.currentDestination?.route) && navController.popBackStack()) Unit
+                navController.navigate(Routes.player(channel.id, ChannelScope.All)) { launchSingleTop = true }
+            }
+        }
+    }
+    LaunchedEffect(playChannel) {
+        val ref = playChannel ?: return@LaunchedEffect
+        onPlayChannelHandled()
+        openChannel(ref)
+    }
+    LaunchedEffect(container) { container.reminders.watch.collect { openChannel(it) } }
+    val toastContext = LocalContext.current
+    // The recording took the stream and then could not record: say so, and bring the channel back.
+    LaunchedEffect(navController, container, inPip) {
+        if (inPip) return@LaunchedEffect
+        val coordinator = container.recordingCoordinator
+        coordinator.takeFailed.filterNotNull().collect {
+            val failed = coordinator.consumeTakeFailed() ?: return@collect
+            Toast.makeText(toastContext, TAKE_FAILED_MESSAGE, Toast.LENGTH_SHORT).show()
+            failed.channelId?.let { id ->
+                navController.navigate(Routes.player(id, ChannelScope.All)) { launchSingleTop = true }
+            }
         }
     }
     val cast = container.castController
@@ -346,7 +458,6 @@ fun AppNav(
             }
         }
     }
-    val toastContext = LocalContext.current
     // Messages about casts (ended, lost, can't play...), wherever the app is.
     LaunchedEffect(cast, toastContext) {
         cast.messages.collect { Toast.makeText(toastContext, it, Toast.LENGTH_SHORT).show() }
@@ -415,7 +526,9 @@ fun AppNav(
             // Back returns to where it opened (first start, or the guide with no playlist); the copy
             // itself shows in the setup screens.
             copyFromDestination(cast.peers, container.setup)
-            composable(Routes.GUIDE) {
+            composable(Routes.GUIDE) { guideEntry ->
+                // A showing another screen asked to see (a reminder card): taken once.
+                val openAt by guideEntry.savedStateHandle.getStateFlow<String?>(GUIDE_OPEN_AT, null).collectAsStateWithLifecycle()
                 // Last channel on start: at most once per process start (the slot empties on the
                 // first look, wherever the app is); the guide stays underneath for Back.
                 LaunchedEffect(startPlayback) {
@@ -436,11 +549,14 @@ fun AppNav(
                 GuideScreen(
                     onPlay = { id, scope -> navController.navigate(Routes.player(id, scope)) },
                     onPlayArchive = { id, scope, from -> navController.navigate(Routes.player(id, scope, from)) },
-                    onSettings = { navController.navigate(Routes.SETTINGS) },
+                    onSettings = { navController.navigate(Routes.settings()) },
                     onSearch = { navController.navigate(Routes.SEARCH) { launchSingleTop = true } },
                     onTvs = { navController.navigate(Routes.TVS) { launchSingleTop = true } },
                     onMovies = { navController.navigate(Routes.MOVIES) { launchSingleTop = true } },
                     onSeries = { navController.navigate(Routes.SERIES) { launchSingleTop = true } },
+                    onRecordings = { navController.navigate(Routes.RECORDINGS) { launchSingleTop = true } },
+                    openAt = GuideAt.parse(openAt),
+                    onOpenAtHandled = { guideEntry.savedStateHandle[GUIDE_OPEN_AT] = null },
                     onCopyFromAnotherTv = { navController.openCopyFrom() },
                 )
             }
@@ -476,6 +592,7 @@ fun AppNav(
                         }
                     },
                     onBack = dropUnlessResumed { navController.popBackStack() },
+                    onOpenReminder = { t -> navController.openInGuide(GuideAt(t.playlistId, t.channelKey, t.startMs)) },
                 )
             }
             composable(Routes.SERIES) { entry ->
@@ -488,6 +605,27 @@ fun AppNav(
                         }
                     },
                     onBack = dropUnlessResumed { navController.popBackStack() },
+                    onOpenReminder = { t -> navController.openInGuide(GuideAt(t.playlistId, t.channelKey, t.startMs)) },
+                )
+            }
+            composable(Routes.RECORDINGS) { entry ->
+                RecordingsScreen(
+                    onBack = dropUnlessResumed { navController.popBackStack() },
+                    // Only while this entry is resumed: a quick double OK must not push two players.
+                    onPlay = { id, live ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.recordingPlayer(id, live = live))
+                        }
+                    },
+                    onPlayRemote = { peerId, id, live ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            navController.navigate(Routes.recordingPlayer(id, peerId, live))
+                        }
+                    },
+                    onOpenGuide = { at ->
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) navController.openInGuide(at)
+                    },
+                    onSetUpStorage = { navController.navigate(Routes.settings(SettingsPage.Recordings.key)) { launchSingleTop = true } },
                 )
             }
             composable(Routes.FILM, arguments = Routes.vodPageArguments) { entry ->
@@ -530,7 +668,7 @@ fun AppNav(
                     onExit = dropUnlessResumed { navController.popBackStack() },
                     onSearch = dropUnlessResumed { navController.navigate(Routes.SEARCH, searchFromPlayerOptions()) },
                     // A dialog destination: the video keeps playing underneath.
-                    onSettings = dropUnlessResumed { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
+                    onSettings = dropUnlessResumed { navController.navigate(Routes.settings()) { launchSingleTop = true } },
                 )
             }
             composable(Routes.VOD_PLAYER, arguments = Routes.vodPlayerArguments) { entry ->
@@ -553,17 +691,35 @@ fun AppNav(
                     )
                 }
             }
+            composable(Routes.RECORDING_PLAYER, arguments = Routes.recordingPlayerArguments) { entry ->
+                val args = entry.arguments
+                RecordingPlayerScreen(
+                    id = args?.getLong(Routes.ARG_ID) ?: 0L,
+                    peerId = args?.getString(Routes.ARG_PEER),
+                    live = args?.getBoolean(Routes.ARG_LIVE) ?: false,
+                    onExit = {
+                        if (navController.currentDestination?.route == Routes.RECORDING_PLAYER) navController.popBackStack()
+                    },
+                    onOpenLive = { channelId ->
+                        if (navController.currentDestination?.route == Routes.RECORDING_PLAYER) {
+                            navController.navigate(Routes.player(channelId, ChannelScope.All), recordingToLiveOptions())
+                        }
+                    },
+                )
+            }
             // A dialog destination keeps the previous screen composed underneath; Back pops it.
             dialog(
                 Routes.SETTINGS,
+                arguments = Routes.settingsArguments,
                 dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-            ) {
+            ) { entry ->
                 SettingsPanelHost {
                     // The same full-screen form as first start; Done and Back return to Settings.
                     SettingsPanel(
                         onAddPlaylist = { navController.navigate(Routes.playlistForm()) { launchSingleTop = true } },
                         onEditPlaylist = { navController.navigate(Routes.playlistForm(it)) { launchSingleTop = true } },
                         onShowPhoneQr = { navController.navigate(Routes.PHONE_SETUP) { launchSingleTop = true } },
+                        startPage = entry.arguments?.getString(Routes.ARG_PAGE),
                     )
                 }
             }
@@ -608,6 +764,33 @@ fun AppNav(
             )
         }
     }
+    // Reminders and recording questions: each is a window of its own that takes the remote (Back is the
+    // non-destructive answer), so the screen below keeps its focus and gets it back. Not in picture-in-picture.
+    val coordinator = container.recordingCoordinator
+    val question = coordinator.prompt.collectAsStateWithLifecycle().value?.takeIf { !inPip }
+    val reminder = container.reminders.inApp.collectAsStateWithLifecycle().value?.takeIf { !inPip }
+    // A reminder behind a question waits: its time starts when its card is on screen.
+    val reminderShowing = if (question == null) reminder?.id else null
+    LaunchedEffect(reminderShowing) { reminderShowing?.let(container.reminders::shown) }
+    when (question) {
+        is RecordPrompt.Warning -> RecordWarningCard(
+            question,
+            onKeep = { coordinator.answer(question.id, PromptChoice.KEEP_WATCHING) },
+            onSwitch = { coordinator.answer(question.id, PromptChoice.SWITCH_NOW) },
+        )
+        is RecordPrompt.HoldsStream -> HoldsStreamDialog(
+            question,
+            onStop = { coordinator.answer(question.id, PromptChoice.STOP_RECORDING) },
+            onCancel = { coordinator.answer(question.id, PromptChoice.CANCEL) },
+        )
+        null -> reminder?.let { r ->
+            ReminderCard(
+                r,
+                onWatch = { container.reminders.answer(r.id, watch = true) },
+                onDismiss = { container.reminders.answer(r.id, watch = false) },
+            )
+        }
+    }
     // Copying a setup between TVs: a window of its own above every screen, panel and the card.
     SetupOverlay(
         setup = container.setup,
@@ -616,6 +799,8 @@ fun AppNav(
         screenHasFocus = { screenFocused.value },
     )
 }
+
+private const val TAKE_FAILED_MESSAGE = "Couldn't start the recording"
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this

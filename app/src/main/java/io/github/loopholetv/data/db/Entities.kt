@@ -63,6 +63,10 @@ data class PlaylistEntity(
     val xtreamTimeZone: String? = null,
     /** Xtream: archive stream extension (`ts` or `m3u8`), from the last login. */
     val xtreamArchiveExt: String? = null,
+    /** Simultaneous connections the provider allows on this TV; null = the default. */
+    val connectionsAllowed: Int? = null,
+    /** Xtream: the account's own connection limit, from the last login. */
+    val accountMaxConnections: Int? = null,
 )
 
 @Entity(
@@ -260,6 +264,8 @@ data class ProgrammeEntity(
     val category: String?,
     /** Refresh that wrote the row; older generations are swapped out only after a refresh succeeds. */
     val generation: Long,
+    /** Season/episode marker from the guide (e.g. `S02E05`), when it gives one. */
+    val episodeKey: String? = null,
 )
 
 /**

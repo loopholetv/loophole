@@ -14,6 +14,13 @@ import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.ProgrammeEntity
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.data.repo.GuideKey
+import io.github.loopholetv.data.db.PlaylistEntity
+import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.data.db.RecordingEntity
+import io.github.loopholetv.record.BookResult
+import io.github.loopholetv.record.Mark
+import io.github.loopholetv.record.bookedChannelIds
+import io.github.loopholetv.record.MarkKey
 import io.github.loopholetv.data.repo.guideKey
 import io.github.loopholetv.data.repo.shiftedBy
 import io.github.loopholetv.ui.manage.EditActions
@@ -27,6 +34,7 @@ import io.github.loopholetv.data.settings.GuideAction
 import io.github.loopholetv.data.settings.KeyBindings
 import android.view.KeyEvent
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -131,6 +139,9 @@ class GuideViewModelTest {
     private fun shiftedRows(keys: Collection<GuideKey>): Map<GuideKey, List<ProgrammeEntity>> =
         keys.associateWith { k -> programmeRows.filter { it.epgChannelId == k.epgId }.map { it.shiftedBy(k.shiftMinutes) } }
 
+    private val visibility = mutableListOf<Boolean>()
+    private var beforePlay: suspend (ChannelEntity, Boolean) -> Boolean = { _, _ -> true }
+
     private fun vm(cast: CastControls = NoCast) = GuideViewModel(
         groupRows = groupRows,
         channelPages = { scope ->
@@ -168,6 +179,70 @@ class GuideViewModelTest {
         keyBindings = bindings,
         cast = cast,
         channelChanges = channelChanges,
+        previewVisible = { visibility += it },
+        beforePlay = { c, live -> beforePlay(c, live) },
+        marks = marksFlow,
+        schedule = schedule,
+        previewTaken = previewTaken,
+        recordingChannelIds = recordingChannelIds,
+    )
+
+    private val marksFlow = MutableStateFlow<Map<MarkKey, Mark>>(emptyMap())
+    private val previewTaken = MutableStateFlow<String?>(null)
+    private val recordingChannelIds = MutableStateFlow<Set<Long>>(emptySet())
+
+    /** Books into [marksFlow] the way the repository's marks() would show it. */
+    private val schedule = object : ScheduleActions {
+        val calls = mutableListOf<String>()
+        var result: BookResult = BookResult.Booked(1, null, null, false)
+
+        val reminders = mutableSetOf<Instant>()
+        val recordings = mutableSetOf<Instant>()
+
+        override suspend fun bookingsFor(c: ChannelEntity, p: ProgrammeEntity) =
+            CellBookings(reminder = p.start in reminders, recording = p.start in recordings)
+
+        private fun key(p: ProgrammeEntity) = MarkKey(p.epgChannelId, p.start.toEpochMilli())
+
+        override suspend fun remind(c: ChannelEntity, p: ProgrammeEntity) {
+            calls += "remind ${c.id}"
+            reminders += p.start
+            marksFlow.value = marksFlow.value + (key(p) to Mark.REMINDER)
+        }
+        override suspend fun remindSeries(c: ChannelEntity, p: ProgrammeEntity) {
+            calls += "remindSeries ${c.id}"
+            marksFlow.value = marksFlow.value + (key(p) to Mark.REMINDER_SERIES)
+        }
+        override suspend fun record(c: ChannelEntity, p: ProgrammeEntity): BookResult {
+            calls += "record ${c.id}"
+            recordings += p.start
+            marksFlow.value = marksFlow.value + (key(p) to Mark.RECORDING)
+            return result
+        }
+        override suspend fun recordSeries(c: ChannelEntity, p: ProgrammeEntity) {
+            calls += "recordSeries ${c.id}"
+            marksFlow.value = marksFlow.value + (key(p) to Mark.RECORDING_SERIES)
+        }
+        override suspend fun recordNow(c: ChannelEntity): BookResult {
+            calls += "recordNow ${c.id}"
+            return result
+        }
+        override suspend fun stopRecording(c: ChannelEntity) {
+            calls += "stop ${c.id}"
+        }
+        override suspend fun extend(c: ChannelEntity, byMinutes: Int) = Unit
+        override suspend fun cancelFor(c: ChannelEntity, p: ProgrammeEntity, mark: Mark) {
+            calls += "cancel ${c.id} $mark"
+            if (mark == Mark.REMINDER) reminders -= p.start
+            if (mark == Mark.RECORDING) recordings -= p.start
+            // Like the repository's marks: only the cell's strongest booking is shown.
+            if (marksFlow.value[key(p)] == mark) marksFlow.value = marksFlow.value - key(p)
+        }
+    }
+
+    private fun showing(start: Instant = now.plusSeconds(3600)) = ProgrammeEntity(
+        epgChannelId = "e1", start = start, stop = start.plusSeconds(1800), title = "Match", subTitle = null,
+        description = null, category = null, generation = 1,
     )
 
     /** How many All-channels sources were made (one per load generation). */
@@ -308,6 +383,36 @@ class GuideViewModelTest {
         assertEquals(OkAction.ShowDetails(later), vm.onOk(all[0], later))
         assertEquals(OkAction.ShowDetails(earlier), vm.onOk(all[0], earlier))
         assertEquals(listOf(1L), playback.played)
+    }
+
+    @Test fun previewVisibilityFollowsTheScreen() = runTest {
+        val vm = vm()
+        vm.onScreenStarted()
+        vm.onScreenStopped()
+        vm.onScreenStarted()
+        assertEquals(listOf(true, false, true), visibility)
+    }
+
+    @Test fun previewWaitsForTheRecordingAnswer() = runTest {
+        val answer = CompletableDeferred<Boolean>()
+        val asked = mutableListOf<Pair<Long, Boolean>>()
+        beforePlay = { c, live -> asked += c.id to live; answer.await() }
+        val vm = vm()
+        assertEquals(OkAction.Previewed, vm.onOk(all[0], null))
+        runCurrent()
+        assertEquals(listOf(1L to true), asked)
+        assertEquals(emptyList<Long>(), playback.played)
+        answer.complete(true)
+        runCurrent()
+        assertEquals(listOf(1L), playback.played)
+    }
+
+    @Test fun previewHeldBackPlaysNothing() = runTest {
+        beforePlay = { _, _ -> false }
+        val vm = vm()
+        vm.onOk(all[0], null)
+        runCurrent()
+        assertEquals(emptyList<Long>(), playback.played)
     }
 
     @Test fun resumeAfterBackgroundReplaysPreviewingChannel() = runTest {
@@ -1370,6 +1475,113 @@ class GuideViewModelTest {
         assertEquals(4L to ArchiveRequest(before.start, before.stop), playback.archives.last())
     }
 
+    @Test fun archiveOkWhileAskedOpensNothingFullScreen() = runTest {
+        val answer = CompletableDeferred<Boolean>()
+        beforePlay = { _, _ -> answer.await() }
+        val vm = vm()
+        val ended = programme("e4", -7200, -5400, "Earlier")
+        // The viewer is asked about a recording: no full screen, so the player can't ask a second time.
+        assertEquals(OkAction.Previewed, vm.onOk(archived, ended))
+        runCurrent()
+        assertNull(vm.previewing.value)
+        answer.complete(true)
+        runCurrent()
+        assertEquals(listOf(4L to ArchiveRequest(ended.start, ended.stop)), playback.archives)
+        assertEquals(archived, vm.previewing.value)
+    }
+
+    @Test fun archiveOkOpensFullScreenOnceTheGateLetsItThrough() = runTest {
+        // A gate that only looks something up (a recording runs elsewhere), then allows without asking.
+        var asked = 0
+        beforePlay = { _, _ -> asked++; delay(10); true }
+        val vm = vm()
+        val events = mutableListOf<GuideEvent>()
+        backgroundScope.launch { vm.events.collect { events += it } }
+        val ended = programme("e4", -7200, -5400, "Earlier")
+        assertEquals(OkAction.Previewed, vm.onOk(archived, ended))
+        // A second OK while the first waits adds nothing.
+        assertEquals(OkAction.Previewed, vm.onOk(archived, ended))
+        advanceUntilIdle()
+        assertEquals(1, asked)
+        assertEquals(listOf(4L to ArchiveRequest(ended.start, ended.stop)), playback.archives)
+        val open = OkAction.PlayArchive(4L, ended.start)
+        assertEquals(listOf<GuideEvent>(GuideEvent.OpenArchive(open)), events)
+        // The screen claims it once, as for the OK's own PlayArchive.
+        assertEquals(open, vm.claimArchive(open))
+        assertNull(vm.claimArchive(open))
+    }
+
+    @Test fun leavingTheGuideDropsAWaitingCatchUp() = runTest {
+        val answer = CompletableDeferred<Boolean>()
+        beforePlay = { _, _ -> answer.await() }
+        val vm = vm()
+        val events = mutableListOf<GuideEvent>()
+        backgroundScope.launch { vm.events.collect { events += it } }
+        val ended = programme("e4", -7200, -5400, "Earlier")
+        assertEquals(OkAction.Previewed, vm.onOk(archived, ended))
+        runCurrent()
+        vm.onScreenStopped()
+        answer.complete(true)
+        advanceUntilIdle()
+        assertEquals(emptyList<Pair<Long, ArchiveRequest>>(), playback.archives)
+        assertEquals(emptyList<GuideEvent>(), events)
+        assertNull(vm.previewing.value)
+    }
+
+    @Test fun archiveOkRefusedAfterWaitingOpensNothing() = runTest {
+        beforePlay = { _, _ -> delay(10); false }
+        val vm = vm()
+        val events = mutableListOf<GuideEvent>()
+        backgroundScope.launch { vm.events.collect { events += it } }
+        val ended = programme("e4", -7200, -5400, "Earlier")
+        assertEquals(OkAction.Previewed, vm.onOk(archived, ended))
+        advanceUntilIdle()
+        assertEquals(emptyList<Pair<Long, ArchiveRequest>>(), playback.archives)
+        assertEquals(emptyList<GuideEvent>(), events)
+        assertNull(vm.previewing.value)
+    }
+
+    @Test fun secondPreviewOkWhileWaitingStartsOnePlay() = runTest {
+        var asked = 0
+        beforePlay = { _, _ -> asked++; delay(10); true }
+        val vm = vm()
+        vm.onOk(all[0], null)
+        vm.onOk(all[0], null)
+        advanceUntilIdle()
+        assertEquals(1, asked)
+        assertEquals(listOf(1L), playback.played)
+        assertEquals(all[0], vm.previewing.value)
+    }
+
+    @Test fun previewCancelledKeepsThePreviewAsItWas() = runTest {
+        val answer = CompletableDeferred<Boolean>()
+        beforePlay = { _, _ -> answer.await() }
+        val vm = vm()
+        vm.onOk(all[0], null)
+        runCurrent()
+        assertNull(vm.previewing.value)
+        answer.complete(false)
+        runCurrent()
+        assertNull(vm.previewing.value)
+        assertEquals(emptyList<Long>(), playback.played)
+    }
+
+    @Test fun previewAllowedAfterANewerRequestDoesNothing() = runTest {
+        val first = CompletableDeferred<Boolean>()
+        var calls = 0
+        beforePlay = { _, _ -> if (calls++ == 0) first.await() else true }
+        val vm = vm()
+        vm.onOk(all[0], null)
+        runCurrent()
+        vm.onOk(all[2], null)
+        runCurrent()
+        assertEquals(listOf(3L), playback.played)
+        first.complete(true)
+        runCurrent()
+        assertEquals(listOf(3L), playback.played)
+        assertEquals(all[2], vm.previewing.value)
+    }
+
     @Test fun okOnTooOldPastShowsDetails() = runTest {
         val vm = vm()
         vm.onOk(archived, null)
@@ -1660,5 +1872,152 @@ class GuideViewModelTest {
         runCurrent()
         vm.pages.value!!.flow.asSnapshot()
         assertEquals("no second reload once the changes settle", before + 1, allSources)
+    }
+
+    // --- reminders and recordings ---
+
+    @Test fun marksStateFollowsRepository() = runTest {
+        val vm = vm()
+        runCurrent()
+        assertEquals(emptyMap<MarkKey, Mark>(), vm.marks.value)
+        val key = MarkKey("e1", showing().start.toEpochMilli())
+        marksFlow.value = mapOf(key to Mark.REMINDER_SERIES)
+        runCurrent()
+        assertEquals(mapOf(key to Mark.REMINDER_SERIES), vm.marks.value)
+        marksFlow.value = emptyMap()
+        runCurrent()
+        assertEquals(emptyMap<MarkKey, Mark>(), vm.marks.value)
+    }
+
+    @Test fun detailsRecordThenCancelFlipsMark() = runTest {
+        val vm = vm()
+        runCurrent()
+        val p = showing()
+        val key = MarkKey("e1", p.start.toEpochMilli())
+        vm.record(all[0], p)
+        runCurrent()
+        assertEquals(Mark.RECORDING, vm.marks.value[key])
+        vm.cancel(all[0], p, Mark.RECORDING)
+        runCurrent()
+        assertNull(vm.marks.value[key])
+        vm.remindSeries(all[0], p)
+        runCurrent()
+        assertEquals(Mark.REMINDER_SERIES, vm.marks.value[key])
+        assertEquals(listOf("record 1", "cancel 1 RECORDING", "remindSeries 1"), schedule.calls)
+    }
+
+    @Test fun recordNowFromChannelOptions() = runTest {
+        val vm = vm()
+        runCurrent()
+        recordingChannelIds.value = setOf(2L)
+        runCurrent()
+        assertFalse(1L in vm.recordingChannelIds.value)
+        assertTrue(2L in vm.recordingChannelIds.value)
+        vm.recordNow(all[0])
+        vm.stopRecording(all[1])
+        runCurrent()
+        assertEquals(listOf("recordNow 1", "stop 2"), schedule.calls)
+    }
+
+    @Test fun fallbackRecordingShowsOnTheBookedChannelOnly() = runTest {
+        val vm = vm()
+        runCurrent()
+        // Booked on channel 1, recorded from channel 9 of another playlist.
+        val active = mapOf(1L to io.github.loopholetv.record.ActiveRecording(1, 9, 1, "b", "", "", false))
+        recordingChannelIds.value = active.bookedChannelIds()
+        runCurrent()
+        assertTrue(1L in vm.recordingChannelIds.value)
+        assertFalse(9L in vm.recordingChannelIds.value)
+    }
+
+    @Test fun previewNoticeWhileRecordingHoldsStream() = runTest {
+        val vm = vm()
+        runCurrent()
+        assertNull(vm.previewNotice.value)
+        previewTaken.value = "Sky Sports"
+        runCurrent()
+        assertEquals("Recording on Sky Sports", vm.previewNotice.value)
+        previewTaken.value = null
+        runCurrent()
+        assertNull(vm.previewNotice.value)
+    }
+
+    @Test fun clashShownAfterBooking() = runTest {
+        val vm = vm()
+        runCurrent()
+        val other = RecordingEntity(
+            playlistId = 1, channelKey = "k2", channelName = "Ch 2", epgChannelId = "e2", title = "Derby", subTitle = null,
+            episodeKey = null, description = null, start = now, stop = now.plusSeconds(60), padBeforeMin = 0,
+            padAfterMin = 0, createdAt = now,
+        )
+        val playlist = PlaylistEntity(
+            id = 2, name = "Backup", type = PlaylistType.M3U, url = null, xtreamServer = null, xtreamUser = null,
+            xtreamPass = null, epgUrlsFromSource = "", manualEpgUrl = null, lastRefreshedAt = null, lastError = null,
+        )
+        schedule.result = BookResult.Booked(1, clash = other, fallback = null, mayNotFit = false)
+        vm.record(all[0], showing())
+        runCurrent()
+        assertEquals("Clashes with Derby", vm.bookingWarning.value)
+
+        schedule.result = BookResult.Booked(1, clash = null, fallback = playlist, mayNotFit = true)
+        vm.record(all[0], showing(now.plusSeconds(7200)))
+        runCurrent()
+        assertEquals("from Backup \u00b7 May not fit", vm.bookingWarning.value)
+
+        schedule.result = BookResult.Booked(1, null, null, false)
+        vm.record(all[0], showing(now.plusSeconds(9000)))
+        runCurrent()
+        assertNull("a clean booking shows no warning", vm.bookingWarning.value)
+
+        schedule.result = BookResult.Booked(1, null, null, true)
+        vm.record(all[0], showing(now.plusSeconds(10000)))
+        runCurrent()
+        assertEquals("May not fit", vm.bookingWarning.value)
+        vm.clearBookingWarning()
+        assertNull(vm.bookingWarning.value)
+    }
+
+    @Test fun cancellingAReminderUnderARecordingRefreshesTheLabels() = runTest {
+        val vm = vm()
+        runCurrent()
+        val p = showing()
+        vm.remind(all[0], p)
+        vm.record(all[0], p)
+        runCurrent()
+        assertEquals(
+            listOf("Cancel reminder", "Remind series", "Cancel recording", "Record series"),
+            detailsButtons(vm.bookingsOf(all[0], p)).map { it.label },
+        )
+        val before = vm.bookingsChanged.value
+        val marksBefore = vm.marks.value
+        vm.cancel(all[0], p, Mark.REMINDER)
+        runCurrent()
+        assertEquals("the strongest mark did not change", marksBefore, vm.marks.value)
+        assertEquals(before + 1, vm.bookingsChanged.value)
+        assertEquals(
+            listOf("Remind me", "Remind series", "Cancel recording", "Record series"),
+            detailsButtons(vm.bookingsOf(all[0], p)).map { it.label },
+        )
+    }
+
+    @Test fun aRepeatedRecordPressKeepsTheWarning() = runTest {
+        val vm = vm()
+        runCurrent()
+        schedule.result = BookResult.Booked(1, null, null, true)
+        vm.record(all[0], showing())
+        runCurrent()
+        schedule.result = BookResult.AlreadyBooked
+        vm.record(all[0], showing())
+        runCurrent()
+        assertEquals("May not fit", vm.bookingWarning.value)
+    }
+
+    @Test fun marksAreGroupedByChannelThenStart() = runTest {
+        val vm = vm()
+        val p = showing()
+        marksFlow.value = mapOf(MarkKey("e1", p.start.toEpochMilli()) to Mark.RECORDING, MarkKey("e2", 5) to Mark.REMINDER)
+        runCurrent()
+        assertEquals(mapOf(p.start to Mark.RECORDING), vm.marksByChannel.value["e1"])
+        assertEquals(mapOf(Instant.ofEpochMilli(5) to Mark.REMINDER), vm.marksByChannel.value["e2"])
     }
 }

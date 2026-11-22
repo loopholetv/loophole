@@ -43,6 +43,12 @@ import io.github.loopholetv.data.settings.KeyBindings
 import io.github.loopholetv.data.settings.PlayerAction
 import io.github.loopholetv.data.settings.RemoteSettings
 import io.github.loopholetv.ui.guide.GuideFormat
+import io.github.loopholetv.ui.guide.NoSchedule
+import io.github.loopholetv.ui.guide.ScheduleActions
+import io.github.loopholetv.record.ActiveRecording
+import io.github.loopholetv.record.BookResult
+import io.github.loopholetv.record.bookedChannelIds
+import kotlinx.coroutines.flow.Flow
 import java.time.ZoneOffset
 import io.github.loopholetv.ui.manage.ChannelEdit
 import kotlinx.coroutines.CompletableDeferred
@@ -205,6 +211,9 @@ class PlayerViewModelTest {
         archiveFrom: Instant? = null,
         elapsedMs: () -> Long = { 0L },
         cast: CastControls = NoCast,
+        beforePlay: suspend (ChannelEntity, Boolean) -> Boolean = { _, _ -> true },
+        schedule: ScheduleActions = NoSchedule,
+        recordingChannels: Flow<Set<Long>> = flowOf(emptySet()),
     ): PlayerViewModel {
         source = FakeChannels(channels, favourites).also { it.labels = labels }
         return PlayerViewModel(
@@ -246,6 +255,9 @@ class PlayerViewModelTest {
             elapsedMs = elapsedMs,
             format = GuideFormat(true, ZoneOffset.UTC),
             cast = cast,
+            beforePlay = beforePlay,
+            schedule = schedule,
+            recordingChannels = recordingChannels,
         )
     }
 
@@ -304,6 +316,26 @@ class PlayerViewModelTest {
         vm.onScreenStarted() // already playing: no second start
         runCurrent()
         assertEquals(listOf(3L), playback.played)
+    }
+
+    @Test fun openWaitsForTheRecordingAnswerAndPlaysOnlyWhenAllowed() = runTest {
+        val playback = FakePlayback()
+        val answers = mutableListOf<CompletableDeferred<Boolean>>()
+        val asked = mutableListOf<Pair<Long, Boolean>>()
+        val vm = vm(playback, start = 3, beforePlay = { c, live -> asked += c.id to live; CompletableDeferred<Boolean>().also { answers += it }.await() })
+        runCurrent()
+        assertEquals(listOf(3L to true), asked)
+        assertEquals("nothing opens while a recording holds the stream", emptyList<Long>(), playback.played)
+        answers.single().complete(false)
+        runCurrent()
+        assertEquals("cancelled: nothing opens", emptyList<Long>(), playback.played)
+        assertEquals(3L, vm.channelId())
+
+        vm.onScreenStarted()
+        runCurrent()
+        answers.last().complete(true)
+        runCurrent()
+        assertEquals("the recording was stopped: the channel opens", listOf(3L), playback.played)
     }
 
     @Test fun channelKeysMoveWithinScopeAndWrap() = runTest {
@@ -1450,6 +1482,106 @@ class PlayerViewModelTest {
         vm.pickQuickItem(QuickItem.FAVOURITE)
         runCurrent()
         assertEquals("Add to favourites", vm.entry(QuickItem.FAVOURITE).label)
+    }
+
+    // --- Record, stop and extend from the quick menu -----------------------------------
+
+    private open class FakeSchedule : ScheduleActions {
+        val calls = mutableListOf<String>()
+        override suspend fun remind(c: ChannelEntity, p: ProgrammeEntity) = Unit
+        override suspend fun remindSeries(c: ChannelEntity, p: ProgrammeEntity) = Unit
+        override suspend fun record(c: ChannelEntity, p: ProgrammeEntity): BookResult = BookResult.AlreadyBooked
+        override suspend fun recordSeries(c: ChannelEntity, p: ProgrammeEntity) = Unit
+        override suspend fun recordNow(c: ChannelEntity): BookResult { calls += "record:${c.id}"; return BookResult.Booked(1, null, null, false) }
+        override suspend fun stopRecording(c: ChannelEntity) { calls += "stop:${c.id}" }
+        override suspend fun extend(c: ChannelEntity, byMinutes: Int) { calls += "extend:${c.id}:$byMinutes" }
+        override suspend fun cancelFor(c: ChannelEntity, p: ProgrammeEntity, mark: io.github.loopholetv.record.Mark) = Unit
+    }
+
+    @Test fun recordNowBooksCurrentProgramme() = runTest {
+        val schedule = FakeSchedule()
+        val vm = vm(FakePlayback(), start = 3, schedule = schedule)
+        runCurrent()
+        vm.onLongOk()
+        assertEquals("Record now", vm.entry(QuickItem.RECORD).label)
+        vm.pickQuickItem(QuickItem.RECORD)
+        runCurrent()
+        assertEquals(listOf("record:3"), schedule.calls)
+        assertEquals("Recording Ch 3", vm.state().message)
+        assertNull("the menu closes", vm.quickMenu.value)
+    }
+
+    @Test fun menuShowsStopAndExtendWhileRecording() = runTest {
+        val schedule = FakeSchedule()
+        val vm = vm(FakePlayback(), start = 3, schedule = schedule, recordingChannels = flowOf(setOf(3L)))
+        runCurrent()
+        vm.onLongOk()
+        vm.pickQuickItem(QuickItem.RECORD)
+        runCurrent()
+        assertEquals(listOf("Stop recording", "Extend 30 min"), vm.choices().map { it.label })
+        assertTrue("nothing booked by opening the list", schedule.calls.isEmpty())
+        vm.pickChoice(QuickItem.RECORD, vm.choices()[0].key)
+        runCurrent()
+        assertEquals(listOf("stop:3"), schedule.calls)
+    }
+
+    @Test fun extendAddsThirtyMinutes() = runTest {
+        val schedule = FakeSchedule()
+        val vm = vm(FakePlayback(), start = 3, schedule = schedule, recordingChannels = flowOf(setOf(3L)))
+        runCurrent()
+        vm.onLongOk()
+        vm.pickQuickItem(QuickItem.RECORD)
+        vm.pickChoice(QuickItem.RECORD, vm.choices()[1].key)
+        runCurrent()
+        assertEquals(listOf("extend:3:30"), schedule.calls)
+    }
+
+    @Test fun recBadgeWhileRecording() = runTest {
+        val running = MutableStateFlow<Set<Long>>(emptySet())
+        val vm = vm(FakePlayback(), start = 3, recordingChannels = running)
+        runCurrent()
+        assertFalse(vm.recording.value)
+        running.value = setOf(4L)
+        runCurrent()
+        assertFalse("another channel's recording", vm.recording.value)
+        running.value = setOf(3L, 4L)
+        runCurrent()
+        assertTrue(vm.recording.value)
+    }
+
+    @Test fun fallbackRecordingShowsOnTheBookedChannelOnly() = runTest {
+        val schedule = FakeSchedule()
+        // Booked on channel 3, recorded from channel 9 of another playlist.
+        val active = mapOf(1L to ActiveRecording(1, channelId = 9, bookedChannelId = 3, host = "b", fileName = "", storageId = "", firstBytes = false))
+        val onBooked = vm(FakePlayback(), start = 3, schedule = schedule, recordingChannels = flowOf(active.bookedChannelIds()))
+        runCurrent()
+        assertTrue(onBooked.recording.value)
+        onBooked.onLongOk()
+        onBooked.pickQuickItem(QuickItem.RECORD)
+        runCurrent()
+        assertEquals(listOf("Stop recording", "Extend 30 min"), onBooked.choices().map { it.label })
+        val onSource = vm(FakePlayback(), start = 9, recordingChannels = flowOf(active.bookedChannelIds()))
+        runCurrent()
+        assertFalse(onSource.recording.value)
+    }
+
+    @Test fun idleRecordNowAlreadyBookedSaysSo() = runTest {
+        val schedule = object : FakeSchedule() {
+            override suspend fun recordNow(c: ChannelEntity): BookResult = BookResult.AlreadyBooked
+        }
+        val vm = vm(FakePlayback(), start = 3, schedule = schedule)
+        runCurrent()
+        vm.onLongOk()
+        vm.pickQuickItem(QuickItem.RECORD)
+        runCurrent()
+        assertEquals(ALREADY_BOOKED, vm.state().message)
+    }
+
+    @Test fun otherChannelRecordingKeepsRecordNow() = runTest {
+        val vm = vm(FakePlayback(), start = 3, recordingChannels = flowOf(setOf(4L)))
+        runCurrent()
+        vm.onLongOk()
+        assertEquals("Record now", vm.entry(QuickItem.RECORD).label)
     }
 
     @Test fun sleepTimerChoicesStartAndCancel() = runTest {

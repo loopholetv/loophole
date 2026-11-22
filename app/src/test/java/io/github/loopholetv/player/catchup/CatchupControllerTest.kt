@@ -107,7 +107,10 @@ class CatchupControllerTest {
     /** "Now" starts at 20:00:30 and moves with virtual time. */
     private val start = t("20:00:30")
 
-    private fun TestScope.controller(liveOpener: ((ChannelEntity) -> Unit)? = null) = CatchupController(
+    private fun TestScope.controller(
+        liveOpener: ((ChannelEntity) -> Unit)? = null,
+        beforeOpen: suspend (ChannelEntity) -> Boolean = { true },
+    ) = CatchupController(
         playback = fake,
         programmes = { _, at ->
             gate?.await()
@@ -119,6 +122,7 @@ class CatchupControllerTest {
         zone = ZoneOffset.UTC,
         scope = backgroundScope,
         liveOpener = liveOpener ?: { fake.play(it) },
+        beforeOpen = beforeOpen,
     ).also { runCurrent() }
 
     private fun TestScope.watched(spec: CatchupSpec, span: ProgrammeSpan, from: Instant = span.start): CatchupController {
@@ -142,6 +146,27 @@ class CatchupControllerTest {
         assertFalse(ui.live)
         assertFalse(ui.failed)
         assertNull(ui.pendingTarget)
+    }
+
+    @Test fun archiveHeldBackByARecordingOpensNothing() = runTest {
+        val asked = mutableListOf<Long>()
+        val c = controller(beforeOpen = { asked += it.id; false })
+        c.watch(channel, minuteSpec, news.start, news.stop)
+        runCurrent()
+        assertEquals(listOf(channel.id), asked)
+        assertEquals(emptyList<Any>(), fake.calls)
+        assertNull(c.ui.value)
+    }
+
+    @Test fun archiveAllowedAfterAClearOpensNothing() = runTest {
+        val answer = CompletableDeferred<Boolean>()
+        val c = controller(beforeOpen = { answer.await() })
+        c.watch(channel, minuteSpec, news.start, news.stop)
+        runCurrent()
+        c.clear()
+        answer.complete(true)
+        runCurrent()
+        assertEquals(emptyList<Any>(), fake.calls)
     }
 
     @Test fun heldRewindCommitsOneSeek() = runTest {

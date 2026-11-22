@@ -172,8 +172,31 @@ val MIGRATION_7_8: Migration = SqlMigration(
        `key` TEXT NOT NULL, `dismissedAt` INTEGER NOT NULL, PRIMARY KEY(`kind`, `playlistId`, `key`))""",
 )
 
+/**
+ * v8 → v9: reminders, series rules and recordings (no foreign keys, so finished recordings outlive a
+ * playlist), plus the guide's episode marker and the per-playlist connection limits. SQL matches
+ * Room's schema 9 export.
+ */
+val MIGRATION_8_9: Migration = SqlMigration(
+    8,
+    9,
+    "CREATE TABLE IF NOT EXISTS `reminders` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `playlistId` INTEGER NOT NULL, `channelKey` TEXT NOT NULL, `channelName` TEXT NOT NULL, `epgChannelId` TEXT, `title` TEXT NOT NULL, `subTitle` TEXT, `episodeKey` TEXT, `start` INTEGER NOT NULL, `stop` INTEGER NOT NULL, `seriesId` INTEGER, `notifiedAt` INTEGER)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_reminders_playlistId_channelKey_start` ON `reminders` (`playlistId`, `channelKey`, `start`)",
+    "CREATE INDEX IF NOT EXISTS `index_reminders_start` ON `reminders` (`start`)",
+    "CREATE TABLE IF NOT EXISTS `series_rules` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `kind` TEXT NOT NULL, `playlistId` INTEGER NOT NULL, `channelKey` TEXT NOT NULL, `channelName` TEXT NOT NULL, `epgChannelId` TEXT, `title` TEXT NOT NULL, `keepLast` INTEGER, `padBeforeMin` INTEGER NOT NULL, `padAfterMin` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_series_rules_kind_playlistId_channelKey_title` ON `series_rules` (`kind`, `playlistId`, `channelKey`, `title`)",
+    "CREATE TABLE IF NOT EXISTS `recordings` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `playlistId` INTEGER NOT NULL, `channelKey` TEXT NOT NULL, `channelName` TEXT NOT NULL, `epgChannelId` TEXT, `title` TEXT NOT NULL, `subTitle` TEXT, `episodeKey` TEXT, `description` TEXT, `start` INTEGER NOT NULL, `stop` INTEGER NOT NULL, `padBeforeMin` INTEGER NOT NULL, `padAfterMin` INTEGER NOT NULL, `seriesId` INTEGER, `sourcePlaylistId` INTEGER, `sourceChannelKey` TEXT, `state` TEXT NOT NULL, `reason` TEXT NOT NULL, `fileName` TEXT, `storageId` TEXT, `bytes` INTEGER NOT NULL, `startedAt` INTEGER, `endedAt` INTEGER, `positionMs` INTEGER NOT NULL, `gaps` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `archiveFrom` INTEGER, `archiveUntil` INTEGER)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_recordings_playlistId_channelKey_start` ON `recordings` (`playlistId`, `channelKey`, `start`)",
+    "CREATE INDEX IF NOT EXISTS `index_recordings_state` ON `recordings` (`state`)",
+    "CREATE INDEX IF NOT EXISTS `index_recordings_start` ON `recordings` (`start`)",
+    "CREATE INDEX IF NOT EXISTS `index_recordings_seriesId` ON `recordings` (`seriesId`)",
+    "ALTER TABLE `programmes` ADD COLUMN `episodeKey` TEXT",
+    "ALTER TABLE `playlists` ADD COLUMN `connectionsAllowed` INTEGER",
+    "ALTER TABLE `playlists` ADD COLUMN `accountMaxConnections` INTEGER",
+)
+
 val ALL_MIGRATIONS: Array<Migration> =
-    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+    arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */
 private class SqlMigration(from: Int, to: Int, private vararg val statements: String) : Migration(from, to) {

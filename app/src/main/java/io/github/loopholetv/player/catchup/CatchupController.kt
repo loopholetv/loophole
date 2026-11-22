@@ -46,6 +46,8 @@ class CatchupController(
     private val zone: ZoneId,
     private val scope: CoroutineScope,
     private val liveOpener: (ChannelEntity) -> Unit = { playback.play(it) },
+    /** Asked before each archive open; false (a recording holds the provider's stream) opens nothing. */
+    private val beforeOpen: suspend (ChannelEntity) -> Boolean = { true },
 ) {
     private val _ui = MutableStateFlow<CatchupUi?>(null)
     val ui: StateFlow<CatchupUi?> = _ui.asStateFlow()
@@ -55,6 +57,9 @@ class CatchupController(
     /** The channel whose archive is open, or whose live stream is paused with catch-up. */
     private var active: Pair<ChannelEntity, CatchupSpec>? = null
     private var seekBase: Instant? = null
+
+    /** Counts what the viewer asked for last (opens, operations, resets); an older open is dropped. */
+    private var intent = 0L
 
     /** The paused archive's stream was stopped to free the connection. */
     private var released = false
@@ -271,6 +276,7 @@ class CatchupController(
     }
 
     private fun reset() {
+        intent++
         batcher.cancel()
         seekBase = null
         listOf(opJob, commitJob, releaseJob, tickJob).forEach { it?.cancel() }
@@ -281,6 +287,7 @@ class CatchupController(
     }
 
     private fun launchOp(block: suspend () -> Unit) {
+        intent++
         opJob?.cancel()
         commitJob?.cancel()
         batcher.cancel()
@@ -330,6 +337,9 @@ class CatchupController(
         until: Instant?,
         span: ProgrammeSpan? = null,
     ) {
+        val asked = ++intent
+        // Answered after a question: only if nothing newer (another open, a clear, a channel change) came meanwhile.
+        if (!beforeOpen(channel) || asked != intent) return
         val programme = span ?: spanAt(channel, from)
         releaseJob?.cancel()
         released = false

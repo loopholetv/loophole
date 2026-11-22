@@ -16,6 +16,8 @@ import io.github.loopholetv.data.settings.SubtitleSize
 import io.github.loopholetv.data.settings.SubtitleStyle
 import io.github.loopholetv.data.settings.decodeBindings
 import io.github.loopholetv.data.settings.encodeBindings
+import io.github.loopholetv.record.REMINDER_LEAD_CHOICES
+import io.github.loopholetv.record.storage.StorageKind
 import okio.Buffer
 import okio.BufferedSink
 import okio.ByteString.Companion.decodeBase64
@@ -90,6 +92,8 @@ data class SetupPlaylist(
     val portalDeviceId: String? = null,
     val portalDeviceId2: String? = null,
     val portalSignature: String? = null,
+    /** Streams this TV may open at once on the provider; null follows the account. */
+    val connectionsAllowed: Int? = null,
     val file: SetupFile? = null,
     /** Added guide links, in order. */
     val guideLinks: List<String> = emptyList(),
@@ -179,6 +183,21 @@ data class SetupSettings(
     val pipOnHome: Boolean,
     val autoPlayNext: Boolean,
     val remote: RemoteSettings,
+    /** Only SMB or NFS travel; anything else is [StorageKind.NONE]. */
+    val recordStorage: StorageKind,
+    val smbHost: String,
+    val smbShare: String,
+    val smbFolder: String,
+    val smbUser: String,
+    val smbPassword: String,
+    val smbDomain: String,
+    val nfsHost: String,
+    val nfsExport: String,
+    val nfsFolder: String,
+    val reminderLeadMin: Int,
+    val reminderAutoSwitch: Boolean,
+    val padBeforeMin: Int,
+    val padAfterMin: Int,
 ) {
     fun applyTo(s: AppSettings): AppSettings = s.copy(
         playlistUpdateHours = playlistUpdateHours,
@@ -202,7 +221,30 @@ data class SetupSettings(
             autoPlayNext = autoPlayNext,
         ),
         remote = remote,
-    )
+        reminderLeadMin = reminderLeadMin,
+        reminderAutoSwitch = reminderAutoSwitch,
+        padBeforeMin = padBeforeMin,
+        padAfterMin = padAfterMin,
+    ).let(::applyStorageTo)
+
+    /**
+     * Only a network folder travels, and only its own protocol's fields: without one (the other TV records
+     * elsewhere, or the bundle is older than recording) this TV keeps its own storage and logins, and an SMB
+     * folder leaves this TV's NFS settings alone (and the other way round).
+     */
+    private fun applyStorageTo(s: AppSettings): AppSettings = when (recordStorage) {
+        StorageKind.SMB -> s.copy(
+            recordStorage = recordStorage,
+            smbHost = smbHost,
+            smbShare = smbShare,
+            smbFolder = smbFolder,
+            smbUser = smbUser,
+            smbPassword = smbPassword,
+            smbDomain = smbDomain,
+        )
+        StorageKind.NFS -> s.copy(recordStorage = recordStorage, nfsHost = nfsHost, nfsExport = nfsExport, nfsFolder = nfsFolder)
+        else -> s
+    }
 
     override fun toString() = "SetupSettings(<hidden>)"
 
@@ -227,9 +269,42 @@ data class SetupSettings(
             pipOnHome = s.playback.pipOnHome,
             autoPlayNext = s.playback.autoPlayNext,
             remote = s.remote,
+            recordStorage = s.recordStorage.takeIf { it == StorageKind.SMB || it == StorageKind.NFS } ?: StorageKind.NONE,
+            // Only the folder in use travels: an unused SMB login never leaves this TV.
+            smbHost = s.smbHost.ifSmb(s),
+            smbShare = s.smbShare.ifSmb(s),
+            smbFolder = s.smbFolder.ifSmb(s),
+            smbUser = s.smbUser.ifSmb(s),
+            smbPassword = s.smbPassword.ifSmb(s),
+            smbDomain = s.smbDomain.ifSmb(s),
+            nfsHost = s.nfsHost.ifNfs(s),
+            nfsExport = s.nfsExport.ifNfs(s),
+            nfsFolder = s.nfsFolder.ifNfs(s),
+            reminderLeadMin = s.reminderLeadMin,
+            reminderAutoSwitch = s.reminderAutoSwitch,
+            padBeforeMin = s.padBeforeMin,
+            padAfterMin = s.padAfterMin,
         )
+
+        private fun String.ifSmb(s: AppSettings) = if (s.recordStorage == StorageKind.SMB) this else ""
+
+        private fun String.ifNfs(s: AppSettings) = if (s.recordStorage == StorageKind.NFS) this else ""
     }
 }
+
+/** [this] with [other]'s recording storage: where to record, and the network folder logins. */
+internal fun AppSettings.withStorageOf(other: AppSettings): AppSettings = copy(
+    recordStorage = other.recordStorage,
+    smbHost = other.smbHost,
+    smbShare = other.smbShare,
+    smbFolder = other.smbFolder,
+    smbUser = other.smbUser,
+    smbPassword = other.smbPassword,
+    smbDomain = other.smbDomain,
+    nfsHost = other.nfsHost,
+    nfsExport = other.nfsExport,
+    nfsFolder = other.nfsFolder,
+)
 
 /**
  * Every stored field, sorted into copied and not copied. A test fails when a new field is in
@@ -240,12 +315,15 @@ internal object SetupFields {
         "playlistUpdateHours", "playlistUpdateOnStart", "lastChannelOnStart", "confirmExit", "checkForUpdates",
         "userAgent", "udpProxy", "epgUpdateHours", "epgUpdateOnStart", "epgUpdateOnPlaylistChange", "epgPastDays",
         "epgStoreDescriptions", "remote",
+        // The storage kind travels only as SMB or NFS (otherwise as none).
+        "recordStorage", "smbHost", "smbShare", "smbFolder", "smbUser", "smbPassword", "smbDomain",
+        "nfsHost", "nfsExport", "nfsFolder", "reminderLeadMin", "reminderAutoSwitch", "padBeforeMin", "padAfterMin",
         // Split field by field below.
         "playback",
     )
 
-    /** This TV's identity and personal state. */
-    val APP_NOT_COPIED = setOf("lastGuideScope", "castAllowJoin", "castTvName", "onboardingSkipped")
+    /** This TV's identity and personal state, and the USB folder (a device-specific address). */
+    val APP_NOT_COPIED = setOf("lastGuideScope", "castAllowJoin", "castTvName", "onboardingSkipped", "usbTreeUri", "askedNotifications")
 
     val PLAYBACK_COPIED = setOf("bufferPreset", "audioLanguage", "subtitleLanguage", "subtitleStyle", "pipOnHome", "autoPlayNext")
 
@@ -265,6 +343,7 @@ internal object SetupFields {
         "name", "type", "url", "xtreamServer", "xtreamUser", "xtreamPass", "manualEpgUrl", "enabled", "userAgent", "updateHours",
         "updateOnStart", "useSourceEpg", "mac", "portalLogin", "portalPassword", "portalSerial", "portalDeviceId",
         "portalDeviceId2", "portalSignature",
+        "connectionsAllowed",
     )
 
     /**
@@ -274,6 +353,7 @@ internal object SetupFields {
     val PLAYLIST_NOT_COPIED = setOf(
         "id", "epgUrlsFromSource", "lastRefreshedAt", "lastError", "rekeyPending",
         "portalEndpoint", "portalToken", "xtreamTimeZone", "xtreamArchiveExt",
+        "accountMaxConnections",
     )
 
     val CHANNEL_EDIT_COPIED = setOf(
@@ -468,6 +548,20 @@ object SetupJson {
         w.name("leftRightSeek").value(s.remote.leftRightSeek)
         w.name("leftRewindsLive").value(s.remote.leftRewindsLive)
         w.name("bindings").value(encodeBindings(s.remote.bindings))
+        w.name("recordStorage").value(s.recordStorage.name)
+        w.name("smbHost").value(s.smbHost)
+        w.name("smbShare").value(s.smbShare)
+        w.name("smbFolder").value(s.smbFolder)
+        w.name("smbUser").value(s.smbUser)
+        w.name("smbPassword").value(s.smbPassword)
+        w.name("smbDomain").value(s.smbDomain)
+        w.name("nfsHost").value(s.nfsHost)
+        w.name("nfsExport").value(s.nfsExport)
+        w.name("nfsFolder").value(s.nfsFolder)
+        w.name("reminderLeadMin").value(s.reminderLeadMin.toLong())
+        w.name("reminderAutoSwitch").value(s.reminderAutoSwitch)
+        w.name("padBeforeMin").value(s.padBeforeMin.toLong())
+        w.name("padAfterMin").value(s.padAfterMin.toLong())
         w.endObject()
     }
 
@@ -492,6 +586,7 @@ object SetupJson {
         w.name("portalDeviceId").value(p.portalDeviceId)
         w.name("portalDeviceId2").value(p.portalDeviceId2)
         w.name("portalSignature").value(p.portalSignature)
+        w.name("connectionsAllowed").value(p.connectionsAllowed?.toLong())
         w.name("file")
         val file = p.file
         if (file == null) {
@@ -620,6 +715,21 @@ object SetupJson {
                 leftRewindsLive = v.bool("leftRewindsLive") ?: dr.leftRewindsLive,
                 bindings = decodeBindings(v.string("bindings")),
             ),
+            recordStorage = v.enum("recordStorage", StorageKind.NONE).takeIf { it == StorageKind.SMB || it == StorageKind.NFS }
+                ?: StorageKind.NONE,
+            smbHost = v.string("smbHost") ?: d.smbHost,
+            smbShare = v.string("smbShare") ?: d.smbShare,
+            smbFolder = v.string("smbFolder") ?: d.smbFolder,
+            smbUser = v.string("smbUser") ?: d.smbUser,
+            smbPassword = v.string("smbPassword") ?: d.smbPassword,
+            smbDomain = v.string("smbDomain") ?: d.smbDomain,
+            nfsHost = v.string("nfsHost") ?: d.nfsHost,
+            nfsExport = v.string("nfsExport") ?: d.nfsExport,
+            nfsFolder = v.string("nfsFolder") ?: d.nfsFolder,
+            reminderLeadMin = v.int("reminderLeadMin")?.takeIf { it in REMINDER_LEAD_CHOICES } ?: d.reminderLeadMin,
+            reminderAutoSwitch = v.bool("reminderAutoSwitch") ?: d.reminderAutoSwitch,
+            padBeforeMin = v.int("padBeforeMin")?.takeIf { it in AppSettings.PAD_CHOICES } ?: d.padBeforeMin,
+            padAfterMin = v.int("padAfterMin")?.takeIf { it in AppSettings.PAD_CHOICES } ?: d.padAfterMin,
         )
     }
 
@@ -661,6 +771,7 @@ object SetupJson {
             portalDeviceId = v.string("portalDeviceId"),
             portalDeviceId2 = v.string("portalDeviceId2"),
             portalSignature = v.string("portalSignature"),
+            connectionsAllowed = v.int("connectionsAllowed"),
             file = file,
             guideLinks = links,
             channelEdits = channelEdits,

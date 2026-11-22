@@ -1,11 +1,16 @@
 package io.github.loopholetv
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,7 +29,12 @@ import io.github.loopholetv.ui.nav.StartSlot
 import io.github.loopholetv.ui.nav.resolveStartPlayback
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import io.github.loopholetv.data.db.ChannelRef
+import io.github.loopholetv.record.EXTRA_PLAY_CHANNEL
+import io.github.loopholetv.record.parsePlayChannel
 import androidx.navigation.compose.rememberNavController
 import io.github.loopholetv.ui.nav.AppNav
 import io.github.loopholetv.ui.nav.startDestination
@@ -49,10 +59,17 @@ class MainActivity : ComponentActivity() {
 
     private val container get() = (application as LoopholeApp).container
 
+    /** A channel a reminder asked to open (from its notification or overlay), until the navigation takes it. */
+    private val playRequest = mutableStateOf<ChannelRef?>(null)
+    private var started = false
+
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as LoopholeApp
         val repo = app.container.playlistRepository
+        if (savedInstanceState == null) takePlayRequest(intent)
 
         // Cold start only; a configuration change recreates the activity without it. While the
         // splash shows, a start channel opened behind it does not connect (the session's gate).
@@ -97,6 +114,13 @@ class MainActivity : ComponentActivity() {
             if (it.isInPictureInPictureMode) displayModes.restore()
             // The setup screens can't show in the small window: other TVs' requests are refused meanwhile.
             app.container.setupController.setPaused(it.isInPictureInPictureMode)
+            updateForeground()
+        }
+        // The notification permission is asked for once, when a reminder is first booked.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                app.container.scheduleRepository.askNotifications.collect { askForNotificationsOnce() }
+            }
         }
         // The sleep timer has stopped playback: a picture-in-picture window would stay open, black.
         lifecycleScope.launch {
@@ -123,6 +147,7 @@ class MainActivity : ComponentActivity() {
                             AppNav(
                                 rememberNavController(), startDestination(decided, skipped),
                                 startPlayback = startSlot, confirmExit = settings.confirmExit,
+                                playChannel = playRequest.value, onPlayChannelHandled = { playRequest.value = null },
                             )
                         }
                     }
@@ -137,6 +162,33 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** A reminder's Watch while Loophole is open arrives here. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        takePlayRequest(intent)
+    }
+
+    private fun takePlayRequest(intent: Intent?) {
+        val ref = parsePlayChannel(intent?.getStringExtra(EXTRA_PLAY_CHANNEL)) ?: return
+        // Not again if the activity is recreated.
+        intent?.removeExtra(EXTRA_PLAY_CHANNEL)
+        playRequest.value = ref
+    }
+
+    private suspend fun askForNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        if (container.settingsStore.current().askedNotifications) return
+        container.settingsStore.update { it.copy(askedNotifications = true) }
+        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    /** Reminders show inside Loophole only while it is on screen and not in a picture-in-picture window. */
+    private fun updateForeground() {
+        container.uiForeground = started && !isInPictureInPictureMode
     }
 
     /** While the splash shows, a remote key skips it; that key never reaches the screen below. */
@@ -158,6 +210,8 @@ class MainActivity : ComponentActivity() {
     /** Other TVs can find this one, and it them, only while Loophole is on screen. */
     override fun onStart() {
         super.onStart()
+        started = true
+        updateForeground()
         // The setup copy's routes are on the cast server before it starts (added once; later calls do nothing).
         container.setupController.register()
         // The picture-in-picture callback doesn't always arrive when its window closes.
@@ -194,6 +248,8 @@ class MainActivity : ComponentActivity() {
      */
     override fun onStop() {
         super.onStop()
+        started = false
+        updateForeground()
         if (shouldReleaseOnStop(isChangingConfigurations)) {
             val c = container
             // First, so the other TVs hear "stopped casting" rather than seeing the stream stop.

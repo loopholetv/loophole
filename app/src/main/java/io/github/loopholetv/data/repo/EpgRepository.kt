@@ -67,6 +67,8 @@ class EpgRepository(
     private val portalEpg: suspend (PlaylistEntity, emit: (Any) -> Unit) -> Unit = { _, _ -> throw IOException("No portal guide") },
     /** Shared with the playlists' repository, whose `exclusive` stops guide updates too. */
     private val stops: RefreshStops = RefreshStops(),
+    /** Called with the playlist's id after a refresh has committed (never after a failed or stopped one). */
+    private val onCommitted: suspend (playlistId: Long) -> Unit = {},
 ) {
     private val playlistDao = db.playlistDao()
     private val channelDao = db.channelDao()
@@ -100,8 +102,8 @@ class EpgRepository(
      * A copied setup replacing the playlists stops a refresh that is running or waiting, and one
      * asked for meanwhile: it stores nothing and returns a [STOPPED] status that isn't stored either.
      */
-    suspend fun refresh(playlistId: Long, progress: (Int) -> Unit): EpgStatusEntity =
-        stops.stoppable({ stopped(playlistId) }) {
+    suspend fun refresh(playlistId: Long, progress: (Int) -> Unit): EpgStatusEntity {
+        val status = stops.stoppable({ stopped(playlistId) }) {
             mutex.withLock {
                 withContext(Dispatchers.Default) {
                     val playlist = requireNotNull(playlistDao.byId(playlistId)) { "Unknown playlist $playlistId" }
@@ -112,6 +114,18 @@ class EpgRepository(
                 }
             }
         }
+        // Only a committed refresh has an ok status. A failing hook is logged and never turns a stored guide into an error.
+        if (status.ok) {
+            try {
+                onCommitted(playlistId)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                // Class name only: an exception's message can carry an address.
+                android.util.Log.w("Loophole", "Guide commit hook failed: ${e.javaClass.simpleName}")
+            }
+        }
+        return status
+    }
 
     /**
      * Removes every stored programme and every playlist's status, waiting for a running refresh.

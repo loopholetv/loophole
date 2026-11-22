@@ -35,7 +35,7 @@ internal interface ChannelSource : Closeable {
 }
 
 /** [zone] is an IANA id or a `+HH:MM` offset; [ext] is the archive stream extension. */
-internal data class ArchiveInfo(val zone: String?, val ext: String)
+internal data class ArchiveInfo(val zone: String?, val ext: String, val maxConnections: Int? = null)
 
 // --- M3U ---
 
@@ -163,7 +163,7 @@ internal class XtreamSourceOpener(private val client: XtreamClient) {
 
             override fun noChannelsError(): ImportError = ImportError.EmptyPlaylist
 
-            override fun archiveInfo() = ArchiveInfo(account.serverTimeZone, account.archiveExt)
+            override fun archiveInfo() = ArchiveInfo(account.serverTimeZone, account.archiveExt, account.maxConnections)
         }
     }
 

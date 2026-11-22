@@ -91,6 +91,7 @@ class PlaylistRepository internal constructor(
     private val vodDao = db.vodWriteDao()
     private val vodProgress = db.vodProgressDao()
     private val vodLibrary = db.vodLibraryDao()
+    private val recordDao = db.recordDao()
     private val m3u = M3uSourceOpener(http)
     private val xtream = XtreamSourceOpener(xtream)
     private val mutex = Mutex()
@@ -258,6 +259,7 @@ class PlaylistRepository internal constructor(
                 playlistDao.delete(playlistId)
                 vodProgress.deleteForPlaylist(playlistId)
                 vodLibrary.deleteForPlaylist(playlistId)
+                recordDao.deletePendingForPlaylists(listOf(playlistId))
                 overlay.renumber()
                 maintenance.deleteUnreferencedProgrammes()
             }
@@ -371,7 +373,10 @@ class PlaylistRepository internal constructor(
         // A read from the last-good copy isn't a real update: the next scheduled one tries the file again.
         val at = if (keepRefreshTime) row?.lastRefreshedAt ?: now() else now()
         playlistDao.markRefreshed(id, at, epgUrls)
-        source.archiveInfo()?.let { playlistDao.setArchiveInfo(id, it.zone, it.ext) }
+        source.archiveInfo()?.let {
+            playlistDao.setArchiveInfo(id, it.zone, it.ext)
+            playlistDao.setAccountMaxConnections(id, it.maxConnections)
+        }
         if (rekey) playlistDao.setRekeyPending(id, false)
         ImportResult.Success(id, count)
     }

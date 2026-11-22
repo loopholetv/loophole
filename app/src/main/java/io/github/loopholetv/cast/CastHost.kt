@@ -803,7 +803,7 @@ class CastHost(
         private val BOM = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
         private const val HEX = "0123456789abcdef"
 
-        private fun sameSecret(given: String, expected: String): Boolean =
+        internal fun sameSecret(given: String, expected: String): Boolean =
             expected.isNotEmpty() && MessageDigest.isEqual(given.toByteArray(), expected.toByteArray())
 
         /** The start of a `bytes=N-` range, or null for none (or one this relay can't honour). */

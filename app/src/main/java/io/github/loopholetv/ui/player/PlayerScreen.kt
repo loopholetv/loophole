@@ -89,6 +89,7 @@ private val CASTING_LABEL_SPACE = 48.dp
 
 /** The same, while the label has shrunk to its dot. */
 private val CASTING_DOT_SPACE = 40.dp
+private val REC_BADGE_SPACE = 32.dp
 
 /**
  * Full-screen playback. Bare video or the slim banner a channel key shows: D-pad Up, Down and OK
@@ -133,6 +134,7 @@ fun PlayerScreen(
     val barVisible by vm.barVisible.collectAsStateWithLifecycle()
     val archiveFailed by vm.archiveFailed.collectAsStateWithLifecycle()
     val castingFollowers by vm.castingFollowers.collectAsStateWithLifecycle()
+    val recording by vm.recording.collectAsStateWithLifecycle()
     val streamInfoShown by vm.streamInfoShown.collectAsStateWithLifecycle()
     var castingMarkerExpanded by remember { mutableStateOf(true) }
     val inPip = rememberInPictureInPicture()
@@ -365,10 +367,20 @@ fun PlayerScreen(
         // Below the clock while the top bar shows; a number being typed goes under it.
         val topBar = u.overlayVisible || u.bannerVisible
         val labelTop = if (topBar) 72.dp else 24.dp
+        // Top right, first; the casting label and a typed number sit under it.
+        if (recording) {
+            Text(
+                text = REC_BADGE,
+                style = MaterialTheme.typography.labelLarge,
+                color = Tokens.Error,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = labelTop, end = 48.dp),
+            )
+        }
+        val recSpace = if (recording) REC_BADGE_SPACE else 0.dp
         castingFollowers?.let {
             CastingMarker(
                 it,
-                Modifier.align(Alignment.TopEnd).padding(top = labelTop, end = 48.dp),
+                Modifier.align(Alignment.TopEnd).padding(top = labelTop + recSpace, end = 48.dp),
                 onExpandedChange = { expanded -> castingMarkerExpanded = expanded },
             )
         }
@@ -380,7 +392,10 @@ fun PlayerScreen(
                 color = Tokens.OnBackground,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = if (castingFollowers != null && topBar) labelTop + castingLabelSpace else 72.dp, end = 48.dp)
+                    .padding(
+                        top = (if (castingFollowers != null && topBar) labelTop + castingLabelSpace else 72.dp) + recSpace,
+                        end = 48.dp,
+                    )
                     .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
                     .padding(horizontal = 20.dp, vertical = 4.dp),
             )

@@ -208,6 +208,7 @@ class VodRepositoryTest {
         assertEquals(VodPlayable(ref, "Film One", "http://s.test/f1.mp4", "ua", "ref"), repo.playable(ref))
         assertEquals("E e1", repo.playable(VodRef(VodKind.EPISODE, a, "e1"))?.title)
         assertNull(repo.playable(VodRef(VodKind.MOVIE, a, "missing")))
+        assertNull(repo.playable(VodRef(VodKind.RECORDING, a, "rec:1")))
         assertEquals(listOf(a), repo.playlistsWithCategory("Action"))
     }
 

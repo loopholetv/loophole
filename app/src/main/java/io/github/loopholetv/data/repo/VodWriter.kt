@@ -58,6 +58,7 @@ internal class VodWriter(
         when (v.kind) {
             VodKind.MOVIE -> addFilm(v)
             VodKind.EPISODE -> addEpisode(v)
+            VodKind.RECORDING -> Unit // never imported
         }
     }
 

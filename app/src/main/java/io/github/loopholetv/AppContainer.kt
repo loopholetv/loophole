@@ -1,6 +1,7 @@
 package io.github.loopholetv
 
 import android.content.Context
+import io.github.loopholetv.record.idsBookedOn
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.emptyPreferences
@@ -26,6 +27,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.player.HistoryRecorder
 import io.github.loopholetv.player.Playback
@@ -80,8 +82,143 @@ class AppContainer(context: Context) {
                 io.github.loopholetv.data.repo.readPortalGuide(p, db.maintenanceDao(), stalkerClient, stalkerSessions, emit)
             },
             stops = refreshStops,
+            onCommitted = { scheduleRepository.rematchSeries(it) },
         )
     }
+
+    /** Reminders, recordings and series rules. Notifying the scheduler and deleting files are wired by later parts. */
+    val scheduleRepository: io.github.loopholetv.record.ScheduleRepository by lazy {
+        io.github.loopholetv.record.ScheduleRepository(
+            db, settings = { settingsStore.current() }, clock = java.time.Instant::now,
+            onChanged = { recordAlarms.rearm() },
+            deleteFile = { if (!recordingRunner.deleteFileOf(it)) throw java.io.IOException("Storage not available") },
+            freeBytes = { storageFactory.current(settingsStore.current())?.freeBytes() },
+        )
+    }
+
+    /** Booking, stopping and extending from the player and the guide; a recording is found by the channel it was booked on. */
+    val scheduleActions: io.github.loopholetv.ui.guide.ScheduleActions by lazy {
+        io.github.loopholetv.ui.guide.RepositorySchedule(
+            scheduleRepository, db.recordDao(),
+            onNow = { channel, at -> shiftedProgrammes.nowAndNext(channel, at).firstOrNull { it.start <= at } },
+            runningOn = { channel -> recordingRunner.active.value.idsBookedOn(channel.id) },
+            stop = recordingRunner::stop,
+            rearm = recordAlarms::rearm,
+        )
+    }
+
+    /** Provider connections for recordings: a pool of its own, and a read timeout that bounds how far a quiet stream overruns its deadline. */
+    private val recordHttp: OkHttpClient by lazy {
+        http.newBuilder().connectionPool(okhttp3.ConnectionPool()).readTimeout(30, TimeUnit.SECONDS).build()
+    }
+
+    private val recordScope: kotlinx.coroutines.CoroutineScope by lazy {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+    }
+
+    /** Runs, finishes, recovers and retries recordings. */
+    val recordingRunner: io.github.loopholetv.record.RecordingRunner by lazy {
+        io.github.loopholetv.record.RecordingRunner(
+            db, storageFactory, { settingsStore.current() }, directResolver,
+            io.github.loopholetv.record.Recorder(recordHttp),
+            channelFor = { playlistId, key -> db.channelDao().byKey(playlistId, key) },
+            service = recordingServiceControl, clock = java.time.Instant::now,
+            zone = java.time.ZoneId.systemDefault(), scope = recordScope,
+        )
+    }
+
+    /** Starts and stops the recording service as recordings begin and end. */
+    val recordingServiceControl: io.github.loopholetv.record.RecordingServiceControl by lazy {
+        io.github.loopholetv.record.RecordingService.control(appContext)
+    }
+
+    /** What this TV streams from each provider right now: the player, the guide preview, a cast and the recordings. */
+    val streamUses: io.github.loopholetv.record.StreamUses by lazy {
+        io.github.loopholetv.record.StreamUses(
+            playback,
+            cast = lateCast,
+            runner = recordingRunner,
+            hostOfChannel = { id -> db.channelDao().byId(id)?.let { providerHostOf(it.playlistId) } },
+            hostOfVod = { ref -> if (ref.kind == io.github.loopholetv.data.vod.VodKind.RECORDING) null else providerHostOf(ref.playlistId) },
+        )
+    }
+
+    /** [castController], read at call time: it is built on first use, on the main thread. */
+    private val lateCast = object : io.github.loopholetv.cast.CastControls {
+        override val state get() = castController.state
+        override fun startCasting() = castController.startCasting()
+        override fun stopCasting(reason: io.github.loopholetv.cast.StopReason) = castController.stopCasting(reason)
+    }
+
+    private suspend fun providerHostOf(playlistId: Long): String? =
+        db.playlistDao().byId(playlistId)?.let { io.github.loopholetv.record.providerHost(it) }
+
+    /**
+     * Lets recordings take a stream only within each provider's limit; alarms, recovery and retries start
+     * recordings through it, and every user play asks it first. Built at app start (see [LoopholeApp]).
+     */
+    val recordingCoordinator: io.github.loopholetv.record.RecordingCoordinator by lazy {
+        io.github.loopholetv.record.RecordingCoordinator(
+            recordingRunner, db, streamUses, playback, previewHold, lateCast,
+            // Only idle connections: the player's (and the relay's) released stream, never one in use.
+            evictIdle = {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    http.connectionPool.evictAll()
+                    castUpstreamHttp.connectionPool.evictAll()
+                }
+            },
+            clock = java.time.Instant::now,
+            // The player, the preview hold and the cast are used on the main thread.
+            scope = kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate + backgroundErrorHandler(),
+            ),
+            rearm = { recordAlarms.rearm() },
+            service = recordingServiceControl,
+            startLock = io.github.loopholetv.record.PowerStartWakeLock(appContext),
+        ).also { c -> recordingRunner.runGate = { id, fromArchive -> c.startBudgeted(id, fromArchive) } }
+    }
+
+    /** Where alarms go; the recording coordinator and the reminder notifier register themselves here. */
+    val alarmDispatch = io.github.loopholetv.record.AlarmDispatch()
+
+    /** Whether Loophole is on screen (started, and not in a picture-in-picture window): set by the activity. */
+    @Volatile var uiForeground = false
+
+    private val reminderOverlay by lazy {
+        io.github.loopholetv.record.ReminderOverlay(appContext, onAnswer = { id, watch -> reminders.answer(id, watch) })
+    }
+
+    /** Shows a booked reminder in Loophole, over another app or as a notification, when its alarm fires. */
+    val reminders: io.github.loopholetv.record.Reminders by lazy {
+        io.github.loopholetv.record.Reminders(
+            db, settings = { settingsStore.current() },
+            foreground = { uiForeground },
+            canOverlay = { io.github.loopholetv.record.canDrawOverlays(appContext) },
+            overlay = reminderOverlay,
+            notify = io.github.loopholetv.record.ReminderNotification(appContext),
+            clock = java.time.Instant::now,
+            // The surfaces draw on the main thread.
+            scope = kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate + backgroundErrorHandler(),
+            ),
+            launch = { ref ->
+                appContext.startActivity(io.github.loopholetv.record.playChannelIntent(appContext, ref))
+            },
+        )
+    }
+
+    val recordAlarms: io.github.loopholetv.record.RecordAlarms by lazy {
+        io.github.loopholetv.record.RecordAlarms(
+            appContext, db, settings = { settingsStore.current() }, clock = java.time.Instant::now,
+        )
+    }
+
+    private val recoverAndRearm by lazy {
+        io.github.loopholetv.record.RecoverAndRearm(alarmDispatch, { recordAlarms.rearm() })
+    }
+
+    /** At app start, boot and clock changes: let the recorder pick up what was running, then set every alarm again. */
+    suspend fun recoverAndRearm() = recoverAndRearm.run()
 
     /** The only DataStore instance for the "settings" file (settings and update-check state). */
     private val settingsDataStore by lazy {
@@ -91,6 +228,26 @@ class AppContainer(context: Context) {
     }
 
     val settingsStore: SettingsStore by lazy { SettingsStore(settingsDataStore) }
+
+    val storageFactory: io.github.loopholetv.record.storage.StorageFactory by lazy {
+        io.github.loopholetv.record.storage.StorageFactory(
+            appContext,
+            smb = { s ->
+                if (s.smbHost.isBlank() || s.smbShare.isBlank()) {
+                    io.github.loopholetv.record.storage.UnavailableStorage("smb:", "Network folder (SMB)", "Network folder not set up")
+                } else {
+                    io.github.loopholetv.record.storage.SmbStorage(s.smbHost, s.smbShare, s.smbFolder, s.smbUser, s.smbPassword, s.smbDomain)
+                }
+            },
+            nfs = { s ->
+                if (s.nfsHost.isBlank() || s.nfsExport.isBlank()) {
+                    io.github.loopholetv.record.storage.UnavailableStorage("nfs:", "Network folder (NFS)", "Network folder not set up")
+                } else {
+                    io.github.loopholetv.record.storage.NfsStorage(s.nfsHost, s.nfsExport, s.nfsFolder)
+                }
+            },
+        )
+    }
 
     /** Release check, download and install of app updates; lives for the process. */
     val updater: io.github.loopholetv.update.Updater by lazy {
@@ -123,17 +280,20 @@ class AppContainer(context: Context) {
     /** Holds back the first playback while the start-up splash shows. */
     val startGate = io.github.loopholetv.ui.splash.StartGate()
 
+    /** Resolves streams straight from the provider, never through the casting relay. */
+    private val directResolver: io.github.loopholetv.player.StreamResolver by lazy {
+        io.github.loopholetv.player.PlaylistStreamResolver(
+            db.playlistDao()::byId, { settingsSnapshot.await() },
+            io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME), stalkerSessions, stalkerClient,
+            xtream = xtream,
+            storeArchiveInfo = db.playlistDao()::setArchiveInfo,
+            storeMaxConnections = db.playlistDao()::setAccountMaxConnections,
+        )
+    }
+
     /** Stream addresses for the player: through this TV's relay while it casts, else straight. */
     internal val playbackResolver: io.github.loopholetv.player.StreamResolver by lazy {
-        io.github.loopholetv.cast.CastingResolver(
-            io.github.loopholetv.player.PlaylistStreamResolver(
-                db.playlistDao()::byId, { settingsSnapshot.await() },
-                io.github.loopholetv.data.net.UserAgents.default(BuildConfig.VERSION_NAME), stalkerSessions, stalkerClient,
-                xtream = xtream,
-                storeArchiveInfo = db.playlistDao()::setArchiveInfo,
-            ),
-            castHost,
-        )
+        io.github.loopholetv.cast.CastingResolver(directResolver, castHost)
     }
 
     /** The one player for the app lifetime (never released). */
@@ -317,6 +477,27 @@ class AppContainer(context: Context) {
         io.github.loopholetv.cast.net.LocalHttpServer(castScope)
     }
 
+    /** The "allow joining" setting, kept current for requests from other TVs; false until settings load or if they fail. */
+    private val castAllowJoin: kotlinx.coroutines.flow.StateFlow<Boolean> by lazy {
+        settingsStore.settings.map { it.castAllowJoin }.catch { emit(false) }
+            .stateIn(castScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false)
+    }
+
+    /** This TV's recordings for its own player and for other TVs, on [castServer]. */
+    val recordingsRoute: io.github.loopholetv.record.RecordingsRoute by lazy {
+        io.github.loopholetv.record.RecordingsRoute(
+            recordings = { db.recordDao().observeRecordings().first() },
+            recording = { id -> db.recordDao().recording(id) },
+            storageFor = { row -> row.storageId?.let { storageFactory.byId(it, settingsStore.current()) } },
+            port = { castServer.port },
+            allowShare = { castAllowJoin.value },
+        ).also { it.install(castServer) }
+    }
+
+    val recordingsClient: io.github.loopholetv.record.RecordingsClient by lazy {
+        io.github.loopholetv.record.RecordingsClient(castHttp)
+    }
+
     val peerTable: io.github.loopholetv.cast.PeerTable by lazy {
         io.github.loopholetv.cast.PeerTable({ castSelfIdLoaded }, android.os.SystemClock::elapsedRealtime)
     }
@@ -363,6 +544,7 @@ class AppContainer(context: Context) {
             canAutoJoin = { autoJoinHold.allows() },
             holdWifi = io.github.loopholetv.cast.castWifiHold(appContext),
             watchNetwork = io.github.loopholetv.cast.defaultNetworkChanges(appContext),
+            recToken = recordingsRoute.announced(castScope, db.recordDao().observeRecordings()),
         )
     }
     // --- End of casting between TVs ------------------------------------------------------------
@@ -457,6 +639,7 @@ class AppContainer(context: Context) {
                 db, settingsStore, opener,
                 // No playlist add, update or delete runs while the playlists are replaced.
                 serialize = playlistRepository::exclusive,
+                onReplaced = { recordAlarms.rearm() },
             )::import,
             stageFile = opener::newTemp,
             clock = android.os.SystemClock::elapsedRealtime,

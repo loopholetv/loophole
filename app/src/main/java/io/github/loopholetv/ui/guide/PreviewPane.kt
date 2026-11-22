@@ -87,6 +87,8 @@ fun PreviewPane(
     onLongPress: (ChannelEntity) -> Unit = {},
     /** How subtitles are drawn when a channel previews with them on. */
     subtitleStyle: SubtitleStyle = SubtitleStyle(),
+    /** Shown instead of the preview's own message while a recording holds the stream ("Recording on <channel>"). */
+    notice: String? = null,
     rightTo: FocusRequester? = null,
 ) {
     val state by playback.state.collectAsState()
@@ -130,7 +132,7 @@ fun PreviewPane(
             onRelease = { it.player = null },
             modifier = Modifier.fillMaxSize(),
         )
-        val message = when (val s = state) {
+        val message = notice ?: when (val s = state) {
             is PlaybackState.Buffering -> "Loading…"
             is PlaybackState.Error -> s.message
             is PlaybackState.Idle -> if (previewing == null) "Press OK to preview" else null

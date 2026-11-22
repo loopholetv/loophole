@@ -430,6 +430,35 @@ class MigrationTest {
         }
     }
 
+    @Test fun migrate8To9AddsRecordTablesAndColumns() = runTest {
+        helper.createDatabase(DB, 8).use { v8 ->
+            v8.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
+            v8.execSQL(
+                """INSERT INTO programmes (id, epgChannelId, start, stop, title, generation)
+                   VALUES (1, 'e', 1000, 2000, 'Show', 1)""",
+            )
+        }
+
+        // Validates the migrated schema against the exported schema 9.json.
+        helper.runMigrationsAndValidate(DB, 9, true, MIGRATION_8_9).use { v9 ->
+            v9.query("SELECT episodeKey FROM programmes WHERE id = 1").use {
+                assertTrue(it.moveToFirst())
+                assertTrue(it.isNull(0))
+            }
+        }
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            assertNull(db.playlistDao().byId(7)!!.connectionsAllowed)
+            assertNull(db.playlistDao().byId(7)!!.accountMaxConnections)
+            assertTrue(db.recordDao().observeRecordings().first().isEmpty())
+        } finally {
+            db.close()
+        }
+    }
+
     @Test fun migrate1To7ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 1).use { v1 ->
             v1.execSQL(

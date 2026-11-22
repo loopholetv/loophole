@@ -10,6 +10,7 @@ import io.github.loopholetv.data.repo.announcedEpgUrls
 import io.github.loopholetv.data.repo.m3uSecrets
 import io.github.loopholetv.data.repo.playlistSecrets
 import io.github.loopholetv.data.xtream.XtreamCredentials
+import io.github.loopholetv.record.DEFAULT_CONNECTIONS
 import io.github.loopholetv.util.redact
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -90,6 +91,8 @@ internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
             statusText = status,
             statusIsError = isError,
             secondaryText = "${contentCounts(count, films, shows, locale)} · ${onOff(p.enabled)} · $status",
+            connectionsAllowed = p.connectionsAllowed,
+            autoConnections = p.accountMaxConnections?.takeIf { it > 0 } ?: DEFAULT_CONNECTIONS,
         )
     }
 

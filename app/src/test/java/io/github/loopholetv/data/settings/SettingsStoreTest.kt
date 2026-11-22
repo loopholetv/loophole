@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import io.github.loopholetv.phone.PairedPhone
+import io.github.loopholetv.record.storage.StorageKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -134,6 +136,38 @@ class SettingsStoreTest {
         )
         store.update { changed }
         assertEquals(changed, store.current())
+    }
+
+    @Test
+    fun recordSettingsRoundTrip() = runTest {
+        val store = SettingsStore(dataStore(backgroundScope))
+        val changed = AppSettings(
+            recordStorage = StorageKind.NFS, smbHost = "h", smbShare = "s", smbFolder = "f", smbUser = "u",
+            smbPassword = "p", smbDomain = "d", nfsHost = "nh", nfsExport = "/e", nfsFolder = "nf",
+            usbTreeUri = "content://t", reminderLeadMin = 5, reminderAutoSwitch = true, padBeforeMin = 10, padAfterMin = 30, askedNotifications = true,
+        )
+        store.update { changed }
+        assertEquals(changed, store.current())
+    }
+
+    @Test
+    fun invalidReminderLeadAndPaddingReadAsDefaults() = runTest {
+        val ds = dataStore(backgroundScope)
+        ds.edit {
+            it[intPreferencesKey("reminder_lead_min")] = 3
+            it[intPreferencesKey("pad_before_min")] = 4
+            it[stringPreferencesKey("record_storage")] = "TAPE"
+        }
+        val s = SettingsStore(ds).current()
+        assertEquals(1, s.reminderLeadMin)
+        assertEquals(1, s.padBeforeMin)
+        assertEquals(StorageKind.NONE, s.recordStorage)
+    }
+
+    @Test
+    fun smbPasswordNotInToString() {
+        val text = AppSettings(smbPassword = "hunter2-secret", smbUser = "bob").toString()
+        assertFalse(text, text.contains("hunter2-secret"))
     }
 
     @Test

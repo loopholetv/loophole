@@ -28,6 +28,12 @@ interface PlaylistDao {
     @Query("UPDATE playlists SET xtreamTimeZone = :zone, xtreamArchiveExt = :ext WHERE id = :id")
     suspend fun setArchiveInfo(id: Long, zone: String?, ext: String?)
 
+    @Query("UPDATE playlists SET accountMaxConnections = :max WHERE id = :id")
+    suspend fun setAccountMaxConnections(id: Long, max: Int?)
+
+    @Query("UPDATE playlists SET connectionsAllowed = :n WHERE id = :id")
+    suspend fun setConnectionsAllowed(id: Long, n: Int?)
+
     @Query("UPDATE playlists SET lastError = :error WHERE id = :id")
     suspend fun setError(id: Long, error: String)
 
@@ -108,6 +114,10 @@ abstract class ChannelDao {
     /** The visible channel with guide number [n] (unique across enabled playlists; ties by playlist). */
     @Query("SELECT * FROM channels WHERE visible = 1 AND guideNumber = :n ORDER BY playlistId, sortOrder, id LIMIT 1")
     abstract suspend fun byNumber(n: Int): ChannelEntity?
+
+    /** The channel with [key] in [playlistId], hidden or not. */
+    @Query("SELECT * FROM channels WHERE playlistId = :playlistId AND `key` = :key")
+    abstract suspend fun byKey(playlistId: Long, key: String): ChannelEntity?
 
     /** Any channel by id, hidden ones too (the channel the player was asked to open). */
     @Query("SELECT * FROM channels WHERE id = :id")
@@ -375,6 +385,10 @@ abstract class ProgrammeDao {
     /** The committed programme airing at [at] (if any) and the one after it; at most 2. */
     @Query("SELECT * FROM programmes WHERE epgChannelId = :epgId AND stop > :at AND $COMMITTED ORDER BY start LIMIT 2")
     abstract suspend fun nowAndNext(epgId: String, at: Instant): List<ProgrammeEntity>
+
+    /** Committed programmes of [epgId] that have not ended by [from], in start order (stored times, not shifted). */
+    @Query("SELECT * FROM programmes WHERE epgChannelId = :epgId AND stop > :from AND $COMMITTED ORDER BY start")
+    abstract suspend fun upcomingFor(epgId: String, from: Instant): List<ProgrammeEntity>
 
     // --- refresh support ---
 

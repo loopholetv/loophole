@@ -68,6 +68,9 @@ import io.github.loopholetv.ui.common.ChannelOption
 import io.github.loopholetv.ui.common.ChannelOptionsDialog
 import io.github.loopholetv.ui.common.OPTION_ADD_FAVOURITE
 import io.github.loopholetv.ui.common.OPTION_MOVE
+import io.github.loopholetv.ui.common.OPTION_RECORD_NOW
+import io.github.loopholetv.ui.common.OPTION_STOP_RECORDING
+import io.github.loopholetv.record.MarkKey
 import io.github.loopholetv.ui.common.OPTION_REMOVE_FAVOURITE
 import io.github.loopholetv.ui.common.OkPressTracker
 import io.github.loopholetv.ui.common.channelOptionsTitle
@@ -115,6 +118,11 @@ fun GuideScreen(
     /** The side menu's Movies and Series. */
     onMovies: () -> Unit = {},
     onSeries: () -> Unit = {},
+    /** The side menu's Recordings. */
+    onRecordings: () -> Unit = {},
+    /** A showing to open here (focus its channel, show its details), from a reminder on another screen; [onOpenAtHandled] once taken. */
+    openAt: GuideAt? = null,
+    onOpenAtHandled: () -> Unit = {},
     /** "Copy from another TV" under the no-playlist hint: the TV picker. */
     onCopyFromAnotherTv: () -> Unit = {},
 ) {
@@ -169,10 +177,15 @@ fun GuideScreen(
     // Returning from the background (where MainActivity stopped playback) resumes the previewing channel.
     LifecycleStartEffect(vm) {
         vm.onScreenStarted()
-        onStopOrDispose { }
+        onStopOrDispose { vm.onScreenStopped() }
     }
 
-    var details by remember { mutableStateOf<ProgrammeEntity?>(null) }
+    var details by remember { mutableStateOf<DetailsTarget?>(null) }
+    val marks by vm.marks.collectAsStateWithLifecycle()
+    val marksByChannel by vm.marksByChannel.collectAsStateWithLifecycle()
+    val bookingWarning by vm.bookingWarning.collectAsStateWithLifecycle()
+    val previewNotice by vm.previewNotice.collectAsStateWithLifecycle()
+    val recordingChannels by vm.recordingChannelIds.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val gridFocus = remember { FocusRequester() }
     val selectedGroupFocus = remember { FocusRequester() }
@@ -264,6 +277,16 @@ fun GuideScreen(
         }
     }
 
+    // A showing handed over by another screen: its channel takes focus and its details open.
+    LaunchedEffect(openAt) {
+        val at = openAt ?: return@LaunchedEffect
+        onOpenAtHandled()
+        val target = vm.detailsAt(at) ?: return@LaunchedEffect
+        focusTarget = target.channel.id
+        gridFocusPending = true
+        details = target
+    }
+
     // Back from the player after zapping: focus the channel it ended on (scrolled into view when
     // loaded; a channel outside this group, reached by number, falls back to the first visible row).
     val refocus by vm.refocus.collectAsStateWithLifecycle()
@@ -328,6 +351,9 @@ fun GuideScreen(
                 }
                 GuideEvent.OpenSearch -> openSearch()
                 GuideEvent.OpenSettings -> openSettings()
+                // A catch-up OK let through once its stream was free: once, as the OK itself would have.
+                is GuideEvent.OpenArchive ->
+                    vm.claimArchive(event.action)?.let { playArchive(it.channelId, vm.selectedScope.value, it.from) }
             }
         }
     }
@@ -517,7 +543,10 @@ fun GuideScreen(
                     OkAction.Previewed -> Unit
                     // Once: a quick second OK while the player opens is ignored.
                     is OkAction.OpenPlayer -> vm.claimPlayer(action)?.let { onPlay(it, vm.selectedScope.value) }
-                    is OkAction.ShowDetails -> details = action.programme
+                    is OkAction.ShowDetails -> {
+                        vm.clearBookingWarning()
+                        details = DetailsTarget(channel, action.programme)
+                    }
                     is OkAction.PlayArchive ->
                         vm.claimArchive(action)?.let { playArchive(it.channelId, vm.selectedScope.value, it.from) }
                 }
@@ -612,6 +641,7 @@ fun GuideScreen(
                         onOk = ::openPreview,
                         onLongPress = { channel -> options = OptionsTarget(channel, fromPreview = true) },
                         subtitleStyle = subtitleStyle,
+                        notice = previewNotice,
                         rightTo = castFocus.takeIf { casting } ?: cardFocus.takeIf { updateCard?.buttons?.isNotEmpty() == true },
                         onDown = { if (channels.itemCount > 0) focusGrid() else focusEmptyList() },
                         modifier = Modifier.fillMaxHeight().onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Preview) },
@@ -707,6 +737,7 @@ fun GuideScreen(
                             upFromTop = if (casting) castFocus else previewFocus,
                             actions = actions,
                             favourites = favourites,
+                            marks = marksByChannel,
                             movingId = movingId,
                             pastWindow = pastWindow,
                             emptyHint = emptyHintFor(allPlaylistsOff, selectedScope, listEmpty, noPlaylists),
@@ -739,7 +770,7 @@ fun GuideScreen(
                     RailItem.TVS -> onTvs()
                     RailItem.MOVIES -> onMovies()
                     RailItem.SERIES -> onSeries()
-                    else -> Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
+                    RailItem.RECORDINGS -> onRecordings()
                 }
             },
             entryFocus = railFocus,
@@ -747,7 +778,25 @@ fun GuideScreen(
         )
     }
 
-    details?.let { p -> ProgrammeDetailsDialog(p, format, onClose = { details = null }) }
+    details?.let { target ->
+        val p = target.programme
+        val cellMark = marks[MarkKey(p.epgChannelId, p.start.toEpochMilli())]
+        // Every booking on the showing, looked up when the dialog opens and after each change.
+        val changes by vm.bookingsChanged.collectAsStateWithLifecycle()
+        val booked by produceState<CellBookings?>(null, target, cellMark, changes) { value = vm.bookingsOf(target.channel, p) }
+        ProgrammeDetailsDialog(
+            programme = p,
+            format = format,
+            booked = booked,
+            bookable = p.start > now,
+            warning = bookingWarning,
+            onButton = { button -> vm.onDetailsButton(target.channel, p, button) },
+            onClose = {
+                vm.clearBookingWarning()
+                details = null
+            },
+        )
+    }
 
     options?.let { target ->
         val channel = target.channel
@@ -766,6 +815,12 @@ fun GuideScreen(
                     }
                 },
             )
+            // A channel with a recording running offers to stop it; otherwise to record from now.
+            if (channel.id in recordingChannels) {
+                add(ChannelOption(OPTION_STOP_RECORDING) { vm.stopRecording(channel); closeOptions(back) })
+            } else {
+                add(ChannelOption(OPTION_RECORD_NOW) { vm.recordNow(channel); closeOptions(back) })
+            }
             // Reordering is for the Favourites list, from its rows.
             if (isFavourite && selectedScope == ChannelScope.Favourites && !target.fromPreview) {
                 add(
@@ -860,30 +915,6 @@ private class RowRemoval(val channelId: Long, val remove: () -> Unit)
 
 /** Focus onto group [scope], then [then] (also when focus couldn't land). */
 private class GroupFocus(val scope: ChannelScope, val then: () -> Unit)
-
-@Composable
-private fun ProgrammeDetailsDialog(p: ProgrammeEntity, format: GuideFormat, onClose: () -> Unit) {
-    val close = remember { FocusRequester() }
-    LaunchedEffect(Unit) { close.tryFocus() }
-    Dialog(onDismissRequest = onClose) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier
-                .width(520.dp)
-                .background(Tokens.SurfaceRaised, RoundedCornerShape(12.dp))
-                .padding(28.dp),
-        ) {
-            Text(p.title, style = MaterialTheme.typography.headlineSmall, color = Tokens.OnBackground)
-            Text(format.range(p), style = MaterialTheme.typography.bodyMedium, color = Tokens.Accent)
-            Text(
-                text = p.description?.takeIf { it.isNotBlank() } ?: "No description",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Tokens.Muted,
-            )
-            Button(onClick = onClose, modifier = Modifier.padding(top = 8.dp).focusRequester(close)) { Text("Close") }
-        }
-    }
-}
 
 /** [FocusRequester.requestFocus]'s result; false (not a crash) when the target isn't attached yet. */
 internal fun FocusRequester.tryFocus(): Boolean = runCatching { requestFocus() }.getOrDefault(false)

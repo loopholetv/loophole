@@ -15,6 +15,8 @@ import io.github.loopholetv.data.settings.PlayerAction
 import io.github.loopholetv.data.settings.keyName
 import io.github.loopholetv.data.settings.PLAYBACK_LANGUAGES
 import io.github.loopholetv.data.settings.Passthrough
+import io.github.loopholetv.record.storage.StorageKind
+import io.github.loopholetv.ui.recordings.formatSize
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -194,3 +196,77 @@ fun subtitleLanguageChoices(): List<Pair<String?, String>> =
 
 /** The name of [code] in [choices]; an unknown code shows as itself. */
 fun languageText(choices: List<Pair<String?, String>>, code: String?): String = choiceText(choices, code) { it.orEmpty() }
+
+// --- Recordings & reminders page ---
+
+internal const val SECTION_RECORDINGS = "Recordings & reminders"
+
+internal const val RC_WHERE = "Where to record"
+internal const val RC_SMB = "Network folder (SMB)"
+internal const val RC_NFS = "Network folder (NFS)"
+internal const val RC_USB = "USB drive"
+internal const val RC_INTERNAL = "Internal storage (small on most TVs)"
+internal const val RC_TEST = "Test"
+internal const val RC_FREE = "Free space"
+internal const val RC_REMIND = "Remind me before"
+internal const val RC_AUTO_SWITCH = "Switch automatically"
+internal const val RC_PAD_BEFORE = "Start early"
+internal const val RC_PAD_AFTER = "End late"
+internal const val RC_POPUPS = "Pop-ups over other apps"
+internal const val RC_STANDBY = "Keep recording in standby"
+internal const val RC_CONNECTIONS = "Connections allowed"
+
+internal const val RC_NOT_SET = "Not set"
+internal const val RC_NOT_SET_HINT = "Pick a network folder or a USB drive"
+internal const val RC_TEST_WORKS = "Works"
+internal const val RC_TEST_FAILED = "Couldn't reach that storage."
+internal const val RC_TESTING = "Testing…"
+internal const val RC_AUTO_SWITCH_HINT = "Outside Loophole this needs Pop-ups over other apps."
+internal const val RC_NO_USB_PICKER = "This TV can't pick a USB drive. Use a network folder."
+internal const val RC_NO_SCREEN = "This TV has no screen for that setting."
+internal const val RC_ALLOWED = "Allowed"
+internal const val RC_NOT_ALLOWED = "Not allowed"
+internal const val RC_UNKNOWN = "Unknown"
+internal const val RC_SAVE = "Save"
+
+internal val RC_SMB_FIELDS = listOf("Host", "Share", "Folder", "User", "Password", "Domain")
+internal val RC_NFS_FIELDS = listOf("Host", "Export", "Folder")
+
+/** The kinds on offer, internal storage last. */
+internal val RC_WHERE_CHOICES = listOf(StorageKind.SMB, StorageKind.NFS, StorageKind.USB, StorageKind.INTERNAL)
+
+/** "Auto" first (null), then one to five streams. */
+internal val RC_CONNECTION_CHOICES: List<Int?> = listOf(null, 1, 2, 3, 4, 5)
+
+/** Row value of "Where to record"; internal storage adds its [internalFree] space when known. */
+internal fun storageKindText(kind: StorageKind, internalFree: Long?): String = when (kind) {
+    StorageKind.NONE -> RC_NOT_SET
+    StorageKind.SMB -> RC_SMB
+    StorageKind.NFS -> RC_NFS
+    StorageKind.USB -> RC_USB
+    StorageKind.INTERNAL -> if (internalFree == null) RC_INTERNAL else "$RC_INTERNAL · ${formatSize(internalFree)} free"
+}
+
+/** The rows of the page, top to bottom; the chosen network folder's form follows "Where to record". */
+internal fun recordingsRowLabels(kind: StorageKind): List<String> = buildList {
+    add(RC_WHERE)
+    when (kind) {
+        StorageKind.SMB -> addAll(RC_SMB_FIELDS)
+        StorageKind.NFS -> addAll(RC_NFS_FIELDS)
+        else -> Unit
+    }
+    addAll(listOf(RC_TEST, RC_FREE, RC_REMIND, RC_AUTO_SWITCH, RC_PAD_BEFORE, RC_PAD_AFTER, RC_POPUPS, RC_STANDBY))
+}
+
+/** "At the start", "1 min before", ... for one of the reminder lead choices. */
+internal fun reminderLeadText(min: Int): String = if (min == 0) "At the start" else "$min min"
+
+/** "None", "1 min", ... for a recording's start-early or end-late choice. */
+internal fun padText(min: Int): String = if (min == 0) "None" else "$min min"
+
+internal fun freeSpaceText(bytes: Long?): String = bytes?.let(::formatSize) ?: RC_UNKNOWN
+
+/** "Auto (3)" for no setting, else the number. [auto] is the account's limit, or one. */
+internal fun connectionsText(allowed: Int?, auto: Int): String = allowed?.toString() ?: "Auto ($auto)"
+
+internal fun allowedText(granted: Boolean): String = if (granted) RC_ALLOWED else RC_NOT_ALLOWED

@@ -38,6 +38,8 @@ data class ChannelOption(val label: String, val onClick: () -> Unit)
 const val OPTION_ADD_FAVOURITE = "Add to favourites"
 const val OPTION_REMOVE_FAVOURITE = "Remove from favourites"
 const val OPTION_MOVE = "Move"
+const val OPTION_RECORD_NOW = "Record now"
+const val OPTION_STOP_RECORDING = "Stop recording"
 
 /** The options panel's title for [channel]: the number and name the guide shows. */
 fun channelOptionsTitle(channel: ChannelEntity): String = "${channel.guideNumber}  ${channel.displayName}"
