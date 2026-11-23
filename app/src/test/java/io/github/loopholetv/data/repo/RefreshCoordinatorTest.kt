@@ -70,7 +70,11 @@ class RefreshCoordinatorTest {
             calls += "s$id"
             playlistResult(id).also { if (it is ImportResult.Success) lastPlaylist[id] = now }
         },
+        onPlaylistRefreshed = { refreshed += it },
     )
+
+    /** Playlists the coordinator reported as successfully refreshed, in order. */
+    private val refreshed = mutableListOf<Long>()
 
     /** Playlists [ids], all never refreshed (so everything is due). */
     private fun given(vararg ids: Long) = ids.forEach { lastPlaylist[it] = null }
@@ -565,5 +569,49 @@ class RefreshCoordinatorTest {
         val results = coordinator().refreshAll()
         assertEquals(listOf("p1"), calls)
         assertEquals(setOf(1L), results.keys)
+    }
+
+    // --- refreshed notification ---
+
+    @Test
+    fun successfulRefreshesAreReported() = runTest {
+        given(1, 2)
+        val c = coordinator()
+        c.refreshPlaylist(1)
+        c.refreshPlaylist(2, chainEpg = false)
+        c.updateSource(1, SourceEdit.M3uUrl("http://x/new"))
+        assertEquals(listOf(1L, 2L, 1L), refreshed)
+    }
+
+    @Test
+    fun scheduledAndStartupRefreshesAreReported() = runTest {
+        given(1)
+        coordinator().runDue(RefreshKind.PLAYLIST)
+        lastPlaylist[1] = null
+        coordinator().runStartup()
+        assertEquals(listOf(1L, 1L), refreshed)
+    }
+
+    @Test
+    fun failedRefreshIsNotReported() = runTest {
+        given(1)
+        playlistResult = { ImportResult.Failure(ImportError.Unreachable, "down") }
+        coordinator().refreshPlaylist(1)
+        coordinator().refreshAll()
+        assertTrue(refreshed.isEmpty())
+    }
+
+    @Test
+    fun aFailingListenerDoesNotBreakTheRefresh() = runTest {
+        given(1)
+        val c = RefreshCoordinator(
+            playlists = { listPlaylists() }, epgStatus = { null },
+            refreshPlaylistFn = { id, _ -> calls += "p$id"; ImportResult.Success(id, 1) },
+            refreshEpgFn = { id, _ -> calls += "e$id"; ok(id, now) },
+            settings = { settings }, clock = { now },
+            onPlaylistRefreshed = { error("listener down") },
+        )
+        assertEquals(ImportResult.Success(1, 1), c.refreshPlaylist(1))
+        assertEquals(listOf("p1", "e1"), calls)
     }
 }

@@ -175,7 +175,8 @@ internal class SetupImporter(
         val copied = SetupSettings.from(previous)
         try {
             // The storage too: a bundle without a network folder leaves it alone, but one with it changed it.
-            settings.update { copied.applyTo(it).withStorageOf(previous) }
+            // The TMDB key likewise: a blank one in [copied] would otherwise keep the imported key.
+            settings.update { copied.applyTo(it).withStorageOf(previous).copy(tmdbKey = previous.tmdbKey) }
         } catch (_: Exception) {
             // Nothing more can be done; the next import or settings change overwrites them.
         }

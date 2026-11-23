@@ -20,7 +20,9 @@ import androidx.paging.PagingData
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.loopholetv.data.db.KeyRef
 import io.github.loopholetv.data.vod.HiddenCategory
+import io.github.loopholetv.data.vod.VodFilter
 import io.github.loopholetv.data.vod.VodKind
+import io.github.loopholetv.data.vod.VodSort
 import io.github.loopholetv.data.vod.VodRef
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertEquals
@@ -412,5 +414,108 @@ class VodBrowseContentTest {
         compose.onNodeWithText(OPTION_REMOVE_MY_LIST).assertDoesNotExist()
         choose(OPTION_CANCEL_REMINDER)
         assertEquals("reminder:5", cancelled?.key)
+    }
+
+    // Sort & filter
+
+    private val sortFilter = isFocused() and hasText("Sort & filter")
+
+    private fun filteredRows(n: Int = 12) = listOf(
+        VodRowModel.FilterBar("by title", n),
+        VodRowModel.Grid(FILTERED_GRID_TITLE, flowOf(PagingData.from(cards("Hit", n)))),
+    )
+
+    @Test fun sortAndFilterButtonIsFocusedFirst() {
+        show(listOf(VodRowModel.FilterButton, paged("Action", "Act")))
+        settle("Act 0")
+
+        compose.onNode(sortFilter).assertExists()
+        compose.onAllNodes(isFocused()).assertCountEquals(1)
+    }
+
+    @Test fun activeFilterShowsOnlyTheBarAndTheGrid() {
+        show(filteredRows())
+        settle("Hit 0")
+
+        compose.onNodeWithText("by title (12)").assertExists()
+        compose.onNodeWithText("Clear").assertExists()
+        compose.onNode(sortFilter).assertExists()
+        compose.onAllNodesWithText(FILTERED_GRID_TITLE).assertCountEquals(0)
+        compose.onAllNodesWithText("Hit 11").assertCountEquals(1)
+    }
+
+    @Test fun clearReturnsFocusToTheSortAndFilterButton() {
+        var rows by mutableStateOf(filteredRows())
+        var cleared = false
+        compose.setContent {
+            VodBrowseContent(
+                heading = "Movies", rows = rows, hidden = emptyList(),
+                onHideCategory = {}, onShowCategory = {}, onOpen = { _, _ -> }, onBack = {},
+                filter = VodFilter(sort = VodSort.TITLE),
+                onClearFilter = { cleared = true },
+            )
+        }
+        settle("Hit 0")
+        compose.onNode(sortFilter).assertExists()
+
+        press(Key.DirectionRight)
+        compose.onNodeWithText("Clear").assertIsFocused()
+        press(Key.DirectionCenter)
+        assertEquals(true, cleared)
+        // The rows come back a moment later, as they do from the view model.
+        rows = listOf(VodRowModel.FilterButton, paged("Action", "Act"))
+        settle("Act 0")
+
+        compose.onAllNodesWithText("Clear").assertCountEquals(0)
+        compose.onNode(sortFilter).assertExists()
+        compose.onAllNodes(isFocused()).assertCountEquals(1)
+    }
+
+    @Test fun thePanelAppliesChoicesAndBackClosesIt() {
+        var filter by mutableStateOf(VodFilter())
+        var rows by mutableStateOf(listOf<VodRowModel>(VodRowModel.FilterButton, paged("Action", "Act")))
+        compose.setContent {
+            VodBrowseContent(
+                heading = "Movies", rows = rows, hidden = emptyList(),
+                onHideCategory = {}, onShowCategory = {}, onOpen = { _, _ -> }, onBack = {},
+                filter = filter, genres = listOf(io.github.loopholetv.data.tmdb.Genre(28, "Action film")),
+                onSetFilter = { f ->
+                    filter = f
+                    rows = filteredRows(3)
+                },
+            )
+        }
+        settle("Act 0")
+        press(Key.DirectionCenter)
+
+        // The first row of the panel has focus; OK ticks it, at once.
+        compose.onNode(isFocused() and hasText("Action film") and hasAnyAncestor(isDialog())).assertExists()
+        press(Key.DirectionCenter)
+        assertEquals(setOf(28), filter.genres)
+        compose.onAllNodes(hasText("Sort by") and hasAnyAncestor(isDialog())).assertCountEquals(1)
+        compose.onAllNodes(hasText("Running time") and hasAnyAncestor(isDialog())).assertCountEquals(2)
+
+        // Back, as the panel's window gets it from the remote.
+        compose.runOnUiThread { org.robolectric.shadows.ShadowDialog.getLatestDialog().onBackPressed() }
+        settle("Hit 0")
+
+        compose.onAllNodes(hasAnyAncestor(isDialog())).assertCountEquals(0)
+        // The grid's own Sort & filter button takes the focus.
+        compose.onNode(sortFilter).assertExists()
+    }
+
+    @Test fun seriesPanelOffersNoRunningTime() {
+        compose.setContent {
+            VodBrowseContent(
+                heading = "Series", rows = listOf(VodRowModel.FilterButton, paged("Crime", "Cri")), hidden = emptyList(),
+                onHideCategory = {}, onShowCategory = {}, onOpen = { _, _ -> }, onBack = {},
+                offersRuntime = false,
+            )
+        }
+        settle("Cri 0")
+        press(Key.DirectionCenter)
+
+        compose.onAllNodes(hasText("Sort by") and hasAnyAncestor(isDialog())).assertCountEquals(1)
+        compose.onAllNodes(hasText("Running time") and hasAnyAncestor(isDialog())).assertCountEquals(0)
     }
 }

@@ -29,9 +29,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -88,6 +91,7 @@ fun ShowScreen(
             show,
             onSelectTab = vm::selectTab,
             onToggleMyList = vm::toggleMyList,
+            onWrongDetails = vm::rejectDetails,
             restoreEpisodeKey = lastEpisode,
             onEpisodeUsed = { used ->
                 lastEpisode = used
@@ -103,12 +107,14 @@ internal fun ShowContent(
     ui: ShowUi,
     onSelectTab: (Int) -> Unit,
     onToggleMyList: () -> Unit = {},
+    onWrongDetails: () -> Unit = {},
     restoreEpisodeKey: String? = null,
     onEpisodeUsed: (episodeKey: String?) -> Unit = {},
     onPlay: (episodeKey: String, startMs: Long) -> Unit,
 ) {
     val continueButton = remember { FocusRequester() }
     val selectedTab = remember { FocusRequester() }
+    val myListButton = remember { FocusRequester() }
     val rowRequesters = remember { HashMap<String, FocusRequester>() }
     // A new list state per season, so switching season starts at the top.
     val listState = key(ui.selectedTab) { rememberLazyListState() }
@@ -138,44 +144,80 @@ internal fun ShowContent(
         }
         restoreKey = null
     }
-    Row(
-        Modifier.fillMaxSize().background(Tokens.Background).padding(horizontal = 48.dp, vertical = 27.dp)
-            .onFocusChanged { pageFocused = it.hasFocus },
-    ) {
-        DetailPoster(ui.logo, ui.name)
-        Column(Modifier.padding(start = 32.dp).fillMaxHeight()) {
-            Text(ui.name, style = MaterialTheme.typography.headlineLarge, color = Tokens.OnBackground, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(ui.summary, style = MaterialTheme.typography.titleMedium, color = Tokens.Muted, modifier = Modifier.padding(top = 4.dp))
-            // Opening on an episode to restore leaves focus to that; otherwise Continue, or the season
-            // tabs when there is nothing to continue.
-            val openRestoring = remember { restoreKey != null }
-            if (ui.continueKey == null && !openRestoring && ui.tabs.isNotEmpty()) RequestFocusOnOpen(selectedTab)
-            if (ui.continueKey != null && !openRestoring) RequestFocusOnOpen(continueButton)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 16.dp)) {
-                // The button stays in the row as its label changes with progress, so focus stays on it.
-                if (ui.continueKey != null && ui.continueLabel != null) {
-                    PillButton(
-                        label = ui.continueLabel,
-                        selected = true,
-                        modifier = Modifier.focusRequester(continueButton),
-                        onClick = {
-                            onEpisodeUsed(null)
-                            onPlay(ui.continueKey, ui.continueStartMs)
-                        },
+    DetailBackground(ui.details?.backdropUrl) {
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)
+                .onFocusChanged { pageFocused = it.hasFocus },
+        ) {
+            DetailPoster(ui.logo, ui.name, ui.details?.badge)
+            HeaderAboveList(Modifier.padding(start = 32.dp).fillMaxHeight()) {
+                // The text: what gives way when the page is short.
+                Column(Modifier.clipToBounds()) {
+                    Text(ui.name, style = MaterialTheme.typography.headlineLarge, color = Tokens.OnBackground, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    // A matched show's meta line takes the place of the seasons and episodes summary.
+                    Text(
+                        ui.details?.let(::formatMeta) ?: ui.summary,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Tokens.Muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
+                    ui.details?.let { DetailsText(it, overviewLines = SHOW_OVERVIEW_LINES) }
                 }
-                PillButton(label = myListLabel(ui.inMyList), selected = false, onClick = onToggleMyList)
-            }
-            SeasonTabs(ui.tabs, ui.selectedTab, selectedTab, onSelectTab)
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.padding(top = 12.dp).weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                items(ui.episodes, key = { it.key }) { row ->
-                    EpisodeRow(row, Modifier.focusRequester(rowRequesters.requesterFor(row.key))) {
-                        onEpisodeUsed(row.key)
-                        onPlay(row.key, row.resumeMs ?: 0L)
+                // The buttons and season tabs: always shown in full.
+                Column {
+                    // Opening on an episode to restore leaves focus to that; otherwise Continue, or the season
+                    // tabs when there is nothing to continue.
+                    val openRestoring = remember { restoreKey != null }
+                    if (ui.continueKey == null && !openRestoring && ui.tabs.isNotEmpty()) RequestFocusOnOpen(selectedTab)
+                    if (ui.continueKey != null && !openRestoring) RequestFocusOnOpen(continueButton)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 16.dp)) {
+                        // The button stays in the row as its label changes with progress, so focus stays on it.
+                        if (ui.continueKey != null && ui.continueLabel != null) {
+                            PillButton(
+                                label = ui.continueLabel,
+                                selected = true,
+                                modifier = Modifier.focusRequester(continueButton),
+                                onClick = {
+                                    onEpisodeUsed(null)
+                                    onPlay(ui.continueKey, ui.continueStartMs)
+                                },
+                            )
+                        }
+                        PillButton(
+                            label = myListLabel(ui.inMyList),
+                            selected = false,
+                            modifier = Modifier.focusRequester(myListButton),
+                            onClick = onToggleMyList,
+                        )
+                        if (ui.details != null) {
+                            // The button goes away with the details, so focus moves first to Continue, else the
+                            // season tab, else the first episode, else My list.
+                            WrongDetailsButton {
+                                val target = when {
+                                    ui.continueKey != null -> continueButton
+                                    ui.tabs.isNotEmpty() -> selectedTab
+                                    ui.episodes.isNotEmpty() -> rowRequesters.requesterFor(ui.episodes.first().key)
+                                    else -> myListButton
+                                }
+                                target.tryFocus()
+                                onWrongDetails()
+                            }
+                        }
+                    }
+                    SeasonTabs(ui.tabs, ui.selectedTab, selectedTab, onSelectTab)
+                }
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.padding(top = 12.dp).testTag(EPISODE_LIST_TAG),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(ui.episodes, key = { it.key }) { row ->
+                        EpisodeRow(row, Modifier.focusRequester(rowRequesters.requesterFor(row.key))) {
+                            onEpisodeUsed(row.key)
+                            onPlay(row.key, row.resumeMs ?: 0L)
+                        }
                     }
                 }
             }
@@ -183,10 +225,46 @@ internal fun ShowContent(
     }
 }
 
+private const val SHOW_OVERVIEW_LINES = 2
+internal val MIN_LIST_HEIGHT = 160.dp
+internal const val EPISODE_LIST_TAG = "episode-list"
+
+/**
+ * Three children stacked: the header text, the controls (buttons and season tabs) and the episode
+ * list, which takes the height left. The controls always get their full height; the text gets at most
+ * what leaves the list [MIN_LIST_HEIGHT], so large fonts or a short screen clip the text, never the
+ * controls, rather than squeeze the list away.
+ */
+@Composable
+private fun HeaderAboveList(modifier: Modifier, content: @Composable () -> Unit) {
+    Layout(content, modifier) { measurables, constraints ->
+        val (text, controls, list) = measurables
+        val loose = constraints.copy(minHeight = 0)
+        if (!constraints.hasBoundedHeight) {
+            // Nothing to share out: each takes its natural height.
+            val placed = listOf(text, controls, list).map { it.measure(loose) }
+            return@Layout layout(constraints.maxWidth, placed.sumOf { it.height }) {
+                var y = 0
+                placed.forEach { it.placeRelative(0, y); y += it.height }
+            }
+        }
+        val total = constraints.maxHeight
+        val c = controls.measure(loose)
+        val minList = MIN_LIST_HEIGHT.roundToPx().coerceAtMost((total - c.height).coerceAtLeast(0))
+        val t = text.measure(loose.copy(maxHeight = (total - c.height - minList).coerceAtLeast(0)))
+        val listHeight = (total - t.height - c.height).coerceAtLeast(0)
+        val l = list.measure(loose.copy(minHeight = listHeight, maxHeight = listHeight))
+        layout(constraints.maxWidth, total) {
+            t.placeRelative(0, 0)
+            c.placeRelative(0, t.height)
+            l.placeRelative(0, t.height + c.height)
+        }
+    }
+}
+
 private const val RESTORE_TRIES = 20
 private const val RESTORE_RETRY_MS = 50L
 
-private fun FocusRequester.tryFocus(): Boolean = runCatching { requestFocus() }.getOrDefault(false)
 
 @Composable
 private fun SeasonTabs(tabs: List<String>, selected: Int, selectedRequester: FocusRequester, onSelect: (Int) -> Unit) {
@@ -226,10 +304,19 @@ private fun EpisodeRow(row: EpisodeRowUi, modifier: Modifier, onClick: () -> Uni
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (row.label.isNotEmpty()) {
-            Text(row.label, style = MaterialTheme.typography.titleMedium, color = muted, modifier = Modifier.width(56.dp))
+            // A TMDB heading carries "S1 E3" itself; the column stays so the rows line up.
+            Text(
+                if (row.tmdbTitle == null) row.label else "",
+                style = MaterialTheme.typography.titleMedium,
+                color = muted,
+                modifier = Modifier.width(56.dp),
+            )
         }
         Column(Modifier.weight(1f)) {
-            Text(row.name, style = MaterialTheme.typography.titleMedium, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(row.heading, style = MaterialTheme.typography.titleMedium, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            row.plot?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             row.fraction?.let { ProgressBar(it, Modifier.padding(top = 6.dp).width(200.dp)) }
         }
         if (row.watched) {

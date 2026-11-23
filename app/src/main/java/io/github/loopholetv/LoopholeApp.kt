@@ -7,6 +7,8 @@ import io.github.loopholetv.data.repo.StartupRefresher
 import io.github.loopholetv.player.CAST_CHANNEL_ID
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.work.RefreshRunnerProvider
+import io.github.loopholetv.work.TmdbSyncProvider
+import io.github.loopholetv.work.kickWhenRecordingsEnd
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -39,13 +41,18 @@ internal fun backgroundErrorHandler(log: (String) -> Unit = { Log.w("Loophole", 
     }
 
 /** Open only for the test subclass that initialises a test WorkManager under Robolectric. */
-open class LoopholeApp : Application(), RefreshRunnerProvider {
+open class LoopholeApp : Application(), RefreshRunnerProvider, TmdbSyncProvider {
     val container: AppContainer by lazy { AppContainer(this) }
 
     /** Process-lifetime scope for background work that must outlive any Activity. */
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + backgroundErrorHandler())
 
     override val refreshCoordinator get() = container.refreshCoordinator
+
+    override suspend fun runTmdbSync() = container.tmdbScheduler.runTracked(
+        sync = { container.tmdbSync.run() },
+        recordingActive = { container.recordingCoordinator.isRecording },
+    )
 
     /** Started from MainActivity once it has confirmed a playlist exists. */
     val startupRefresher: StartupRefresher by lazy {
@@ -70,6 +77,10 @@ open class LoopholeApp : Application(), RefreshRunnerProvider {
         container.alarmDispatch.reminders = { id -> container.reminders.onAlarm(id) }
         // Bookings survive a restart: recover what was running, then set the alarms again.
         applicationScope.launch { container.recoverAndRearm() }
+        // Film and show details: catch up on anything due since the last run.
+        applicationScope.launch { container.kickTmdbIfKey() }
+        // A lookup that paused for a recording carries on once the last recording ends.
+        kickWhenRecordingsEnd(container.recordingRunner.active, { container.kickTmdbIfKey() }, applicationScope)
         // Watch history: channels played for 10 s or more, wherever playback started.
         container.historyRecorder.start(applicationScope)
         // Turning off or deleting the playing channel's playlist stops playback.

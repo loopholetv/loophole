@@ -28,6 +28,8 @@ data class ContinueCard(
     val fraction: Float?,
     val play: VodRef,
     val startMs: Long,
+    /** The quality tag of a matched title, e.g. "4K". */
+    val badge: String? = null,
 )
 
 /** My list and Continue watching for the Movies and Series screens. */
@@ -49,6 +51,7 @@ class VodLibraryRepository(
                 fraction = fractionOf(row.positionMs, row.durationMs),
                 play = VodRef(VodKind.MOVIE, row.card.playlistId, row.card.key),
                 startMs = row.positionMs.takeIf { it >= NOT_STARTED_MS } ?: 0L,
+                badge = row.card.badge,
             )
         }
     }
@@ -75,7 +78,7 @@ class VodLibraryRepository(
         }
 
     private suspend fun showCard(playlistId: Long, showKey: String): ContinueCard? {
-        val show = db.vodBrowseDao().show(playlistId, showKey).first() ?: return null
+        val show = db.vodBrowseDao().showCard(playlistId, showKey) ?: return null
         val progress = db.vodProgressDao().observeForShow(VodKind.EPISODE, playlistId, showKey).first()
             .associateBy { it.key }
         val views = repo.episodesOnce(playlistId, showKey)
@@ -91,6 +94,7 @@ class VodLibraryRepository(
             fraction = p?.let { fractionOf(it.positionMs, it.durationMs) },
             play = VodRef(VodKind.EPISODE, playlistId, target.key),
             startMs = resumeFrom(p) ?: 0L,
+            badge = show.badge,
         )
     }
 

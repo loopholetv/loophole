@@ -20,7 +20,8 @@ import kotlinx.coroutines.launch
 
 /**
  * What the film page shows. [resumeMs] is where a started film resumes (null: not started) and
- * [fraction] how far along it is, when the length is known.
+ * [fraction] how far along it is, when the length is known. [details] are TMDB's, null when the
+ * film is not matched; [title] and [logo] are then the playlist's own.
  */
 data class FilmUi(
     val title: String,
@@ -29,6 +30,7 @@ data class FilmUi(
     val resumeMs: Long?,
     val fraction: Float?,
     val inMyList: Boolean = false,
+    val details: TitleDetailsUi? = null,
 )
 
 /** A button on the film page and where it starts playback, in ms. */
@@ -55,7 +57,7 @@ fun myListLabel(inList: Boolean): String = if (inList) "✓ In My list" else "+ 
 class FilmViewModel(
     private val playlistId: Long,
     private val key: String,
-    repo: VodRepository,
+    private val repo: VodRepository,
     progress: VodProgressRepository,
     private val library: VodLibraryRepository,
 ) : ViewModel() {
@@ -72,19 +74,21 @@ class FilmViewModel(
                 repo.film(playlistId, key),
                 progress.observe(VodRef(VodKind.MOVIE, playlistId, key)),
                 library.inMyList(TitleKind.FILM, playlistId, key),
-            ) { detail, p, inList ->
+                repo.filmDetails(playlistId, key),
+            ) { detail, p, inList, tmdb ->
                 detail?.let {
                     val resume = resumeFrom(p)
                     val duration = p?.durationMs
                     FilmUi(
-                        title = it.film.name,
+                        title = tmdb?.title?.title ?: it.film.name,
                         category = it.film.category,
-                        logo = it.film.logo,
+                        logo = tmdb.posterOr(it.film.logo),
                         resumeMs = resume,
                         fraction = if (resume != null && duration != null && duration > 0) {
                             (resume.toFloat() / duration).coerceIn(0f, 1f)
                         } else null,
                         inMyList = inList,
+                        details = tmdb?.toUi(),
                     )
                 }
             }.collect {
@@ -98,6 +102,11 @@ class FilmViewModel(
     fun toggleMyList() {
         val inList = _ui.value?.inMyList ?: return
         viewModelScope.launch { library.setInMyList(TitleKind.FILM, playlistId, key, !inList) }
+    }
+
+    /** Drops the film's TMDB match as wrong; the page goes back to the playlist's details. */
+    fun rejectDetails() {
+        viewModelScope.launch { repo.rejectDetails(TitleKind.FILM, playlistId, key) }
     }
 }
 

@@ -30,6 +30,23 @@ class PosterCardTest {
         compose.onNodeWithText("S1 E2", useUnmergedTree = true).assertExists()
     }
 
+    @Test fun showsBadgeWhenSet() {
+        compose.setContent {
+            PosterCard(title = "Heat", logo = null, subtitle = null, badge = "4K", onClick = {}, onLongClick = {})
+        }
+
+        compose.onNodeWithTag(POSTER_BADGE_TAG, useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("4K", useUnmergedTree = true).assertExists()
+    }
+
+    @Test fun noBadgeWithoutOne() {
+        compose.setContent {
+            PosterCard(title = "Heat", logo = null, subtitle = null, onClick = {}, onLongClick = {})
+        }
+
+        compose.onNodeWithTag(POSTER_BADGE_TAG, useUnmergedTree = true).assertDoesNotExist()
+    }
+
     @Test fun noProgressBarWithoutFraction() {
         compose.setContent {
             PosterCard(title = "Heat", logo = null, subtitle = null, onClick = {}, onLongClick = {})

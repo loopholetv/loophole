@@ -11,6 +11,7 @@ import io.github.loopholetv.data.vod.ContinueTarget
 import io.github.loopholetv.data.vod.EpisodeView
 import io.github.loopholetv.data.vod.ShowDetail
 import io.github.loopholetv.data.vod.TitleKind
+import io.github.loopholetv.data.vod.TmdbDetail
 import io.github.loopholetv.data.vod.VodLibraryRepository
 import io.github.loopholetv.data.vod.VodProgressRepository
 import io.github.loopholetv.data.vod.VodRepository
@@ -21,7 +22,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
-/** One episode in the list; [label] is "E3", or empty for an episode without a number. */
+/**
+ * One episode in the list; [label] is "E3", or empty for an episode without a number. [tmdbTitle]
+ * and [plot] are TMDB's, where the show is matched and its season lookup found this episode's number.
+ */
 data class EpisodeRowUi(
     val key: String,
     val label: String,
@@ -29,11 +33,19 @@ data class EpisodeRowUi(
     val fraction: Float?,
     val watched: Boolean,
     val resumeMs: Long?,
-)
+    val tmdbTitle: String? = null,
+    val plot: String? = null,
+    val season: Int? = null,
+) {
+    /** What the row reads: "S1 E3 · <TMDB title>" where TMDB has one, else the playlist's name. */
+    val heading: String
+        get() = if (tmdbTitle != null && season != null && label.isNotEmpty()) "S$season $label · $tmdbTitle" else name
+}
 
 /**
  * What the show page shows. [tabs] are the seasons, then "Other"; [episodes] are those of the
- * [selectedTab]. [continueKey] is null when the show has no episodes.
+ * [selectedTab]. [continueKey] is null when the show has no episodes. [details] are TMDB's, null
+ * when the show is not matched; [name] and [logo] are then the playlist's own.
  */
 data class ShowUi(
     val name: String,
@@ -46,13 +58,14 @@ data class ShowUi(
     val continueKey: String?,
     val continueStartMs: Long,
     val inMyList: Boolean = false,
+    val details: TitleDetailsUi? = null,
 )
 
 /** One show with its seasons and the episode its primary button plays. Null while loading or when the show is gone. */
 class ShowViewModel(
     private val playlistId: Long,
     private val key: String,
-    repo: VodRepository,
+    private val repo: VodRepository,
     progress: VodProgressRepository,
     private val library: VodLibraryRepository,
 ) : ViewModel() {
@@ -76,8 +89,9 @@ class ShowViewModel(
                 progress.observeEpisodes(playlistId, key),
                 pick,
                 library.inMyList(TitleKind.SHOW, playlistId, key),
-            ) { detail, progress, picked, inMyList ->
-                ShowInputs(detail, progress, inMyList).also { latest = it }.toUi(picked)
+                repo.showDetails(playlistId, key),
+            ) { detail, progress, picked, inMyList, tmdb ->
+                ShowInputs(detail, progress, inMyList, tmdb).also { latest = it }.toUi(picked)
             }.collect {
                 _ui.value = it
                 _loaded.value = true
@@ -105,6 +119,11 @@ class ShowViewModel(
         val inList = _ui.value?.inMyList ?: return
         viewModelScope.launch { library.setInMyList(TitleKind.SHOW, playlistId, key, !inList) }
     }
+
+    /** Drops the show's TMDB match as wrong; the page goes back to the playlist's details. */
+    fun rejectDetails() {
+        viewModelScope.launch { repo.rejectDetails(TitleKind.SHOW, playlistId, key) }
+    }
 }
 
 /** The season tab the user chose, or the season of an episode to show. */
@@ -113,12 +132,24 @@ private sealed interface TabPick {
     data class Episode(val key: String) : TabPick
 }
 
-private class ShowInputs(val detail: ShowDetail?, val progress: Map<String, VodProgressEntity>, val inMyList: Boolean) {
-    fun toUi(picked: TabPick?): ShowUi? = showUi(detail, progress, picked, inMyList)
+private class ShowInputs(
+    val detail: ShowDetail?,
+    val progress: Map<String, VodProgressEntity>,
+    val inMyList: Boolean,
+    val tmdb: TmdbDetail?,
+) {
+    fun toUi(picked: TabPick?): ShowUi? = showUi(detail, progress, picked, inMyList, tmdb)
 }
 
-private fun showUi(detail: ShowDetail?, progress: Map<String, VodProgressEntity>, picked: TabPick?, inMyList: Boolean): ShowUi? {
+private fun showUi(
+    detail: ShowDetail?,
+    progress: Map<String, VodProgressEntity>,
+    picked: TabPick?,
+    inMyList: Boolean,
+    tmdb: TmdbDetail?,
+): ShowUi? {
     detail ?: return null
+    val tmdbEpisodes = tmdb?.episodes.orEmpty().associateBy { it.season to it.episode }
     val seasons = detail.seasons
     val views = seasons.flatMap { s ->
         s.episodes.map { EpisodeView(it.key, it.season, it.episode, it.name, progress[it.key]) }
@@ -135,6 +166,7 @@ private fun showUi(detail: ShowDetail?, progress: Map<String, VodProgressEntity>
     val selected = pickedTab.coerceIn(0, (seasons.size - 1).coerceAtLeast(0))
     val rows = seasons.getOrNull(selected)?.episodes.orEmpty().map { e ->
         val p = progress[e.key]
+        val te = if (e.season != null && e.episode != null) tmdbEpisodes[e.season to e.episode] else null
         EpisodeRowUi(
             key = e.key,
             label = if (e.season != null && e.episode != null) "E${e.episode}" else "",
@@ -143,11 +175,14 @@ private fun showUi(detail: ShowDetail?, progress: Map<String, VodProgressEntity>
                 ?.let { (it.positionMs.toFloat() / it.durationMs!!).coerceIn(0f, 1f) },
             watched = p?.watched == true,
             resumeMs = resumeFrom(p),
+            tmdbTitle = te?.title?.takeIf { it.isNotBlank() },
+            plot = te?.overview?.takeIf { it.isNotBlank() },
+            season = e.season,
         )
     }
     return ShowUi(
-        name = detail.show.name,
-        logo = detail.show.logo,
+        name = tmdb?.title?.title ?: detail.show.name,
+        logo = tmdb.posterOr(detail.show.logo),
         summary = summaryOf(seasons.count { it.number != null }, views.size),
         tabs = seasons.map { it.number?.let { n -> "Season $n" } ?: "Other" },
         selectedTab = selected,
@@ -156,6 +191,7 @@ private fun showUi(detail: ShowDetail?, progress: Map<String, VodProgressEntity>
         continueKey = target?.key,
         continueStartMs = target?.let { resumeFrom(progress[it.key]) } ?: 0L,
         inMyList = inMyList,
+        details = tmdb?.toUi(),
     )
 }
 

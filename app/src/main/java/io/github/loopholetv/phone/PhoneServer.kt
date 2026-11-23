@@ -31,7 +31,7 @@ data class PhoneAddress(val host: String, val port: Int) {
  * Serves the phone page and its API from this TV while Loophole is in the foreground, on the TV's
  * LAN address and loopback, on a port that stays the same across restarts when it can.
  *
- * Every request must name one of those addresses in its `Host`; every POST must come from the page
+ * Every request must name one of those addresses in its `Host`; every POST, PUT and DELETE must come from the page
  * itself ([postAllowed]); API routes also need a paired phone's cookie. Nothing here logs codes,
  * tokens, cookies, bodies or addresses.
  */
@@ -133,7 +133,7 @@ class PhoneServer(
         when {
             !hostAllowed(req.headers["host"], hosts) -> res.sendEmpty(421)
             exact && req.path != path -> res.sendEmpty(404)
-            req.method == "POST" && !postAllowed(req.headers) -> res.sendError(403, "forbidden")
+            req.method != "GET" && !postAllowed(req.headers) -> res.sendError(403, "forbidden")
             auth && !pairing.isPaired(token(req)) -> res.sendError(401, "not_paired")
             else -> handler(req, res)
         }

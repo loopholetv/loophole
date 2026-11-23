@@ -67,6 +67,7 @@ class AppContainer(context: Context) {
             sessions = stalkerSessions,
             downloadUa = downloadUserAgent,
             stops = refreshStops,
+            onAdded = { kickTmdbIfKey() },
         )
     }
 
@@ -333,7 +334,54 @@ class AppContainer(context: Context) {
 
     /** Background/startup updates through the shared repositories (same Mutexes as Settings). */
     val refreshCoordinator: RefreshCoordinator by lazy {
-        RefreshCoordinator(playlistRepository, epgRepository, settingsStore)
+        RefreshCoordinator(playlistRepository, epgRepository, settingsStore, onPlaylistRefreshed = { kickTmdbIfKey() })
+    }
+
+    /** The user's TMDB key from Settings: saving checks it, and a refused key is not sent again until it changes. */
+    val tmdbKeyService: io.github.loopholetv.data.tmdb.TmdbKeyService by lazy {
+        io.github.loopholetv.data.tmdb.TmdbKeyService(settingsStore, tmdbClient, tmdbScheduler)
+    }
+
+    /** The TMDB key to send, or null when none is set (or TMDB refused it). */
+    private suspend fun tmdbKey(): String? = tmdbKeyService.key()
+
+    /** Called when TMDB refuses the key. */
+    private suspend fun tmdbKeyRejected() = tmdbKeyService.markBadKey()
+
+    suspend fun hasTmdbKey(): Boolean = tmdbKeyService.hasKey()
+
+    /** Starts a details lookup when a key is set; without one nothing is scheduled. */
+    suspend fun kickTmdbIfKey() = io.github.loopholetv.work.kickIfKey({ hasTmdbKey() }) { tmdbScheduler.kick() }
+
+    /**
+     * TMDB requests get a connection pool of their own, so they never share or evict a provider connection.
+     * No logging interceptor: a V3 key travels in the URL. A whole request gives up after 10 s, so one
+     * stalled answer can't hold up the lookups.
+     */
+    private val tmdbHttp: OkHttpClient by lazy {
+        http.newBuilder().connectionPool(okhttp3.ConnectionPool()).callTimeout(10, TimeUnit.SECONDS).build()
+    }
+
+    val tmdbClient: io.github.loopholetv.data.tmdb.TmdbClient by lazy {
+        io.github.loopholetv.data.tmdb.TmdbClient(tmdbHttp, key = { tmdbKey() })
+    }
+
+    /** Background film and show details lookup; run by [io.github.loopholetv.work.TmdbWorker]. */
+    val tmdbSync: io.github.loopholetv.data.tmdb.TmdbSync by lazy {
+        io.github.loopholetv.data.tmdb.TmdbSync(
+            db = db,
+            client = tmdbClient,
+            matcher = io.github.loopholetv.data.tmdb.TmdbMatcher(tmdbClient),
+            keyPresent = { hasTmdbKey() },
+            recordingActive = { recordingCoordinator.isRecording },
+            language = { io.github.loopholetv.data.tmdb.tmdbLanguage(java.util.Locale.getDefault()) },
+            clock = java.time.Instant::now,
+            onBadKey = { tmdbKeyRejected() },
+        )
+    }
+
+    val tmdbScheduler: io.github.loopholetv.work.TmdbScheduler by lazy {
+        io.github.loopholetv.work.TmdbScheduler(WorkManager.getInstance(appContext))
     }
 
     /** The one-off film and show fill after the update, and its catch-up when a skipped playlist is turned on. */
@@ -581,7 +629,20 @@ class AppContainer(context: Context) {
         ).also {
             playlistApi.register(it)
             channelsApi.register(it)
+            tmdbApi.register(it)
         }
+    }
+
+    /** The phone page's TMDB key route, through the same service as Settings. */
+    private val tmdbApi: io.github.loopholetv.phone.TmdbApi by lazy {
+        val keys = tmdbKeyService
+        io.github.loopholetv.phone.TmdbApi(
+            last4 = { keys.last4() },
+            status = { keys.status.value },
+            save = { keys.save(it) },
+            remove = { keys.remove() },
+            recheck = { keys.recheck() },
+        )
     }
 
     /**
@@ -640,7 +701,8 @@ class AppContainer(context: Context) {
                 db, settingsStore, opener,
                 // No playlist add, update or delete runs while the playlists are replaced.
                 serialize = playlistRepository::exclusive,
-                onReplaced = { recordAlarms.rearm() },
+                // The copied playlists' titles are new to this TV: look them up too.
+                onReplaced = { io.github.loopholetv.work.afterSetupReplaced({ recordAlarms.rearm() }) { kickTmdbIfKey() } },
             )::import,
             stageFile = opener::newTemp,
             clock = android.os.SystemClock::elapsedRealtime,

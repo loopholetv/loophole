@@ -46,6 +46,27 @@ class VodLibraryDaoTest {
         assertEquals(listOf("B"), dao.myListFilms().first().map { it.key })
     }
 
+    @Test fun myListUsesDisplayTitle() = runTest {
+        film("A")
+        db.vodWriteDao().insertShows(listOf(ShowEntity(p, "S1", "Office US", "G", "Cat", null, at(0), 0)))
+        dao.add(MyListEntity(TitleKind.FILM, p, "A", at(1)))
+        dao.add(MyListEntity(TitleKind.SHOW, p, "S1", at(1)))
+        match(TitleKind.FILM, "A", 949, "Heat", "/h.jpg", "4K")
+        match(TitleKind.SHOW, "S1", 2316, "The Office", "/o.jpg", null)
+
+        assertEquals(
+            listOf(io.github.loopholetv.data.vod.FilmCard(p, "A", "Heat", "https://image.tmdb.org/t/p/w342/h.jpg", "4K")),
+            dao.myListFilms().first(),
+        )
+        assertEquals(
+            listOf(io.github.loopholetv.data.vod.ShowCard(p, "S1", "The Office", "https://image.tmdb.org/t/p/w342/o.jpg", null, null)),
+            dao.myListShows().first(),
+        )
+    }
+
+    private suspend fun match(kind: TitleKind, key: String, id: Long, title: String, poster: String?, badge: String?) =
+        db.matchTitle(p, kind, key, id, title, poster, badge)
+
     @Test fun myListShowsJoinVisibleShowsNewestFirst() = runTest {
         db.vodWriteDao().insertShows(
             listOf("S1", "S2").map { ShowEntity(p, it, it, "G", "Cat", null, at(0), 0) },

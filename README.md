@@ -127,10 +127,16 @@ Enter the portal address and the MAC address your provider registered (usually s
 - **Channel and group edits:** hide, rename (and restore the original name), move, sort a group, change a channel's logo with an image link, choose its TV guide channel and shift its guide time. Do it from the guide or from Settings → Playlists → (playlist) → *Groups and channels*.
 - **Edits survive updates:** your changes stay when the playlist updates, and hidden channels and groups come back from *Groups and channels*.
 
+### Film and show details
+
+- **Your own TMDB key:** add a free key in Settings → *Film and show details* → *TMDB key*. To get one, make a free account at [themoviedb.org](https://www.themoviedb.org), then open Settings → API. Loophole accepts either the API key or the API read access token.
+- **Checked on save:** the page shows *Working*, *Key not accepted* or *Couldn't reach TMDB*. *Remove key* stops the lookups.
+- Without a key, Loophole makes no TMDB requests.
+
 ### Private by design
 
 - No analytics, crash reporting or ads.
-- Network requests go only to the playlist, guide, logo and stream addresses you supply, and, for casting and copying a setup, to other Loophole TVs on your home network.
+- Network requests go only to the playlist, guide, logo and stream addresses you supply, to TMDB when you add your own TMDB key, and, for casting and copying a setup, to other Loophole TVs on your home network.
 
 ## Install
 
@@ -187,7 +193,7 @@ Release signing reads a `keystore.properties` file (`storeFile`, `storePassword`
 
 ## Privacy
 
-Loophole has no analytics, crash reporting or ads, and no account of its own. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply. When casting, Loophole talks to other Loophole TVs on your home network and never sends them playlist links or logins.
+Loophole has no analytics, crash reporting or ads, and no account of its own. The only network requests it makes are to the playlist, guide, logo and stream URLs you supply, and to TMDB once you add your own TMDB key (film and show names are looked up there; your key is never shown, logged or shared, except when you copy a setup to another of your TVs). When casting, Loophole talks to other Loophole TVs on your home network and never sends them playlist links or logins.
 
 Copying a setup is the one time playlist links and logins go to another TV. The setup is encrypted with a key made from the 4-digit code shown on the TV being set up, and only travels on your home network while Loophole is open on both TVs. The short code keeps out casual mistakes and look-alike devices, but it isn't strong encryption: only copy setups on a home network you trust, and only to your own TVs, because your playlist logins are included.
 
@@ -198,6 +204,8 @@ Playlist URLs and credentials are redacted from logs and error messages.
 Loophole is free software, licensed under the [GNU General Public License v3.0](LICENSE).
 
 It bundles the FFmpeg audio decoder for Media3 built by the Jellyfin project ([jellyfin-androidx-media](https://github.com/jellyfin/jellyfin-androidx-media)), which contains code from [FFmpeg](https://ffmpeg.org) and is licensed under GPL-3.0. Its source code is available from that repository and from FFmpeg. [NOTICE](NOTICE) lists this and the other third-party components and their licences.
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## Contributing
 

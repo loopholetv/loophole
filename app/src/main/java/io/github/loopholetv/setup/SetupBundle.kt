@@ -200,6 +200,8 @@ data class SetupSettings(
     val reminderAutoSwitch: Boolean,
     val padBeforeMin: Int,
     val padAfterMin: Int,
+    /** Blank when the other TV has none (or the bundle is older): this TV then keeps its own. */
+    val tmdbKey: String = "",
 ) {
     fun applyTo(s: AppSettings): AppSettings = s.copy(
         playlistUpdateHours = playlistUpdateHours,
@@ -227,6 +229,7 @@ data class SetupSettings(
         reminderAutoSwitch = reminderAutoSwitch,
         padBeforeMin = padBeforeMin,
         padAfterMin = padAfterMin,
+        tmdbKey = tmdbKey.trim().ifEmpty { s.tmdbKey },
     ).let(::applyStorageTo)
 
     /**
@@ -286,6 +289,7 @@ data class SetupSettings(
             reminderAutoSwitch = s.reminderAutoSwitch,
             padBeforeMin = s.padBeforeMin,
             padAfterMin = s.padAfterMin,
+            tmdbKey = s.tmdbKey,
         )
 
         private fun String.ifSmb(s: AppSettings) = if (s.recordStorage == StorageKind.SMB) this else ""
@@ -320,6 +324,8 @@ internal object SetupFields {
         // The storage kind travels only as SMB or NFS (otherwise as none).
         "recordStorage", "smbHost", "smbShare", "smbFolder", "smbUser", "smbPassword", "smbDomain",
         "nfsHost", "nfsExport", "nfsFolder", "reminderLeadMin", "reminderAutoSwitch", "padBeforeMin", "padAfterMin",
+        // A blank key leaves the receiving TV's own in place.
+        "tmdbKey",
         // Split field by field below.
         "playback",
     )
@@ -564,6 +570,7 @@ object SetupJson {
         w.name("reminderAutoSwitch").value(s.reminderAutoSwitch)
         w.name("padBeforeMin").value(s.padBeforeMin.toLong())
         w.name("padAfterMin").value(s.padAfterMin.toLong())
+        w.name("tmdbKey").value(s.tmdbKey)
         w.endObject()
     }
 
@@ -733,6 +740,7 @@ object SetupJson {
             reminderAutoSwitch = v.bool("reminderAutoSwitch") ?: d.reminderAutoSwitch,
             padBeforeMin = v.int("padBeforeMin")?.takeIf { it in AppSettings.PAD_CHOICES } ?: d.padBeforeMin,
             padAfterMin = v.int("padAfterMin")?.takeIf { it in AppSettings.PAD_CHOICES } ?: d.padAfterMin,
+            tmdbKey = v.string("tmdbKey") ?: d.tmdbKey,
         )
     }
 

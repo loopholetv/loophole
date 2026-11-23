@@ -153,6 +153,16 @@ class PlaylistRepositoryTest {
         assertEquals(listOf(1, 2, 3, 4, 5), (all as PagingSource.LoadResult.Page).data.map { it.number })
     }
 
+    @Test fun successfulAddIsReportedAndFailureIsNot() = runTest {
+        val added = mutableListOf<Long>()
+        val reporting = PlaylistRepository(db, http, xtream, now = { clock }, onAdded = { added += it })
+        enqueue(res("import/five.m3u"))
+        val ok = reporting.addM3u("Five", url()) {} as ImportResult.Success
+        server.enqueue(MockResponse().setResponseCode(404))
+        reporting.addM3u("Broken", url()) {}
+        assertEquals(listOf(ok.playlistId), added)
+    }
+
     @Test fun numbersFromChnoOtherwisePosition() = runTest {
         enqueue(
             "#EXTM3U\n" +

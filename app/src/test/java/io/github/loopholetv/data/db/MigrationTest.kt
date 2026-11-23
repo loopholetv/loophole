@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.data.settings.DecoderChoice
+import io.github.loopholetv.data.tmdb.TmdbKind
 import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
 import kotlinx.coroutines.flow.first
@@ -486,6 +487,31 @@ class MigrationTest {
             dao.setAccountInfo(7, null, null)
             assertNull(dao.byId(7)!!.xtreamFormat)
             assertNull(dao.byId(7)!!.accountExpiresAt)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun migrate10To11AddsTmdbTables() = runTest {
+        helper.createDatabase(DB, 10).use { v10 ->
+            v10.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
+        }
+
+        // Validates the migrated schema against the exported schema 11.json.
+        helper.runMigrationsAndValidate(DB, 11, true, MIGRATION_10_11).close()
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            assertEquals("Old", db.playlistDao().byId(7)!!.name)
+            val dao = db.tmdbDao()
+            val m = VodMatchEntity(
+                7, TitleKind.FILM, "k", "fp", MatchState.MATCHED, TmdbKind.MOVIE, 1, null, "Name", null,
+                Instant.ofEpochMilli(5), Instant.ofEpochMilli(5),
+            )
+            dao.upsertMatch(m)
+            assertEquals(m, dao.match(7, TitleKind.FILM, "k"))
         } finally {
             db.close()
         }

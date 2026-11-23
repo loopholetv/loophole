@@ -6,7 +6,12 @@ import io.github.loopholetv.data.db.EpisodeEntity
 import io.github.loopholetv.data.db.ShowEntity
 import io.github.loopholetv.data.db.VodProgressEntity
 import io.github.loopholetv.data.db.addPlaylist
+import io.github.loopholetv.data.db.MatchState
+import io.github.loopholetv.data.db.TmdbEpisodeEntity
+import io.github.loopholetv.data.db.TmdbTitleEntity
+import io.github.loopholetv.data.db.VodMatchEntity
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.tmdb.TmdbKind
 import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodLibraryRepository
@@ -184,5 +189,86 @@ class ShowViewModelTest {
         model.showEpisode("gone")
 
         assertEquals(1, model.ui.first { it != null }!!.selectedTab)
+    }
+
+    private suspend fun matchShow(episodes: List<TmdbEpisodeEntity>) {
+        val tmdb = db.tmdbDao()
+        tmdb.upsertTitle(
+            TmdbTitleEntity(
+                TmdbKind.TV, 1396, "The Show (TMDB)", null, 2008, "A teacher turns.", "/s.jpg", "/s-bd.jpg",
+                9.0, 100, null, 5, "A, B", "en-US", now,
+            ),
+            emptyList(),
+        )
+        tmdb.upsertEpisodes(1396, episodes)
+        tmdb.upsertMatch(
+            VodMatchEntity(playlist, TitleKind.SHOW, "s", "fp", MatchState.MATCHED, TmdbKind.TV, 1396, null, "The Show", null, now, now),
+        )
+    }
+
+    @Test fun showUiCarriesDetailsWhenMatched() = runTest {
+        insertShow("s", listOf(ep("a", 1, 1)))
+        matchShow(emptyList())
+        val ui = vm().ui.first { it?.details != null }!!
+
+        assertEquals("The Show (TMDB)", ui.name)
+        assertEquals("https://image.tmdb.org/t/p/w342/s.jpg", ui.logo)
+        assertEquals("2008 · 5 seasons · ★ 9.0", formatMeta(ui.details!!))
+        assertEquals(listOf("A", "B"), ui.details!!.cast)
+    }
+
+    @Test fun episodeRowsUseTmdbEpisodeTitleWhenNumberMatches() = runTest {
+        insertShow("s", listOf(ep("a", 1, 1), ep("b", 1, 2, position = 1), ep("c", 1, 3, position = 2)))
+        matchShow(
+            listOf(
+                TmdbEpisodeEntity(1396, 1, 1, "Pilot", "It begins."),
+                TmdbEpisodeEntity(1396, 1, 2, "  ", null),
+            ),
+        )
+        val rows = vm().ui.first { it?.details != null }!!.episodes
+
+        assertEquals("Pilot", rows[0].tmdbTitle)
+        assertEquals("It begins.", rows[0].plot)
+        assertEquals("S1 E1 · Pilot", rows[0].heading)
+        // A blank TMDB title and an episode number TMDB lacks keep the playlist's name.
+        assertNull(rows[1].tmdbTitle)
+        assertEquals("Name b", rows[1].heading)
+        assertNull(rows[2].tmdbTitle)
+        assertNull(rows[2].plot)
+        assertEquals("Name c", rows[2].heading)
+    }
+
+    @Test fun episodeWithoutTmdbRowKeepsRawName() = runTest {
+        insertShow("s", listOf(ep("x", null, null)))
+        matchShow(listOf(TmdbEpisodeEntity(1396, 1, 1, "Pilot", "It begins.")))
+        val row = vm().ui.first { it?.details != null }!!.episodes.single()
+
+        assertNull(row.tmdbTitle)
+        assertNull(row.plot)
+        assertEquals("Name x", row.heading)
+    }
+
+    @Test fun showRejectDetailsRevertsToPlaylistData() = runTest {
+        insertShow("s", listOf(ep("a", 1, 1)))
+        matchShow(listOf(TmdbEpisodeEntity(1396, 1, 1, "Pilot", "It begins.")))
+        val model = vm()
+        model.ui.first { it?.details != null }
+
+        model.rejectDetails()
+        val ui = model.ui.first { it != null && it.details == null }!!
+
+        assertEquals("The Show", ui.name)
+        assertEquals("1 season · 1 episode", ui.summary)
+        assertNull(ui.episodes.single().tmdbTitle)
+        assertEquals(MatchState.REJECTED, db.tmdbDao().match(playlist, TitleKind.SHOW, "s")!!.state)
+    }
+
+    @Test fun unmatchedShowHasNoDetails() = runTest {
+        insertShow("s", listOf(ep("a", 1, 1)))
+        val ui = vm().loaded()
+
+        assertNull(ui.details)
+        assertEquals("The Show", ui.name)
+        assertEquals("Name a", ui.episodes.single().heading)
     }
 }

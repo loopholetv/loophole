@@ -5,6 +5,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.assertIsNotFocused
@@ -269,6 +273,122 @@ class VodDetailContentTest {
         compose.onNodeWithText("Name e25").assertIsFocused()
         // Read once: a later return to the page without a player run does not land there again.
         assertNull(handle.get<String>(VOD_LAST_EPISODE))
+    }
+
+    private val details = TitleDetailsUi(
+        year = 1995, runtimeMinutes = 170, seasonCount = null, rating = 8.26, genres = listOf("Crime"),
+        overview = "A thief and a detective.", cast = listOf("Al Pacino", "Robert De Niro"), backdropUrl = null, badge = "4K",
+    )
+
+    @Test fun unmatchedFilmPageHasNoWrongDetails() {
+        compose.setContent { FilmContent(film, onPlay = {}) }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Crime").assertExists()
+        compose.onNodeWithText(WRONG_DETAILS_LABEL).assertDoesNotExist()
+    }
+
+    @Test fun matchedFilmPageShowsDetailsAndWrongDetailsFallsBackToPlay() {
+        var ui by mutableStateOf(film.copy(details = details))
+        var rejected = 0
+        compose.setContent {
+            FilmContent(ui, onWrongDetails = { rejected++; ui = ui.copy(details = null) }, onPlay = {})
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("1995 · 2 h 50 min · ★ 8.3 · Crime").assertExists()
+        compose.onNodeWithText("Crime").assertDoesNotExist()
+        compose.onNodeWithText("A thief and a detective.").assertExists()
+        compose.onNodeWithText("Al Pacino, Robert De Niro").assertExists()
+        compose.onNodeWithText("4K").assertExists()
+
+        okOn(WRONG_DETAILS_LABEL)
+        compose.waitForIdle()
+
+        assertEquals(1, rejected)
+        compose.onNodeWithText(WRONG_DETAILS_LABEL).assertDoesNotExist()
+        compose.onNodeWithText("Crime").assertExists()
+        compose.onNodeWithText("Play").assertIsFocused()
+    }
+
+    @Test fun matchedShowPageWrongDetailsFallsBackToContinue() {
+        var ui by mutableStateOf(
+            show.copy(
+                details = details.copy(runtimeMinutes = null, seasonCount = 2),
+                episodes = listOf(episode("a", "E1").copy(tmdbTitle = "Pilot", plot = "It begins.", season = 1), episode("b", "E2")),
+            ),
+        )
+        compose.setContent {
+            ShowContent(ui, onSelectTab = {}, onWrongDetails = { ui = ui.copy(details = null) }, onPlay = { _, _ -> })
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("1995 · 2 seasons · ★ 8.3 · Crime").assertExists()
+        compose.onNodeWithText("S1 E1 · Pilot").assertExists()
+        compose.onNodeWithText("It begins.").assertExists()
+        compose.onNodeWithText("Name b").assertExists()
+
+        okOn(WRONG_DETAILS_LABEL)
+        compose.waitForIdle()
+
+        compose.onNodeWithText(WRONG_DETAILS_LABEL).assertDoesNotExist()
+        compose.onNodeWithText("2 seasons · 3 episodes").assertExists()
+        compose.onNodeWithText("Play S1 E1").assertIsFocused()
+    }
+
+    @Test fun showWithoutContinueWrongDetailsFocusesTheSeasonTab() {
+        var ui by mutableStateOf(show.copy(continueKey = null, continueLabel = null, details = details.copy(runtimeMinutes = null)))
+        compose.setContent {
+            ShowContent(ui, onSelectTab = {}, onWrongDetails = { ui = ui.copy(details = null) }, onPlay = { _, _ -> })
+        }
+        compose.waitForIdle()
+        // Let the page's own opening focus on the lazily composed tab settle first.
+        compose.mainClock.advanceTimeBy(1_000)
+
+        okOn(WRONG_DETAILS_LABEL)
+        compose.waitForIdle()
+
+        compose.onNodeWithText(WRONG_DETAILS_LABEL).assertDoesNotExist()
+        compose.onNodeWithText("Season 1").assertIsFocused()
+    }
+
+    @Test fun showWithoutTabsWrongDetailsFocusesMyList() {
+        var ui by mutableStateOf(
+            show.copy(continueKey = null, continueLabel = null, tabs = emptyList(), episodes = emptyList(), details = details),
+        )
+        compose.setContent {
+            ShowContent(ui, onSelectTab = {}, onWrongDetails = { ui = ui.copy(details = null) }, onPlay = { _, _ -> })
+        }
+        compose.waitForIdle()
+
+        okOn(WRONG_DETAILS_LABEL)
+        compose.waitForIdle()
+
+        compose.onNodeWithText("+ My list").assertIsFocused()
+    }
+
+    // A short window stands in for large fonts: the header is then taller than the space it would leave.
+    @Config(qualifiers = "w960dp-h480dp")
+    @Test fun showPageKeepsRoomForTheEpisodeList() {
+        val long = "A very long plot. ".repeat(80)
+        compose.setContent {
+            ShowContent(
+                show.copy(details = details.copy(overview = long, cast = List(40) { "Actor $it" })),
+                onSelectTab = {},
+                onPlay = { _, _ -> },
+            )
+        }
+        compose.waitForIdle()
+
+        // The list keeps its minimum height (less its top padding) rather than shrinking to what is left.
+        compose.onNodeWithTag(EPISODE_LIST_TAG).assertHeightIsAtLeast(MIN_LIST_HEIGHT - 12.dp)
+        compose.onNodeWithText("Name a").assertIsDisplayed()
+        // The text gives way; the buttons and the season tabs stay in full.
+        compose.onNodeWithText("Play S1 E1").assertIsDisplayed()
+        compose.onNodeWithText(WRONG_DETAILS_LABEL).assertIsDisplayed()
+        compose.onNodeWithText("Season 1").assertIsDisplayed()
+        // In full, not squeezed into a sliver of the header.
+        compose.onNodeWithText("Season 1").assertHeightIsAtLeast(32.dp)
     }
 }
 

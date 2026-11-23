@@ -97,6 +97,7 @@ internal fun changedSettings(secret: String = SECRET): AppSettings = AppSettings
     nfsHost = "nfs.example.test", nfsExport = "/export", nfsFolder = "rec2",
     usbTreeUri = "content://usb/$secret", reminderLeadMin = 5, reminderAutoSwitch = true,
     padBeforeMin = 2, padAfterMin = 15,
+    tmdbKey = "abcdef0123456789abcdef0123456789",
     remote = RemoteSettings(
         mediaKeysSeek = false, rwRewindsLive = false, leftRightSeek = false, leftRewindsLive = true,
         bindings = KeyBindings(
@@ -373,6 +374,28 @@ class SetupBundleTest {
         )
         assertEquals(listOf(target.nfsHost, target.nfsExport, target.nfsFolder), listOf(result.nfsHost, result.nfsExport, result.nfsFolder))
         assertEquals(target.usbTreeUri, result.usbTreeUri)
+    }
+
+    @Test
+    fun tmdbKeyIsCopied() {
+        val key = "abcdef0123456789abcdef0123456789"
+        val bundle = sampleBundle()
+        assertEquals(key, bundle.settings.tmdbKey)
+        val decoded = decode(SetupJson.encode(bundle))!!
+        assertEquals(key, decoded.settings.applyTo(AppSettings(tmdbKey = "mine")).tmdbKey)
+        assertFalse(decoded.settings.toString().contains(key))
+        decoded.discardFiles()
+    }
+
+    @Test
+    fun aTvWithoutAKeyOrAnOlderBundleKeepsThisTvsKey() {
+        val target = AppSettings(tmdbKey = "0123456789abcdef0123456789abcdef")
+        assertEquals(target.tmdbKey, SetupSettings.from(AppSettings()).applyTo(target).tmdbKey)
+        val json = String(SetupJson.encode(sampleBundle())).replace(Regex(",\"tmdbKey\":\"[^\"]*\""), "")
+        assertFalse(json.contains("tmdbKey"))
+        val decoded = decode(json.toByteArray())!!
+        assertEquals(target.tmdbKey, decoded.settings.applyTo(target).tmdbKey)
+        decoded.discardFiles()
     }
 
     @Test

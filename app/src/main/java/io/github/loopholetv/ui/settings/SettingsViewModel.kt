@@ -26,6 +26,7 @@ import io.github.loopholetv.data.settings.defaultTvName
 import io.github.loopholetv.data.settings.effectivePastDays
 import io.github.loopholetv.data.settings.isRemappable
 import io.github.loopholetv.data.settings.PlaybackSettings
+import io.github.loopholetv.data.tmdb.KeyStatus
 import io.github.loopholetv.data.xtream.XTREAM_FORMAT_HLS
 import io.github.loopholetv.data.xtream.XtreamCredentials
 import io.github.loopholetv.phone.PhoneJob
@@ -134,6 +135,8 @@ data class SettingsUi(
     /** Free space of internal storage, shown beside its choice. */
     val internalFreeBytes: Long? = null,
     val permissions: PermissionStates = PermissionStates(),
+    /** The TMDB key's check, shown on "Film and show details". */
+    val tmdbStatus: KeyStatus = KeyStatus.NONE,
 )
 
 /** The last "Test" of the chosen storage: [text] is "Works" or the storage's own plain-words message. */
@@ -182,6 +185,7 @@ private data class Ops(
     val freeBytes: Long? = null,
     val internalFreeBytes: Long? = null,
     val permissions: PermissionStates = PermissionStates(),
+    val tmdbStatus: KeyStatus = KeyStatus.NONE,
 )
 
 /** Films and shows a playlist holds. */
@@ -244,6 +248,11 @@ class SettingsViewModel(
     private val permissions: () -> PermissionStates = { PermissionStates() },
     private val setConnectionsAllowed: suspend (Long, Int?) -> Unit = { _, _ -> },
     private val setXtreamFormat: suspend (Long, String?) -> Unit = { _, _ -> },
+    tmdbStatus: Flow<KeyStatus> = flowOf(KeyStatus.NONE),
+    /** Stores and checks the TMDB key; blank removes it. */
+    private val saveTmdbKey: suspend (String) -> Unit = {},
+    private val removeTmdbKey: suspend () -> Unit = {},
+    private val recheckTmdbKey: suspend () -> Unit = {},
 ) : ViewModel() {
     private val settingsFlow = settings
     private val work: CoroutineScope get() = workScope ?: viewModelScope
@@ -300,6 +309,7 @@ class SettingsViewModel(
             freeBytes = o.freeBytes,
             internalFreeBytes = o.internalFreeBytes,
             permissions = o.permissions,
+            tmdbStatus = o.tmdbStatus,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUi())
 
@@ -317,6 +327,9 @@ class SettingsViewModel(
     init {
         viewModelScope.launch {
             updateStatus.collect { st -> ops.update { it.copy(updateCard = cardFor(st)) } }
+        }
+        viewModelScope.launch {
+            tmdbStatus.collect { st -> ops.update { it.copy(tmdbStatus = st) } }
         }
         viewModelScope.launch {
             val days = try {
@@ -536,6 +549,27 @@ class SettingsViewModel(
         if (!UserAgents.isAcceptable(ua)) return
         val value = ua.trim().takeIf { it.isNotEmpty() }
         setOption { it.copy(userAgent = value) }
+    }
+
+    /** On the work scope, so closing the panel doesn't stop the check. */
+    fun saveTmdbKey(raw: String) = runQuietly { saveTmdbKey.invoke(raw) }
+
+    fun removeTmdbKey() = runQuietly { removeTmdbKey.invoke() }
+
+    /** "Film and show details" opened with a key set. */
+    fun recheckTmdbKey() = runQuietly { recheckTmdbKey.invoke() }
+
+    /** A failure leaves the status as it was; nothing about the key is shown or logged. */
+    private fun runQuietly(block: suspend () -> Unit) {
+        work.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // The status row keeps its last value.
+            }
+        }
     }
 
     /** Blank goes back to the device name. */
@@ -780,6 +814,10 @@ class SettingsViewModel(
                     permissions = { PermissionStates(canDrawOverlays(app), ignoresBatteryOptimisations(app)) },
                     setConnectionsAllowed = { id, n -> c.db.playlistDao().setConnectionsAllowed(id, n) },
                     setXtreamFormat = { id, f -> c.db.playlistDao().setXtreamFormat(id, f) },
+                    tmdbStatus = c.tmdbKeyService.status,
+                    saveTmdbKey = { k -> c.tmdbKeyService.save(k) },
+                    removeTmdbKey = { c.tmdbKeyService.remove() },
+                    recheckTmdbKey = { c.tmdbKeyService.recheck() },
                 ) as T
             }
         }

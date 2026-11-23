@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -34,7 +35,9 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import io.github.loopholetv.data.db.KeyRef
+import io.github.loopholetv.data.tmdb.Genre
 import io.github.loopholetv.data.vod.HiddenCategory
+import io.github.loopholetv.data.vod.VodFilter
 import io.github.loopholetv.ui.common.ChannelOption
 import io.github.loopholetv.ui.common.ChannelOptionsDialog
 import io.github.loopholetv.ui.common.RequestFocusOnOpen
@@ -67,7 +70,12 @@ internal fun rowId(row: VodRowModel): String = when (row) {
     is VodRowModel.Recent -> "fixed:recent"
     is VodRowModel.Paged -> row.category?.let { "paged:$it" } ?: "paged-none"
     is VodRowModel.Grid -> "grid:${row.title}"
+    VodRowModel.FilterButton -> FILTER_BUTTON_ROW
+    is VodRowModel.FilterBar -> FILTER_BAR_ROW
 }
+
+private const val FILTER_BUTTON_ROW = "filter:button"
+private const val FILTER_BAR_ROW = "filter:bar"
 
 /** Identifies one card across rows (in the row [rowId]), so focus can return to it. */
 internal fun cardId(rowId: String, card: PosterModel) = "$rowId\u0000${card.playlistId}\u0000${card.key}"
@@ -99,6 +107,8 @@ internal fun VodBrowse(
     StopPlaybackOnResume()
     val allHidden by vm.allHidden.collectAsStateWithLifecycle()
     val myListKeys by vm.myListKeys.collectAsStateWithLifecycle()
+    val filter by vm.filter.collectAsStateWithLifecycle()
+    val genres by vm.genres.collectAsStateWithLifecycle()
     VodBrowseContent(
         heading = heading, rows = rows, hidden = hidden, allHidden = allHidden,
         onHideCategory = vm::hideCategory, onShowCategory = vm::showCategory,
@@ -106,6 +116,8 @@ internal fun VodBrowse(
         myListKeys = myListKeys, onPlay = onPlay,
         onSetInMyList = vm::setInMyList, onDismissContinue = vm::dismissContinue,
         onOpenReminder = onOpenReminder, onCancelReminder = vm::cancelReminder,
+        filter = filter, genres = genres, offersRuntime = vm.offersRuntime,
+        onSetFilter = vm::setFilter, onClearFilter = vm::clearFilter,
     )
 }
 
@@ -132,6 +144,12 @@ internal fun VodBrowseContent(
     onDismissContinue: (PosterModel) -> Unit = {},
     onOpenReminder: (ProgrammeTarget) -> Unit = {},
     onCancelReminder: (PosterModel) -> Unit = {},
+    /** The Sort & filter choice the panel shows (the rows follow it a moment later). */
+    filter: VodFilter = VodFilter(),
+    genres: List<Genre> = emptyList(),
+    offersRuntime: Boolean = true,
+    onSetFilter: (VodFilter) -> Unit = {},
+    onClearFilter: () -> Unit = {},
 ) {
     var lastOpened by rememberSaveable { mutableStateOf(lastOpenedSeed) }
     // The last opened card's place in its row: a Continue watching card may be gone on return.
@@ -144,6 +162,10 @@ internal fun VodBrowseContent(
     var hiddenFrom by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var options by remember { mutableStateOf<MenuTarget?>(null) }
     var listingHidden by remember { mutableStateOf(false) }
+    var panelOpen by rememberSaveable { mutableStateOf(false) }
+    // The filter row ([FILTER_BUTTON_ROW] or [FILTER_BAR_ROW]) whose Sort & filter button takes focus once it is first.
+    var filterFocus by remember { mutableStateOf<String?>(null) }
+    val showNote = allHidden && rows.all { it is VodRowModel.FilterButton }
     val column = rememberLazyListState()
     val gridRow = rows.filterIsInstance<VodRowModel.Grid>().firstOrNull()
     val gridItems = gridRow?.items?.collectAsLazyPagingItems()
@@ -176,15 +198,28 @@ internal fun VodBrowseContent(
     val restoreFailed = { restore = null; wantsEntry = true }
 
     // The row that should take focus now, if any.
+    val firstId = rows.firstOrNull()?.let(::rowId)
+    val firstIsFilter = firstId == FILTER_BUTTON_ROW || firstId == FILTER_BAR_ROW
     val claimId: String? = when {
+        // After Clear or the panel, the filter row expected next; the old one may still be showing.
+        filterFocus != null && firstIsFilter -> firstId.takeIf { it == filterFocus }
         restore != null -> null
+        // The note takes focus itself.
+        showNote -> null
         hiddenFrom != null ->
             if (rows.any { rowId(it) == hiddenFrom?.first }) null
             else (rows.getOrNull(hiddenFrom!!.second) ?: rows.lastOrNull())?.let(::rowId)
         wantsEntry -> rows.firstOrNull()?.let(::rowId)
         else -> null
     }
-    val claimed = { wantsEntry = false; hiddenFrom = null }
+    val claimed = { wantsEntry = false; hiddenFrom = null; filterFocus = null }
+    val openPanel = { panelOpen = true }
+    val clearFilter = {
+        // Without the button (no key, no details) the first row takes focus instead.
+        filterFocus = FILTER_BUTTON_ROW
+        wantsEntry = true
+        onClearFilter()
+    }
 
     // Back from a film or show: scroll to the row that was open, as the row itself then finds the card.
     LaunchedEffect(rows.isNotEmpty(), gridCards?.count) {
@@ -223,7 +258,7 @@ internal fun VodBrowseContent(
 
     Column(Modifier.fillMaxSize().background(Tokens.Background).padding(horizontal = 48.dp, vertical = 27.dp)) {
         Text(heading, style = MaterialTheme.typography.headlineMedium, color = Tokens.OnBackground)
-        if (rows.isEmpty() && allHidden) {
+        if (showNote) {
             // Whatever row held focus is gone; once a category is shown again the first row takes it.
             AllHiddenNote(onShowHidden = { listingHidden = true }, onFocused = { hiddenFrom = null; wantsEntry = true })
         }
@@ -246,10 +281,17 @@ internal fun VodBrowseContent(
                     onOpen = { i, card -> open(row, i, card) }, onLongClick = { i, card -> longClick(row, i, card) },
                 )
                 when (row) {
+                    VodRowModel.FilterButton -> item(key = "row:$id") {
+                        FilterButtonRow(claim = claimId == id, onClaimed = claimed, onOpen = openPanel)
+                    }
+                    is VodRowModel.FilterBar -> item(key = "row:$id") {
+                        FilterBarRow(row, claim = claimId == id, onClaimed = claimed, onOpen = openPanel, onClear = clearFilter)
+                    }
                     is VodRowModel.Fixed -> item(key = "row:$id") { cardRow(RowCards.of(row.cards)) }
                     is VodRowModel.Paged -> item(key = "row:$id") { cardRow(RowCards.of(row.items.collectAsLazyPagingItems())) }
                     is VodRowModel.Grid -> {
-                        item(key = "row:$id") { RowTitle(row.title) }
+                        // The filtered grid's bar above says what it holds.
+                        item(key = "row:$id") { if (row.title != FILTERED_GRID_TITLE) RowTitle(row.title) }
                         val cards = gridCards
                         if (cards != null) {
                             items(chunkCount(cards.count), key = { "grid:$it" }) { chunk ->
@@ -260,7 +302,7 @@ internal fun VodBrowseContent(
                                             Box(Modifier.width(POSTER_WIDTH).aspectRatio(2f / 3f))
                                         } else {
                                             PosterCard(
-                                                title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction,
+                                                title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction, badge = card.badge,
                                                 onClick = { open(row, i, card) }, onLongClick = { longClick(row, i, card) },
                                                 modifier = Modifier.focusRequester(gridRequesters.requesterFor(cardId(id, card))),
                                             )
@@ -302,11 +344,59 @@ internal fun VodBrowseContent(
         }
         ChannelOptionsDialog(card.title, choices) { options = null }
     }
+    if (panelOpen) {
+        FilterPanel(filter, genres, offersRuntime, onChange = onSetFilter) {
+            panelOpen = false
+            filterFocus = if (filter.isDefault) FILTER_BUTTON_ROW else FILTER_BAR_ROW
+        }
+    }
     if (listingHidden) {
         ChannelOptionsDialog(
             title = OPTION_SHOW_HIDDEN,
             options = hidden.map { c -> ChannelOption(c.title) { onShowCategory(c); listingHidden = false } },
         ) { listingHidden = false }
+    }
+}
+
+/** The Sort & filter button above the rows; [claim] focuses it. */
+@Composable
+private fun FilterButtonRow(claim: Boolean, onClaimed: () -> Unit, onOpen: () -> Unit) {
+    val requester = remember { FocusRequester() }
+    ClaimFocus(claim, requester, onClaimed)
+    PillButton(label = SORT_FILTER_LABEL, selected = false, onClick = onOpen, modifier = Modifier.focusRequester(requester))
+}
+
+/** The line over the filtered grid: what it holds and how many, Sort & filter (focused on [claim]) and Clear. */
+@Composable
+private fun FilterBarRow(bar: VodRowModel.FilterBar, claim: Boolean, onClaimed: () -> Unit, onOpen: () -> Unit, onClear: () -> Unit) {
+    val requester = remember { FocusRequester() }
+    ClaimFocus(claim, requester, onClaimed)
+    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            listOf(bar.summary, "(${bar.count})").filter { it.isNotEmpty() }.joinToString(" "),
+            style = MaterialTheme.typography.titleMedium,
+            color = Tokens.OnBackground,
+        )
+        PillButton(label = SORT_FILTER_LABEL, selected = false, onClick = onOpen, modifier = Modifier.focusRequester(requester))
+        PillButton(label = CLEAR_FILTER_LABEL, selected = false, onClick = onClear)
+    }
+}
+
+/** Focuses [requester] once [claim] is set; [onClaimed] ends the claim, also when focus could not be taken. */
+@Composable
+internal fun ClaimFocus(claim: Boolean, requester: FocusRequester, onClaimed: () -> Unit) {
+    LaunchedEffect(claim) {
+        if (!claim) return@LaunchedEffect
+        // A frame or a few: the row may only just have been composed.
+        repeat(10) {
+            withFrameNanos { }
+            if (requester.tryFocus()) {
+                onClaimed()
+                return@LaunchedEffect
+            }
+        }
+        // Given up: other focus claims must not wait on this one.
+        onClaimed()
     }
 }
 
@@ -418,7 +508,7 @@ private fun CardRow(
                     )
                 } else {
                     PosterCard(
-                        title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction,
+                        title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction, badge = card.badge,
                         onClick = { onOpen(i, card) }, onLongClick = { onLongClick(i, card) },
                         modifier = Modifier.focusRequester(requesters.requesterFor(cardId(rowId, card))),
                     )
@@ -427,8 +517,6 @@ private fun CardRow(
         }
     }
 }
-
-private fun FocusRequester.tryFocus(): Boolean = runCatching { requestFocus() }.getOrDefault(false)
 
 /** The requester kept for [key], made on first use (not composable, so it is not a remember-in-composition call). */
 internal fun MutableMap<String, FocusRequester>.requesterFor(key: String): FocusRequester = getOrPut(key) { FocusRequester() }

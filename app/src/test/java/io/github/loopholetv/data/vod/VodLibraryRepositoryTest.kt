@@ -10,6 +10,7 @@ import io.github.loopholetv.data.db.ShowEntity
 import io.github.loopholetv.data.db.VodProgressEntity
 import io.github.loopholetv.data.db.addPlaylist
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.db.matchTitle
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -60,6 +61,29 @@ class VodLibraryRepositoryTest {
     private suspend fun film(key: String) = db.vodWriteDao().upsertFilms(
         listOf(FilmEntity(p, key, key, "C", null, "http://s.test/$key.mp4", null, null, null, 0, at(0))),
     )
+
+    @Test fun continueShowCardUsesDisplayTitle() = runTest {
+        show(name = "BB US"); episodes("s", 1, 2)
+        watch(1, 0, 100, watched = true)
+        db.matchTitle(p, TitleKind.SHOW, "s", 1396, "Breaking Bad", posterPath = "/bb.jpg", badge = "4K")
+
+        val card = library.continueShows().first().single()
+        assertEquals("Breaking Bad", card.title)
+        assertEquals("https://image.tmdb.org/t/p/w342/bb.jpg", card.logo)
+        assertEquals("4K", card.badge)
+        assertEquals("S1 E2", card.caption)
+    }
+
+    @Test fun continueFilmCardUsesDisplayTitle() = runTest {
+        film("f")
+        db.vodProgressDao().upsert(VodProgressEntity(VodKind.MOVIE, p, "f", 60_000, 120_000, false, at(5)))
+        db.matchTitle(p, TitleKind.FILM, "f", 949, "Heat", posterPath = "/h.jpg", badge = "HD")
+
+        val card = library.continueFilms().first().single()
+        assertEquals("Heat", card.title)
+        assertEquals("https://image.tmdb.org/t/p/w342/h.jpg", card.logo)
+        assertEquals("HD", card.badge)
+    }
 
     @Test fun continueShowsPointsAtNextEpisode() = runTest {
         show(); episodes("s", 1, 2, 3)

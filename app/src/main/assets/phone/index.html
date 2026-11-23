@@ -269,6 +269,18 @@ button:disabled { cursor: default; opacity: .5; }
         <span class="muted small">This TV</span>
         <strong id="moreTv"></strong>
       </div>
+      <div class="card" id="tmdbCard">
+        <strong>Film and show details</strong>
+        <div class="field"><label for="tmdbKey">TMDB key</label>
+          <input class="input" id="tmdbKey" type="password" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" aria-describedby="tmdbMsg"></div>
+        <p id="tmdbStored" class="muted small" hidden></p>
+        <p id="tmdbMsg" class="muted small" role="status"></p>
+        <div>
+          <button class="btn primary" type="button" id="tmdbSave">Save</button>
+          <button class="btn" type="button" id="tmdbRemove" hidden>Remove key</button>
+        </div>
+        <p class="muted small">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+      </div>
       <div><button class="btn danger" type="button" id="forgetBtn">Forget this phone</button></div>
     </section>
 </main>
@@ -545,6 +557,61 @@ button:disabled { cursor: default; opacity: .5; }
     if (state.tab === "playlists") loadPlaylists();
     else if (state.tab === "channels") loadChannels(cs.rows.length);
     else if (state.tab === "groups") loadGroups();
+    else if (state.tab === "more") loadTmdb();
+  }
+
+  /* ---------- Film and show details (TMDB key) ---------- */
+
+  var TMDB_STATUS = {
+    CHECKING: "Checking…",
+    WORKING: "Working",
+    BAD_KEY: "Key not accepted",
+    UNREACHABLE: "Couldn't reach TMDB"
+  };
+
+  /** Shows the key's state; the key itself never comes back from the TV, only its last four. */
+  function showTmdb(r) {
+    var set = !!(r && r.set);
+    $("tmdbStored").hidden = !set;
+    $("tmdbStored").textContent = set ? "Key saved: ••••" + (r.last4 || "") : "";
+    $("tmdbRemove").hidden = !set;
+    say($("tmdbMsg"), set ? TMDB_STATUS[r.status] || "" : "", r && r.status === "BAD_KEY" ? "error" : "muted");
+  }
+
+  async function loadTmdb() {
+    var r;
+    try {
+      r = await api("GET", "/api/tmdb");
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    showTmdb(r);
+  }
+
+  async function saveTmdb() {
+    var key = $("tmdbKey").value.trim();
+    if (!key) return;
+    $("tmdbSave").disabled = true;
+    say($("tmdbMsg"), TMDB_STATUS.CHECKING, "muted");
+    try {
+      showTmdb(await api("PUT", "/api/tmdb", { key: key }));
+      $("tmdbKey").value = "";
+    } catch (e) {
+      say($("tmdbMsg"), "", "muted");
+      fail(e, $("tmdbMsg"));
+    } finally {
+      $("tmdbSave").disabled = false;
+    }
+  }
+
+  async function removeTmdb() {
+    try {
+      showTmdb(await api("DELETE", "/api/tmdb"));
+      $("tmdbKey").value = "";
+    } catch (e) {
+      fail(e, $("tmdbMsg"));
+    }
   }
 
   function onTabKey(ev) {
@@ -1504,6 +1571,8 @@ button:disabled { cursor: default; opacity: .5; }
   window.addEventListener("scroll", loadMoreIfNear, { passive: true });
   window.addEventListener("resize", loadMoreIfNear);
   $("forgetBtn").addEventListener("click", forget);
+  $("tmdbSave").addEventListener("click", saveTmdb);
+  $("tmdbRemove").addEventListener("click", removeTmdb);
 
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState !== "visible") return;

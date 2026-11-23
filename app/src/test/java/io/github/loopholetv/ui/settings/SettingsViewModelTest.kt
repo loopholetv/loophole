@@ -119,6 +119,8 @@ class SettingsViewModelTest {
         var internalFree: Long? = null
         val connectionsSet = mutableListOf<Pair<Long, Int?>>()
         val formatSet = mutableListOf<Pair<Long, String?>>()
+        val tmdbStatus = MutableStateFlow(io.github.loopholetv.data.tmdb.KeyStatus.NONE)
+        val tmdbCalls = mutableListOf<String>()
 
         fun vm(pipSupported: Boolean = false, permissions: () -> PermissionStates = { PermissionStates() }) = SettingsViewModel(
             playlists = playlists,
@@ -166,7 +168,23 @@ class SettingsViewModelTest {
             internalFreeBytes = { internalFree },
             setConnectionsAllowed = { id, n -> connectionsSet += id to n },
             setXtreamFormat = { id, f -> formatSet += id to f },
+            tmdbStatus = tmdbStatus,
+            saveTmdbKey = { k -> tmdbCalls += "save:$k" },
+            removeTmdbKey = { tmdbCalls += "remove" },
+            recheckTmdbKey = { tmdbCalls += "recheck" },
         )
+    }
+
+    @Test fun tmdbKeyStatusAndActionsGoThroughTheService() = runTest {
+        val f = Fakes(listOf(playlist(1)))
+        val vm = f.vm()
+        assertEquals(io.github.loopholetv.data.tmdb.KeyStatus.NONE, vm.state.value.tmdbStatus)
+        f.tmdbStatus.value = io.github.loopholetv.data.tmdb.KeyStatus.WORKING
+        assertEquals(io.github.loopholetv.data.tmdb.KeyStatus.WORKING, vm.state.value.tmdbStatus)
+        vm.saveTmdbKey("abc")
+        vm.recheckTmdbKey()
+        vm.removeTmdbKey()
+        assertEquals(listOf("save:abc", "recheck", "remove"), f.tmdbCalls)
     }
 
     @Test fun storageTestShowsResult() = runTest {
@@ -362,6 +380,7 @@ class SettingsViewModelTest {
     @Test fun settingsPageKeyAndRoute() {
         assertEquals(SettingsPage.Recordings, SettingsPage.fromKey("recordings"))
         assertEquals("recordings", SettingsPage.Recordings.key)
+        assertEquals(SettingsPage.Details, SettingsPage.fromKey("details"))
         assertEquals("settings", io.github.loopholetv.ui.nav.Routes.settings())
         assertEquals("settings?page=recordings", io.github.loopholetv.ui.nav.Routes.settings(SettingsPage.Recordings.key))
     }

@@ -118,6 +118,9 @@ class RecordingCoordinator(
     private val channels = db.channelDao()
     private val playlists = db.playlistDao()
 
+    /** True while any recording is running. */
+    val isRecording: Boolean get() = runner.active.value.isNotEmpty()
+
     private val _prompt = MutableStateFlow<RecordPrompt?>(null)
     val prompt: StateFlow<RecordPrompt?> = _prompt.asStateFlow()
 

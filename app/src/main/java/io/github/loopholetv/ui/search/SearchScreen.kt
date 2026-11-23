@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -231,7 +232,7 @@ private fun VoiceSearchButton(onFocus: () -> Unit, onResult: (String) -> Unit) {
 }
 
 @Composable
-private fun ColumnScope.ResultsContent(
+internal fun ColumnScope.ResultsContent(
     ui: SearchUi,
     now: Instant,
     format: GuideFormat,
@@ -260,7 +261,7 @@ private fun ColumnScope.ResultsContent(
                 SectionTitle("Films")
                 ui.films.forEach { f ->
                     key(filmKey(f)) {
-                        TitleResult(f.name, null, f.logo, Modifier.focusRequester(requester(filmKey(f))), onLongClick = { onFilmMenu(f) }) { onFilm(f) }
+                        TitleResult(f.name, null, f.logo, f.badge, Modifier.focusRequester(requester(filmKey(f))), onLongClick = { onFilmMenu(f) }) { onFilm(f) }
                     }
                 }
             }
@@ -268,7 +269,7 @@ private fun ColumnScope.ResultsContent(
                 SectionTitle("Shows")
                 ui.shows.forEach { sh ->
                     key(showKey(sh)) {
-                        TitleResult(sh.name, sh.playlistName, sh.logo, Modifier.focusRequester(requester(showKey(sh))), onLongClick = { onShowMenu(sh) }) { onShow(sh) }
+                        TitleResult(sh.name, sh.playlistName, sh.logo, sh.badge, Modifier.focusRequester(requester(showKey(sh))), onLongClick = { onShowMenu(sh) }) { onShow(sh) }
                     }
                 }
             }
@@ -320,7 +321,15 @@ private fun ChannelResult(channel: ChannelEntity, modifier: Modifier, onClick: (
 }
 
 @Composable
-private fun TitleResult(name: String, secondary: String?, logo: String?, modifier: Modifier, onLongClick: () -> Unit, onClick: () -> Unit) {
+private fun TitleResult(
+    name: String,
+    secondary: String?,
+    logo: String?,
+    badge: String?,
+    modifier: Modifier,
+    onLongClick: () -> Unit,
+    onClick: () -> Unit,
+) {
     ListItem(
         selected = false,
         onClick = onClick,
@@ -328,6 +337,7 @@ private fun TitleResult(name: String, secondary: String?, logo: String?, modifie
         leadingContent = { ChannelLogo(logo) },
         headlineContent = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = secondary?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
+        trailingContent = badge?.let { { QualityBadge(it) } },
         modifier = modifier.fillMaxWidth(),
         colors = resultColors,
         shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),
@@ -353,6 +363,15 @@ private fun ProgrammeResult(hit: ProgrammeHit, onNow: Boolean, format: GuideForm
         shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),
     )
 }
+
+/** A matched title's quality tag (e.g. "4K"), outlined, in the row's text colour so it reads focused or not. */
+@Composable
+private fun QualityBadge(text: String) = Text(
+    text,
+    style = MaterialTheme.typography.labelMedium,
+    maxLines = 1,
+    modifier = Modifier.border(1.dp, Tokens.Muted, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+)
 
 /** "Now" on an Accent pill, legible both on the dark row and the light focused row. */
 @Composable

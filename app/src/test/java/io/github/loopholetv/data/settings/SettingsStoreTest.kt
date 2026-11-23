@@ -165,6 +165,20 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun tmdbKeyRoundTripsAndIsNotInToString() = runTest {
+        val ds = dataStore(backgroundScope)
+        val store = SettingsStore(ds)
+        val key = "0123456789abcdef0123456789abcdef"
+        store.update { it.copy(tmdbKey = key) }
+        assertEquals(key, store.current().tmdbKey)
+        // The persisted name is fixed.
+        assertEquals(key, ds.data.first()[stringPreferencesKey("tmdbKey")])
+        assertFalse(store.current().toString().contains(key))
+        store.update { it.copy(tmdbKey = "") }
+        assertEquals("", store.current().tmdbKey)
+    }
+
+    @Test
     fun smbPasswordNotInToString() {
         val text = AppSettings(smbPassword = "hunter2-secret", smbUser = "bob").toString()
         assertFalse(text, text.contains("hunter2-secret"))
@@ -443,5 +457,25 @@ class SettingsStoreTest {
         assertEquals(phones, store.pairedPhones())
         store.savePairedPhones(emptyList())
         assertEquals(0, store.pairedCount.first())
+    }
+
+    @Test
+    fun vodFilterIsKeptPerScreenOutsideSettings() = runTest {
+        val ds = dataStore(backgroundScope)
+        val store = SettingsStore(ds)
+        val films = io.github.loopholetv.data.vod.VodFilter(
+            genres = setOf(28),
+            sort = io.github.loopholetv.data.vod.VodSort.RATING,
+        )
+        assertEquals(io.github.loopholetv.data.vod.VodFilter(), store.vodFilter(io.github.loopholetv.data.vod.TitleKind.FILM).first())
+        store.setVodFilter(io.github.loopholetv.data.vod.TitleKind.FILM, films)
+        assertEquals(films, store.vodFilter(io.github.loopholetv.data.vod.TitleKind.FILM).first())
+        assertEquals(io.github.loopholetv.data.vod.VodFilter(), store.vodFilter(io.github.loopholetv.data.vod.TitleKind.SHOW).first())
+        assertEquals(films.encode(), ds.data.first()[stringPreferencesKey("vodFilterMovies")])
+        assertEquals(AppSettings(), store.current())
+        // A restart reads it back; Clear removes it.
+        assertEquals(films, SettingsStore(ds).vodFilter(io.github.loopholetv.data.vod.TitleKind.FILM).first())
+        store.setVodFilter(io.github.loopholetv.data.vod.TitleKind.FILM, io.github.loopholetv.data.vod.VodFilter())
+        assertEquals(null, ds.data.first()[stringPreferencesKey("vodFilterMovies")])
     }
 }

@@ -44,11 +44,14 @@ val PROGRAMME_CARD_WIDTH = 220.dp
 private val POSTER_SHAPE = RoundedCornerShape(8.dp)
 private const val FOCUSED_SCALE = 1.05f
 internal const val POSTER_PROGRESS_TAG = "poster-progress"
+internal const val POSTER_BADGE_TAG = "poster-badge"
+private val BADGE_SHAPE = RoundedCornerShape(4.dp)
 
 /**
  * A 2:3 poster. Without a [logo], or when it fails to load, the card shows the [title] instead.
  * [subtitle] (the playlist a show comes from) sits at the foot, with a progress bar under it when
- * [fraction] is set. OK calls [onClick], a long OK or Menu calls [onLongClick].
+ * [fraction] is set. [badge] (a quality tag such as "4K") sits in a chip at the top right.
+ * OK calls [onClick], a long OK or Menu calls [onLongClick].
  */
 @Composable
 fun PosterCard(
@@ -56,6 +59,7 @@ fun PosterCard(
     logo: String?,
     subtitle: String?,
     fraction: Float? = null,
+    badge: String? = null,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -118,7 +122,21 @@ fun PosterCard(
                 }
             }
         }
+        if (badge != null) QualityBadge(badge, Modifier.align(Alignment.TopEnd))
     }
+}
+
+/** A quality tag such as "4K" in a small chip, for the top right of a poster. */
+@Composable
+internal fun QualityBadge(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = Tokens.OnBackground,
+        maxLines = 1,
+        modifier = modifier.padding(4.dp).testTag(POSTER_BADGE_TAG)
+            .background(Color(0xB3000000), BADGE_SHAPE).padding(horizontal = 4.dp, vertical = 1.dp),
+    )
 }
 
 /**

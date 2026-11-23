@@ -9,6 +9,9 @@ import io.github.loopholetv.data.db.ChannelPrefsEntity
 import io.github.loopholetv.data.db.ShowEntity
 import io.github.loopholetv.data.db.addPlaylist
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.db.MatchState
+import io.github.loopholetv.data.db.TmdbEpisodeEntity
+import io.github.loopholetv.data.db.matchTitle
 import io.github.loopholetv.data.db.searchPattern
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -259,6 +262,133 @@ class VodRepositoryTest {
         assertNull(repo.nextEpisode(VodRef(VodKind.MOVIE, a, "e1")))
         db.vodWriteDao().deleteEpisodes(a, listOf("e2"))
         assertNull(repo.nextEpisode(VodRef(VodKind.EPISODE, a, "e1")))
+    }
+
+    @Test fun matchedFilmCardShowsTmdbTitlePosterAndBadge() = runTest {
+        val a = db.addPlaylist()
+        val recent = now.minus(Duration.ofDays(1))
+        insertFilms(film(a, "f1", name = "Heat 1995 4K", seen = recent).copy(logo = "http://logo.test/f1.png"))
+        db.matchTitle(a, TitleKind.FILM, "f1", 949, "Heat", posterPath = "/heat.jpg", badge = "4K")
+
+        val expected = FilmCard(a, "f1", "Heat", "https://image.tmdb.org/t/p/w342/heat.jpg", "4K")
+        assertEquals(listOf(expected), repo.browseFilms("Action"))
+        assertEquals(listOf(expected), repo.recentFilms().first())
+    }
+
+    @Test fun matchedFilmWithoutPosterKeepsPlaylistLogo() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", name = "Heat 1995").copy(logo = "http://logo.test/f1.png"))
+        db.matchTitle(a, TitleKind.FILM, "f1", 949, "Heat")
+
+        assertEquals(listOf(FilmCard(a, "f1", "Heat", "http://logo.test/f1.png", null)), repo.browseFilms("Action"))
+    }
+
+    @Test fun unmatchedFilmCardUnchanged() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(
+            film(a, "f1", name = "Heat 1995 4K").copy(logo = "http://logo.test/f1.png"),
+            film(a, "f2", name = "Lost 4K", position = 1),
+        )
+        // Not found: the badge stays with the match row and is not shown.
+        db.matchTitle(a, TitleKind.FILM, "f2", 0, null, badge = "4K", state = MatchState.NOT_FOUND)
+
+        assertEquals(
+            listOf(FilmCard(a, "f1", "Heat 1995 4K", "http://logo.test/f1.png", null), FilmCard(a, "f2", "Lost 4K", null, null)),
+            repo.browseFilms("Action"),
+        )
+    }
+
+    @Test fun rejectedFilmShowsPlaylistName() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", name = "Heat 1995"))
+        db.matchTitle(a, TitleKind.FILM, "f1", 949, "Heat", posterPath = "/heat.jpg", badge = "HD", state = MatchState.REJECTED)
+
+        assertEquals(listOf(FilmCard(a, "f1", "Heat 1995", null, null)), repo.browseFilms("Action"))
+        assertEquals("Heat 1995", repo.playable(VodRef(VodKind.MOVIE, a, "f1"))?.title)
+    }
+
+    @Test fun matchedShowCardShowsTmdbTitleAndPoster() = runTest {
+        val a = db.addPlaylist()
+        insertShows(show(a, "s1", name = "Office US", category = null))
+        db.matchTitle(a, TitleKind.SHOW, "s1", 2316, "The Office", posterPath = "/o.jpg", badge = "FHD")
+
+        assertEquals(
+            listOf(ShowCard(a, "s1", "The Office", "https://image.tmdb.org/t/p/w342/o.jpg", null, "FHD")),
+            repo.browseShows(null),
+        )
+    }
+
+    @Test fun showCollisionUsesDisplayNames() = runTest {
+        val a = db.addPlaylist("Alpha")
+        val b = db.addPlaylist("Beta")
+        insertShows(
+            // Different playlist names, the same TMDB title: labelled.
+            show(a, "s1", name = "Office US", category = null),
+            show(b, "s2", name = "The Office", category = null),
+            // The same playlist name, but one is matched to another title: not labelled.
+            show(a, "s3", name = "Same", category = null),
+            show(b, "s4", name = "Same", category = null),
+            // Different TMDB titles that read the same: labelled.
+            show(a, "s5", name = "Twin A", category = null),
+            show(b, "s6", name = "Twin B", category = null),
+        )
+        db.matchTitle(a, TitleKind.SHOW, "s1", 2316, "The Office")
+        db.matchTitle(b, TitleKind.SHOW, "s4", 77, "Different")
+        db.matchTitle(a, TitleKind.SHOW, "s5", 10, "Twin")
+        db.matchTitle(b, TitleKind.SHOW, "s6", 11, "Twin")
+
+        val byKey = repo.browseShows(null).associateBy { it.key }
+        assertEquals("Alpha", byKey.getValue("s1").playlistName)
+        assertEquals("Beta", byKey.getValue("s2").playlistName)
+        assertNull(byKey.getValue("s3").playlistName)
+        assertNull(byKey.getValue("s4").playlistName)
+        assertEquals("Alpha", byKey.getValue("s5").playlistName)
+        assertEquals("Beta", byKey.getValue("s6").playlistName)
+    }
+
+    @Test fun allShowsSortByDisplayName() = runTest {
+        val a = db.addPlaylist()
+        insertShows(show(a, "s1", name = "Zulu", category = null), show(a, "s2", name = "Mike", category = null))
+        db.matchTitle(a, TitleKind.SHOW, "s1", 1, "alpha")
+
+        assertEquals(listOf("alpha", "Mike"), repo.browseShows(null).map { it.name })
+    }
+
+    @Test fun searchFindsByTmdbTitleAndRawName() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", name = "Le Fabuleux Destin"), film(a, "f2", name = "Zebra Amelie", position = 1))
+        insertShows(show(a, "s1", name = "Office US"))
+        db.matchTitle(a, TitleKind.FILM, "f1", 194, "Amelie", posterPath = "/a.jpg")
+        db.matchTitle(a, TitleKind.SHOW, "s1", 2316, "The Office")
+
+        val byTmdb = repo.searchFilms(searchPattern("amelie")!!, 10)
+        // Ordered by the name shown: "Amelie" before "Zebra Amelie".
+        assertEquals(listOf("Amelie", "Zebra Amelie"), byTmdb.map { it.name })
+        assertEquals("https://image.tmdb.org/t/p/w342/a.jpg", byTmdb.first().logo)
+        assertEquals(listOf("f1"), repo.searchFilms(searchPattern("fabuleux")!!, 10).map { it.key })
+        assertEquals(listOf("The Office"), repo.searchShows(searchPattern("the off")!!, 10).map { it.name })
+        assertEquals(listOf("s1"), repo.searchShows(searchPattern("office us")!!, 10).map { it.key })
+    }
+
+    @Test fun playableTitleUsesDisplayTitle() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", name = "Heat 1995 4K"))
+        insertShows(show(a, "s", name = "BB"))
+        db.vodWriteDao().upsertEpisodes(listOf(episode(a, "e1", "s", 1, 1), episode(a, "e2", "s", 1, 2, 1), episode(a, "x", "s", null, null, 2)))
+        db.matchTitle(a, TitleKind.FILM, "f1", 949, "Heat")
+        db.matchTitle(a, TitleKind.SHOW, "s", 1396, "Breaking Bad")
+        db.tmdbDao().upsertEpisodes(1396, listOf(TmdbEpisodeEntity(1396, 1, 1, "Pilot", null)))
+
+        assertEquals("Heat", repo.playable(VodRef(VodKind.MOVIE, a, "f1"))?.title)
+        assertEquals("Heat", repo.displayTitle(VodRef(VodKind.MOVIE, a, "f1")))
+        assertEquals("S1 E1 · Pilot", repo.playable(VodRef(VodKind.EPISODE, a, "e1"))?.title)
+        assertEquals("Pilot", repo.episodeInfo(VodRef(VodKind.EPISODE, a, "e1"))?.name)
+        // No TMDB row for the episode, or no number: the playlist's name as before.
+        assertEquals("E e2", repo.playable(VodRef(VodKind.EPISODE, a, "e2"))?.title)
+        assertEquals("E e2", repo.episodeInfo(VodRef(VodKind.EPISODE, a, "e2"))?.name)
+        assertEquals("E x", repo.playable(VodRef(VodKind.EPISODE, a, "x"))?.title)
+        assertNull(repo.displayTitle(VodRef(VodKind.MOVIE, a, "missing")))
+        assertNull(repo.displayTitle(VodRef(VodKind.RECORDING, a, "rec:1")))
     }
 
     private suspend fun VodRepository.browseFilms(category: String) = films(category).asSnapshot()

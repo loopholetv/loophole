@@ -204,9 +204,24 @@ val MIGRATION_9_10: Migration = SqlMigration(
     "ALTER TABLE `playlists` ADD COLUMN `accountExpiresAt` INTEGER",
 )
 
+/** v10 → v11: TMDB details and the matches linking them to films and shows. SQL matches Room's schema 11 export. */
+val MIGRATION_10_11: Migration = SqlMigration(
+    10,
+    11,
+    "CREATE TABLE IF NOT EXISTS `tmdb_titles` (`tmdbKind` TEXT NOT NULL, `tmdbId` INTEGER NOT NULL, `title` TEXT NOT NULL, `originalTitle` TEXT, `year` INTEGER, `overview` TEXT, `posterPath` TEXT, `backdropPath` TEXT, `rating` REAL, `voteCount` INTEGER, `runtimeMinutes` INTEGER, `seasonCount` INTEGER, `cast` TEXT, `language` TEXT NOT NULL, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`tmdbKind`, `tmdbId`))",
+    "CREATE INDEX IF NOT EXISTS `index_tmdb_titles_tmdbKind_title` ON `tmdb_titles` (`tmdbKind`, `title`)",
+    "CREATE TABLE IF NOT EXISTS `tmdb_title_genres` (`tmdbKind` TEXT NOT NULL, `tmdbId` INTEGER NOT NULL, `genreId` INTEGER NOT NULL, PRIMARY KEY(`tmdbKind`, `tmdbId`, `genreId`))",
+    "CREATE INDEX IF NOT EXISTS `index_tmdb_title_genres_genreId` ON `tmdb_title_genres` (`genreId`)",
+    "CREATE TABLE IF NOT EXISTS `tmdb_genres` (`tmdbKind` TEXT NOT NULL, `genreId` INTEGER NOT NULL, `name` TEXT NOT NULL, `language` TEXT NOT NULL, PRIMARY KEY(`tmdbKind`, `genreId`))",
+    "CREATE TABLE IF NOT EXISTS `tmdb_episodes` (`tvId` INTEGER NOT NULL, `season` INTEGER NOT NULL, `episode` INTEGER NOT NULL, `title` TEXT, `overview` TEXT, PRIMARY KEY(`tvId`, `season`, `episode`))",
+    "CREATE TABLE IF NOT EXISTS `vod_matches` (`playlistId` INTEGER NOT NULL, `kind` TEXT NOT NULL, `key` TEXT NOT NULL, `fingerprint` TEXT NOT NULL, `state` TEXT NOT NULL, `tmdbKind` TEXT, `tmdbId` INTEGER, `badge` TEXT, `sourceName` TEXT NOT NULL, `sourceTvgId` TEXT, `lookedUpAt` INTEGER NOT NULL, `lastSeenAt` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `kind`, `key`))",
+    "CREATE INDEX IF NOT EXISTS `index_vod_matches_fingerprint` ON `vod_matches` (`fingerprint`)",
+    "CREATE INDEX IF NOT EXISTS `index_vod_matches_tmdbKind_tmdbId` ON `vod_matches` (`tmdbKind`, `tmdbId`)",
+)
+
 val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-    MIGRATION_8_9, MIGRATION_9_10,
+    MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
 )
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */

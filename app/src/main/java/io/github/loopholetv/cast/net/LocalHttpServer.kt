@@ -276,16 +276,19 @@ class LocalHttpServer(
         val headEnd = System.nanoTime()
         val parsed = parse(head.text, socket.inetAddress) ?: return respond(socket, 400, watchdog)
         if (!pathIsSafe(parsed.path)) return respond(socket, 400, watchdog)
-        if (parsed.method != "GET" && parsed.method != "POST") return respond(socket, 405, watchdog)
         val route = routes
             .filter { it.method == parsed.method && matches(it.prefix, parsed.path) }
             .maxByOrNull { it.prefix.length }
-            ?: return respond(socket, 404, watchdog)
+        // Only GET and POST are known; PUT and DELETE are served only where a route asks for them.
+        if (route == null) {
+            val known = parsed.method == "GET" || parsed.method == "POST" || routes.any { it.method == parsed.method }
+            return respond(socket, if (known) 404 else 405, watchdog)
+        }
         if ("transfer-encoding" in parsed.headers) return respond(socket, 411, watchdog)
         val lengthHeader = parsed.headers["content-length"]
         val length = when {
             lengthHeader != null -> contentLength(lengthHeader) ?: return respond(socket, 400, watchdog)
-            route.maxBody > 0 && parsed.method == "POST" -> return respond(socket, 411, watchdog)
+            route.maxBody > 0 && parsed.method != "GET" && parsed.method != "DELETE" -> return respond(socket, 411, watchdog)
             else -> 0L
         }
         if (length > route.maxBody) return respond(socket, 413, watchdog)

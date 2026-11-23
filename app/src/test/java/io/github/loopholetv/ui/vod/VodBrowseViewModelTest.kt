@@ -7,6 +7,7 @@ import io.github.loopholetv.data.db.FilmEntity
 import io.github.loopholetv.data.db.ShowEntity
 import io.github.loopholetv.data.db.addPlaylist
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.db.matchTitle
 import io.github.loopholetv.data.repo.ChannelOverlay
 import io.github.loopholetv.data.repo.ChannelEdits
 import io.github.loopholetv.data.vod.ALL_SHOWS_GRID_THRESHOLD
@@ -27,9 +28,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 import java.time.Instant
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.emptyPreferences
+import io.github.loopholetv.data.settings.SettingsStore
+import io.github.loopholetv.data.vod.RatingMin
+import io.github.loopholetv.data.vod.RuntimeBand
+import io.github.loopholetv.data.vod.VodFilter
+import io.github.loopholetv.data.vod.VodSort
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.flowOf
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -41,6 +54,7 @@ class VodBrowseViewModelTest {
     private lateinit var library: VodLibraryRepository
 
     @get:Rule val main = MainDispatcherRule()
+    @get:Rule val tmp = TemporaryFolder()
 
     @Before fun setUp() {
         db = inMemoryDb()
@@ -77,6 +91,24 @@ class VodBrowseViewModelTest {
         assertTrue(rows[0] is VodRowModel.Recent)
         assertEquals(listOf("f1"), (rows[0] as VodRowModel.Recent).cards.map { it.key })
         assertEquals("Action", (rows[1] as VodRowModel.Paged).category)
+    }
+
+    @Test fun matchedCardsCarryTmdbTitleAndBadge() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action", seen = now), film(a, "f2", "Action"))
+        watchFilm(a, "f2", 50_000)
+        library.setInMyList(TitleKind.FILM, a, "f1", true)
+        db.matchTitle(a, TitleKind.FILM, "f1", 949, "Heat", badge = "4K")
+        db.matchTitle(a, TitleKind.FILM, "f2", 950, "Ronin", badge = "HD")
+
+        val rows = browse(VodKind.MOVIE).loaded()
+
+        val cont = (rows.first { it is VodRowModel.Continue } as VodRowModel.Continue).cards.single()
+        assertEquals("Ronin" to "HD", cont.title to cont.badge)
+        for (row in listOf(rows.first { it is VodRowModel.MyList }, rows.first { it is VodRowModel.Recent })) {
+            val card = (row as VodRowModel.Fixed).cards.single()
+            assertEquals("Heat" to "4K", card.title to card.badge)
+        }
     }
 
     @Test fun recentOmittedWhenEmpty() = runTest {
@@ -249,5 +281,178 @@ class VodBrowseViewModelTest {
 
         assertEquals(MY_LIST_ROW_TITLE, row.title)
         assertEquals(listOf("Show 1"), row.cards.map { it.title })
+    }
+
+    // Sort & filter
+
+    private fun settings(scope: CoroutineScope) = SettingsStore(
+        PreferenceDataStoreFactory.create(
+            corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+            scope = scope,
+        ) { File(tmp.root, "settings.preferences_pb") },
+    )
+
+    private fun filtering(kind: VodKind, store: SettingsStore? = null, hasKey: Boolean = true): VodBrowseViewModel {
+        val titleKind = if (kind == VodKind.MOVIE) TitleKind.FILM else TitleKind.SHOW
+        return main.keep(
+            VodBrowseViewModel(
+                kind, repo, library, edits,
+                hasKey = flowOf(hasKey),
+                savedFilter = store?.vodFilter(titleKind) ?: flowOf(VodFilter()),
+                saveFilter = { f -> store?.setVodFilter(titleKind, f) },
+            ),
+        )
+    }
+
+    @Test fun unreadableSavedFilterFallsBackToNoFilter() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"))
+        val vm = main.keep(
+            VodBrowseViewModel(
+                VodKind.MOVIE, repo, library, edits,
+                hasKey = flowOf(true),
+                savedFilter = kotlinx.coroutines.flow.flow { throw java.io.IOException("unreadable") },
+            ),
+        )
+
+        val rows = vm.loaded()
+
+        assertTrue(rows.first() is VodRowModel.FilterButton)
+        assertEquals(VodFilter(), vm.filter.value)
+    }
+
+    @Test fun savedGenreThatIsGoneIsDropped() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"), film(a, "f2", "Action"))
+        db.matchTitle(a, TitleKind.FILM, "f1", 1, "Heat")
+        db.matchTitle(a, TitleKind.FILM, "f2", 2, "Ronin")
+        val dao = db.tmdbDao()
+        dao.upsertGenres(
+            listOf(
+                io.github.loopholetv.data.db.TmdbGenreEntity(io.github.loopholetv.data.tmdb.TmdbKind.MOVIE, 28, "Action", "en-US"),
+                io.github.loopholetv.data.db.TmdbGenreEntity(io.github.loopholetv.data.tmdb.TmdbKind.MOVIE, 99, "Documentary", "en-US"),
+            ),
+        )
+        dao.upsertTitle(dao.titleNow(io.github.loopholetv.data.tmdb.TmdbKind.MOVIE, 1)!!, listOf(28))
+        dao.upsertTitle(dao.titleNow(io.github.loopholetv.data.tmdb.TmdbKind.MOVIE, 2)!!, listOf(28))
+        // Saved while a documentary was in the library; none is now.
+        val vm = main.keep(
+            VodBrowseViewModel(
+                VodKind.MOVIE, repo, library, edits,
+                hasKey = flowOf(true),
+                savedFilter = flowOf(VodFilter(genres = setOf(28, 99))),
+            ),
+        )
+
+        val f = vm.filter.first { !it.isDefault }
+
+        assertEquals(setOf(28), f.genres)
+        val bar = vm.rows.first { r -> r.any { it is VodRowModel.FilterBar } }[0] as VodRowModel.FilterBar
+        assertEquals(2, bar.count)
+    }
+
+    @Test fun defaultFilterShowsButtonPlusNormalRows() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action", seen = now), film(a, "f2", "Drama"))
+
+        val rows = filtering(VodKind.MOVIE).loaded()
+
+        assertTrue(rows[0] is VodRowModel.FilterButton)
+        assertEquals(listOf("Recently added", "Action", "Drama"), rows.drop(1).map { it.title })
+    }
+
+    @Test fun detailsWithoutAKeyStillShowTheButton() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"))
+        db.matchTitle(a, TitleKind.FILM, "f1", 949, "Heat")
+
+        val rows = filtering(VodKind.MOVIE, hasKey = false).rows.first { r -> r.any { it is VodRowModel.FilterButton } }
+
+        assertTrue(rows[0] is VodRowModel.FilterButton)
+    }
+
+    @Test fun noKeyNoDetailsHidesFilterButton() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"))
+
+        val rows = filtering(VodKind.MOVIE, hasKey = false).loaded()
+
+        assertEquals(listOf("Action"), rows.map { it.title })
+        assertTrue(rows.none { it is VodRowModel.FilterButton })
+    }
+
+    @Test fun activeFilterShowsOnlyBarAndGrid() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action", seen = now), film(a, "f2", "Drama"))
+        watchFilm(a, "f2", 50_000)
+        library.setInMyList(TitleKind.FILM, a, "f1", true)
+        val vm = filtering(VodKind.MOVIE)
+        vm.loaded()
+
+        vm.setFilter(VodFilter(sort = VodSort.TITLE))
+
+        val rows = vm.rows.first { r -> r.any { it is VodRowModel.FilterBar } }
+        assertEquals(2, rows.size)
+        assertEquals(VodRowModel.FilterBar("by title", 2), rows[0])
+        assertTrue(rows[1] is VodRowModel.Grid)
+        assertEquals(VodSort.TITLE, vm.filter.value.sort)
+    }
+
+    @Test fun filterPersistsAcrossViewModelRecreation() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"))
+        val store = settings(backgroundScope)
+        val first = filtering(VodKind.MOVIE, store)
+        first.loaded()
+        first.setFilter(VodFilter(rating = RatingMin.SEVEN))
+        store.vodFilter(TitleKind.FILM).first { it.rating == RatingMin.SEVEN }
+        main.clear()
+
+        val again = filtering(VodKind.MOVIE, store)
+
+        val rows = again.rows.first { r -> r.any { it is VodRowModel.FilterBar } }
+        assertEquals(VodRowModel.FilterBar("★7+", 0), rows[0])
+        assertEquals(RatingMin.SEVEN, again.filter.first { it.rating == RatingMin.SEVEN }.rating)
+    }
+
+    @Test fun clearRestoresRows() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "f1", "Action"), film(a, "f2", "Drama"))
+        val store = settings(backgroundScope)
+        val vm = filtering(VodKind.MOVIE, store)
+        vm.loaded()
+        vm.setFilter(VodFilter(sort = VodSort.YEAR))
+        vm.rows.first { r -> r.any { it is VodRowModel.FilterBar } }
+
+        vm.clearFilter()
+
+        val rows = vm.rows.first { r -> r.any { it is VodRowModel.FilterButton } }
+        assertEquals(listOf("Action", "Drama"), rows.drop(1).map { it.title })
+        assertEquals(VodFilter(), vm.filter.value)
+        assertEquals(VodFilter(), store.vodFilter(TitleKind.FILM).first { it.isDefault })
+    }
+
+    @Test fun seriesHasNoRuntimeOptions() = runTest {
+        assertEquals(false, filtering(VodKind.EPISODE).offersRuntime)
+        assertEquals(true, filtering(VodKind.MOVIE).offersRuntime)
+        assertTrue(VodSort.RUNTIME !in sortChoices(offersRuntime = false))
+        assertTrue(VodSort.RUNTIME in sortChoices(offersRuntime = true))
+    }
+
+    @Test fun seriesFilterDropsRuntime() = runTest {
+        val a = db.addPlaylist()
+        insertShows(show(a, "s1", category = "Crime"))
+        val store = settings(backgroundScope)
+        store.setVodFilter(TitleKind.SHOW, VodFilter(runtime = RuntimeBand.OVER_120, sort = VodSort.RUNTIME))
+
+        // A stored runtime choice is dropped on load: no invisible filter hides shows.
+        val vm = filtering(VodKind.EPISODE, store)
+        val rows = vm.loaded()
+        assertTrue(rows[0] is VodRowModel.FilterButton)
+        assertEquals(VodFilter(), vm.filter.value)
+
+        // And on set: the band goes, the sort falls back to Recently added.
+        vm.setFilter(VodFilter(rating = RatingMin.SIX, runtime = RuntimeBand.UNDER_90, sort = VodSort.RUNTIME))
+        assertEquals(VodFilter(rating = RatingMin.SIX), vm.filter.value)
     }
 }

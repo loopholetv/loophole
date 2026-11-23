@@ -35,14 +35,14 @@ abstract class VodLibraryDao {
     abstract suspend fun remove(kind: TitleKind, playlistId: Long, key: String)
 
     @Query(
-        """SELECT $FILM_CARD FROM vod_my_list m JOIN vod_films f ON f.playlistId = m.playlistId AND f.`key` = m.`key`
-           WHERE m.kind = 'FILM' AND $FILM_VISIBLE ORDER BY m.addedAt DESC""",
+        """SELECT $FILM_CARD FROM vod_my_list l JOIN vod_films f ON f.playlistId = l.playlistId AND f.`key` = l.`key` $FILM_MATCH_JOIN
+           WHERE l.kind = 'FILM' AND $FILM_VISIBLE ORDER BY l.addedAt DESC""",
     )
     abstract fun myListFilms(): Flow<List<FilmCard>>
 
     @Query(
-        """SELECT $SHOW_CARD FROM vod_my_list m JOIN vod_shows s ON s.playlistId = m.playlistId AND s.`key` = m.`key`
-           WHERE m.kind = 'SHOW' AND $SHOW_VISIBLE ORDER BY m.addedAt DESC""",
+        """SELECT $SHOW_CARD FROM vod_my_list l JOIN vod_shows s ON s.playlistId = l.playlistId AND s.`key` = l.`key` $SHOW_MATCH_JOIN
+           WHERE l.kind = 'SHOW' AND $SHOW_VISIBLE ORDER BY l.addedAt DESC""",
     )
     abstract fun myListShows(): Flow<List<ShowCard>>
 
@@ -54,7 +54,7 @@ abstract class VodLibraryDao {
      */
     @Query(
         """SELECT $FILM_CARD, p.positionMs AS positionMs, p.durationMs AS durationMs
-           FROM vod_progress p JOIN vod_films f ON f.playlistId = p.playlistId AND f.`key` = p.`key`
+           FROM vod_progress p JOIN vod_films f ON f.playlistId = p.playlistId AND f.`key` = p.`key` $FILM_MATCH_JOIN
            WHERE p.kind = 'MOVIE' AND p.positionMs >= :minMs AND $FILM_VISIBLE
            AND NOT EXISTS (SELECT 1 FROM vod_continue_dismissed d WHERE d.kind = 'FILM'
                            AND d.playlistId = p.playlistId AND d.`key` = p.`key` AND d.dismissedAt >= p.lastWatchedAt)
@@ -85,6 +85,7 @@ abstract class VodLibraryDao {
     open suspend fun rekeyFilm(p: Long, from: String, to: String) {
         rekeyListFilm(p, from, to)
         rekeyDismissedFilm(p, from, to)
+        rekeyMatchFilm(p, from, to)
     }
 
     @Query("UPDATE OR IGNORE vod_my_list SET `key` = :to WHERE kind = 'FILM' AND playlistId = :p AND `key` = :from")
@@ -93,10 +94,14 @@ abstract class VodLibraryDao {
     @Query("UPDATE OR IGNORE vod_continue_dismissed SET `key` = :to WHERE kind = 'FILM' AND playlistId = :p AND `key` = :from")
     protected abstract suspend fun rekeyDismissedFilm(p: Long, from: String, to: String)
 
+    @Query("UPDATE OR IGNORE vod_matches SET `key` = :to WHERE kind = 'FILM' AND playlistId = :p AND `key` = :from")
+    protected abstract suspend fun rekeyMatchFilm(p: Long, from: String, to: String)
+
     @Transaction
     open suspend fun deleteForPlaylist(p: Long) {
         deleteListForPlaylist(p)
         deleteDismissedForPlaylist(p)
+        deleteMatchesForPlaylist(p)
     }
 
     @Query("DELETE FROM vod_my_list WHERE playlistId = :p")
@@ -104,6 +109,9 @@ abstract class VodLibraryDao {
 
     @Query("DELETE FROM vod_continue_dismissed WHERE playlistId = :p")
     protected abstract suspend fun deleteDismissedForPlaylist(p: Long)
+
+    @Query("DELETE FROM vod_matches WHERE playlistId = :p")
+    protected abstract suspend fun deleteMatchesForPlaylist(p: Long)
 
     /** Drops My list rows added, and dismissals made, before [before] whose film or show is gone from its playlist. */
     @Transaction

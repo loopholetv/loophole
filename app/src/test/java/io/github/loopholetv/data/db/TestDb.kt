@@ -99,3 +99,35 @@ internal class M3uPlaylist(private val db: AppDatabase) : AutoCloseable {
 
     override fun close() = server.shutdown()
 }
+
+/** Stores a TMDB title (when [title] is set) and the match of a playlist film or show to it. */
+internal suspend fun AppDatabase.matchTitle(
+    playlistId: Long,
+    kind: io.github.loopholetv.data.vod.TitleKind,
+    key: String,
+    tmdbId: Long,
+    title: String?,
+    posterPath: String? = null,
+    badge: String? = null,
+    state: MatchState = MatchState.MATCHED,
+) {
+    val tmdbKind = if (kind == io.github.loopholetv.data.vod.TitleKind.FILM) {
+        io.github.loopholetv.data.tmdb.TmdbKind.MOVIE
+    } else {
+        io.github.loopholetv.data.tmdb.TmdbKind.TV
+    }
+    if (title != null) {
+        tmdbDao().upsertTitle(
+            TmdbTitleEntity(
+                tmdbKind, tmdbId, title, null, 2000, null, posterPath, null, null, null, null, null, null, "en-US",
+                java.time.Instant.EPOCH,
+            ),
+            emptyList(),
+        )
+    }
+    tmdbDao().upsertMatch(
+        VodMatchEntity(
+            playlistId, kind, key, key, state, tmdbKind, tmdbId, badge, key, null, java.time.Instant.EPOCH, java.time.Instant.EPOCH,
+        ),
+    )
+}

@@ -77,8 +77,10 @@ data class AppSettings(
     val padAfterMin: Int = DEFAULT_PAD_AFTER_MIN,
     /** Whether this TV has already asked for the notification permission (it asks once). */
     val askedNotifications: Boolean = false,
+    /** The user's own TMDB key (a v3 API key or v4 read token); empty when none. Never shown or logged. */
+    val tmdbKey: String = "",
 ) {
-    /** Leaves out the SMB password. */
+    /** Leaves out the SMB password and the TMDB key. */
     override fun toString(): String =
         "AppSettings(playlistUpdateHours=$playlistUpdateHours, playlistUpdateOnStart=$playlistUpdateOnStart, " +
             "epgUpdateHours=$epgUpdateHours, epgUpdateOnStart=$epgUpdateOnStart, " +

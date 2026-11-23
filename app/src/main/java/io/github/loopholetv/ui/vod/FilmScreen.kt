@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +48,11 @@ import io.github.loopholetv.ui.onboarding.PillButton
 import io.github.loopholetv.ui.theme.Tokens
 
 private val DETAIL_POSTER_WIDTH = 200.dp
+private const val BACKDROP_ALPHA = 0.35f
+private const val FILM_OVERVIEW_LINES = 4
+
+/** The button that drops a wrong TMDB match. */
+internal const val WRONG_DETAILS_LABEL = "Wrong details?"
 
 /** One film: its poster, title and the buttons that start it. Closes itself when the film goes away. */
 @Composable
@@ -65,7 +71,13 @@ fun FilmScreen(
     // The page is composed afresh when the player closes; the button used last takes focus again.
     var lastButton by rememberSaveable { mutableStateOf<Int?>(null) }
     ui?.let { film ->
-        FilmContent(film, lastUsedButton = lastButton, onUsed = { lastButton = it }, onToggleMyList = vm::toggleMyList) { ms ->
+        FilmContent(
+            film,
+            lastUsedButton = lastButton,
+            onUsed = { lastButton = it },
+            onToggleMyList = vm::toggleMyList,
+            onWrongDetails = vm::rejectDetails,
+        ) { ms ->
             starter.start(VodRef(VodKind.MOVIE, playlistId, key), ms)
         }
     }
@@ -78,6 +90,7 @@ internal fun FilmContent(
     lastUsedButton: Int? = null,
     onUsed: (Int) -> Unit = {},
     onToggleMyList: () -> Unit = {},
+    onWrongDetails: () -> Unit = {},
     onPlay: (startMs: Long) -> Unit,
 ) {
     val requesters = remember { List(2) { FocusRequester() } }
@@ -86,34 +99,104 @@ internal fun FilmContent(
     // Resume, so focus stays on it.
     val openOn = remember { lastUsedButton?.takeIf { it in filmButtons(ui).indices } ?: 0 }
     RequestFocusOnOpen(requesters[openOn])
-    Row(Modifier.fillMaxSize().background(Tokens.Background).padding(horizontal = 48.dp, vertical = 27.dp)) {
-        DetailPoster(ui.logo, ui.title)
-        Column(Modifier.padding(start = 32.dp).fillMaxHeight(), verticalArrangement = Arrangement.Center) {
-            Text(ui.title, style = MaterialTheme.typography.headlineLarge, color = Tokens.OnBackground, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            Text(ui.category, style = MaterialTheme.typography.titleMedium, color = Tokens.Muted, modifier = Modifier.padding(top = 4.dp))
-            ui.fraction?.let { ProgressBar(it, Modifier.padding(top = 20.dp).width(320.dp)) }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 20.dp)) {
-                filmButtons(ui).forEachIndexed { i, button ->
-                    PillButton(
-                        label = button.label,
-                        selected = i == 0,
-                        modifier = Modifier.focusRequester(requesters[i]),
-                        onClick = {
-                            onUsed(i)
-                            onPlay(button.startMs)
-                        },
-                    )
+    DetailBackground(ui.details?.backdropUrl) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
+            DetailPoster(ui.logo, ui.title, ui.details?.badge)
+            Column(Modifier.padding(start = 32.dp).fillMaxHeight(), verticalArrangement = Arrangement.Center) {
+                Text(ui.title, style = MaterialTheme.typography.headlineLarge, color = Tokens.OnBackground, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                // A matched film's meta line takes the place of the playlist category.
+                Text(
+                    ui.details?.let(::formatMeta) ?: ui.category,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Tokens.Muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                ui.details?.let { DetailsText(it) }
+                ui.fraction?.let { ProgressBar(it, Modifier.padding(top = 20.dp).width(320.dp)) }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 20.dp)) {
+                    filmButtons(ui).forEachIndexed { i, button ->
+                        PillButton(
+                            label = button.label,
+                            selected = i == 0,
+                            modifier = Modifier.focusRequester(requesters[i]),
+                            onClick = {
+                                onUsed(i)
+                                onPlay(button.startMs)
+                            },
+                        )
+                    }
+                    // The label changes with the state but the pill stays put, so focus stays on it.
+                    PillButton(label = myListLabel(ui.inMyList), selected = false, onClick = onToggleMyList)
+                    if (ui.details != null) {
+                        // The button goes away with the details, so focus moves to Play first.
+                        WrongDetailsButton {
+                            requesters[0].tryFocus()
+                            onWrongDetails()
+                        }
+                    }
                 }
-                // The label changes with the state but the pill stays put, so focus stays on it.
-                PillButton(label = myListLabel(ui.inMyList), selected = false, onClick = onToggleMyList)
             }
         }
     }
 }
 
+/** The page background: [Tokens.Background], with the TMDB backdrop dimmed over it when there is one. */
+@Composable
+internal fun DetailBackground(backdropUrl: String?, content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().background(Tokens.Background)) {
+        if (backdropUrl != null) {
+            val context = LocalPlatformContext.current
+            val request = remember(backdropUrl) { ImageRequest.Builder(context).data(backdropUrl).crossfade(false).build() }
+            AsyncImage(
+                model = request,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                alpha = BACKDROP_ALPHA,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        content()
+    }
+}
+
+/** A matched title's plot (up to [overviewLines] lines) and its top cast. */
+@Composable
+internal fun DetailsText(d: TitleDetailsUi, overviewLines: Int = FILM_OVERVIEW_LINES) {
+    d.overview?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Tokens.OnBackground,
+            maxLines = overviewLines,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 12.dp).widthIn(max = 640.dp),
+        )
+    }
+    if (d.cast.isNotEmpty()) {
+        Text(
+            d.cast.joinToString(", "),
+            style = MaterialTheme.typography.bodyMedium,
+            color = Tokens.Muted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+/** "Wrong details?": drops the TMDB match without asking. */
+@Composable
+internal fun WrongDetailsButton(onClick: () -> Unit) {
+    PillButton(label = WRONG_DETAILS_LABEL, selected = false, onClick = onClick)
+}
+
+internal fun FocusRequester.tryFocus(): Boolean = runCatching { requestFocus() }.getOrDefault(false)
+
 /** A 2:3 poster that is not focusable; the title stands in when there is no image or it fails to load. */
 @Composable
-internal fun DetailPoster(logo: String?, title: String) {
+internal fun DetailPoster(logo: String?, title: String, badge: String? = null) {
     var failed by remember(logo) { mutableStateOf(false) }
     Box(
         Modifier.width(DETAIL_POSTER_WIDTH).aspectRatio(2f / 3f)
@@ -140,6 +223,7 @@ internal fun DetailPoster(logo: String?, title: String) {
                 modifier = Modifier.align(Alignment.Center).padding(12.dp),
             )
         }
+        if (badge != null) QualityBadge(badge, Modifier.align(Alignment.TopEnd))
     }
 }
 

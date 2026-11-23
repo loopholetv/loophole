@@ -22,10 +22,24 @@ import io.github.loopholetv.data.vod.VodLibraryRepository
 import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.data.vod.VodRepository
 import io.github.loopholetv.data.db.ReminderEntity
+import io.github.loopholetv.data.tmdb.Genre
+import io.github.loopholetv.data.vod.RuntimeBand
+import io.github.loopholetv.data.vod.VodFilter
+import io.github.loopholetv.data.vod.VodSort
 import io.github.loopholetv.ui.recordings.whenText
 import java.time.Instant
 import java.time.ZoneId
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +53,14 @@ const val RECENT_ROW_TITLE = "Recently added"
 const val ALL_SHOWS_ROW_TITLE = "All shows"
 const val CONTINUE_ROW_TITLE = "Continue watching"
 const val MY_LIST_ROW_TITLE = "My list"
+const val SORT_FILTER_LABEL = "Sort & filter"
+const val CLEAR_FILTER_LABEL = "Clear"
+
+/** The title of the Sort & filter grid's row: it is not drawn, the filter bar above it says what it holds. */
+const val FILTERED_GRID_TITLE = "filtered"
+
+/** How long the grid waits for the panel's choices to settle before it is read again. */
+private const val FILTER_DEBOUNCE_MS = 250L
 
 /** What a Continue watching card plays: the film or episode [ref], from [startMs]. */
 data class VodPlay(val ref: VodRef, val startMs: Long)
@@ -57,6 +79,8 @@ data class PosterModel(
     val play: VodPlay? = null,
     /** Set on a reminder card: the showing it is for (the card then opens the guide there). */
     val programme: ProgrammeTarget? = null,
+    /** The quality tag of a matched title, e.g. "4K", drawn as a chip on the card. */
+    val badge: String? = null,
 )
 
 /** A booked reminder as a card of My list: [startMs] is the showing's start, [timeText] when it airs. */
@@ -90,6 +114,16 @@ sealed interface VodRowModel {
 
     /** A long list laid out as rows of cards instead of one scrolling row. */
     data class Grid(override val title: String, val items: Flow<PagingData<PosterModel>>) : VodRowModel
+
+    /** The Sort & filter button above the rows, while nothing is chosen. */
+    data object FilterButton : VodRowModel {
+        override val title: String get() = SORT_FILTER_LABEL
+    }
+
+    /** What the grid below holds ([summary]) and how many titles ([count]), with the panel's button and Clear. */
+    data class FilterBar(val summary: String, val count: Int) : VodRowModel {
+        override val title: String get() = summary
+    }
 }
 
 /** The rows of the Movies ([VodKind.MOVIE]) or Series ([VodKind.EPISODE]) screen, and the categories hidden from them. */
@@ -105,6 +139,11 @@ class VodBrowseViewModel(
     /** The logo of a reminder's channel, if it has one. */
     private val channelLogo: suspend (playlistId: Long, channelKey: String) -> String? = { _, _ -> null },
     private val cancelReminder: suspend (id: Long) -> Unit = {},
+    /** Whether a TMDB key is set; with one (or with details already fetched) Sort & filter is offered. */
+    hasKey: Flow<Boolean> = flowOf(false),
+    /** The remembered Sort & filter choice of this screen, and where a new one is remembered. */
+    savedFilter: Flow<VodFilter> = flowOf(VodFilter()),
+    private val saveFilter: suspend (VodFilter) -> Unit = {},
 ) : ViewModel() {
     // One pager per category, kept so a row keeps its loaded pages when the category list changes.
     private val titleKind = if (kind == VodKind.MOVIE) TitleKind.FILM else TitleKind.SHOW
@@ -121,7 +160,98 @@ class VodBrowseViewModel(
     private val hiddenSource = repo.hiddenCategories()
         .shareIn(viewModelScope, SharingStarted.Eagerly, replay = 1)
 
-    val rows: StateFlow<List<VodRowModel>> = rowSource.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /** Running time is a choice on Movies only. */
+    val offersRuntime: Boolean = kind == VodKind.MOVIE
+
+    // Null until the remembered choice has been read, so the rows don't flash before the grid.
+    private val chosen = MutableStateFlow<VodFilter?>(null)
+
+    /** The Sort & filter choice as the panel shows it; it applies to the grid a moment later. */
+    val filter: StateFlow<VodFilter> = chosen.filterNotNull().stateIn(viewModelScope, SharingStarted.Eagerly, VodFilter())
+
+    // Null until the genres have been read once.
+    private val presentGenres: StateFlow<List<Genre>?> = repo.genresPresent(titleKind)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** The genres the panel offers: those of this library's titles with details, by name. */
+    val genres: StateFlow<List<Genre>> = presentGenres.map { it.orEmpty() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    private val showFilterButton: Flow<Boolean> =
+        combine(hasKey, repo.hasDetails(titleKind)) { key, details -> key || details }.distinctUntilChanged()
+
+    init {
+        viewModelScope.launch {
+            val saved = try {
+                savedFilter.first()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // An unreadable choice is no choice.
+                VodFilter()
+            }
+            // Read once, so a remembered genre no title has any more is dropped.
+            val present = presentGenres.filterNotNull().first()
+            // A choice made while it was being read wins.
+            if (chosen.value == null) chosen.value = normalised(saved, present)
+        }
+    }
+
+    // The choice the grid follows: the first and Clear at once, the panel's edits once they settle.
+    @OptIn(FlowPreview::class)
+    private val applied: Flow<VodFilter> = run {
+        var first = true
+        chosen.filterNotNull().debounce { f ->
+            if (first || f.isDefault) 0L.also { first = false } else FILTER_DEBOUNCE_MS
+        }.distinctUntilChanged()
+    }.shareIn(viewModelScope, SharingStarted.Eagerly, replay = 1)
+
+    // One pager for the grid, switched to each new choice, so the cards survive a trip to a page and back.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val filteredPages: Flow<PagingData<PosterModel>> = applied.flatMapLatest { f ->
+        when {
+            f.isDefault -> flowOf(PagingData.empty<PosterModel>())
+            kind == VodKind.MOVIE -> repo.filteredFilms(f).map { page -> page.map { it.poster() } }
+            kind == VodKind.EPISODE -> repo.filteredShows(f).map { page -> page.map { it.poster() } }
+            else -> emptyFlow<PagingData<PosterModel>>()
+        }
+    }.cachedIn(viewModelScope)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val rows: StateFlow<List<VodRowModel>> = applied.flatMapLatest { f ->
+        if (f.isDefault) {
+            combine(rowSource, showFilterButton) { r, button -> if (button) listOf(VodRowModel.FilterButton) + r else r }
+        } else {
+            combine(repo.filteredCount(titleKind, f), genres) { count, g ->
+                listOf(
+                    VodRowModel.FilterBar(filterSummary(f, g.associate { it.id to it.name }), count),
+                    VodRowModel.Grid(FILTERED_GRID_TITLE, filteredPages),
+                )
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Chooses [f] (live, from the panel) and remembers it. */
+    fun setFilter(f: VodFilter) {
+        val next = normalised(f, presentGenres.value)
+        chosen.value = next
+        viewModelScope.launch { saveFilter(next) }
+    }
+
+    /** Back to the rows: nothing chosen, and nothing remembered. */
+    fun clearFilter() = setFilter(VodFilter())
+
+    /**
+     * Series has no running time: a band or sort by it would be an invisible choice that hides shows.
+     * Likewise a genre none of the titles has (any more), once [present] genres are known.
+     */
+    private fun normalised(f: VodFilter, present: List<Genre>?): VodFilter {
+        val runtimeOk = if (offersRuntime) f
+        else f.copy(runtime = RuntimeBand.ANY, sort = if (f.sort == VodSort.RUNTIME) VodSort.RECENT else f.sort)
+        if (present == null) return runtimeOk
+        val ids = present.mapTo(HashSet()) { it.id }
+        return runtimeOk.copy(genres = runtimeOk.genres.filterTo(HashSet()) { it in ids })
+    }
 
     val hidden: StateFlow<List<HiddenCategory>> = hiddenSource.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -219,17 +349,22 @@ class VodBrowseViewModel(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
             val c = (extras[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
+            val titleKind = if (kind == VodKind.MOVIE) TitleKind.FILM else TitleKind.SHOW
             return VodBrowseViewModel(
                 kind, c.vod, c.vodLibrary, c.channelEdits,
                 reminders = c.scheduleRepository.upcomingReminders(),
                 channelLogo = { playlistId, key -> c.db.channelDao().byKey(playlistId, key)?.logo },
                 cancelReminder = c.scheduleRepository::cancelReminder,
+                // Read again whenever the settings change, so saving or removing the key shows or hides the button.
+                hasKey = c.settingsStore.settings.map { c.hasTmdbKey() }.distinctUntilChanged(),
+                savedFilter = c.settingsStore.vodFilter(titleKind),
+                saveFilter = { f -> c.settingsStore.setVodFilter(titleKind, f) },
             ) as T
         }
     }
 }
 
-private fun FilmCard.poster() = PosterModel(playlistId, key, name, logo, null)
-private fun ShowCard.poster() = PosterModel(playlistId, key, name, logo, playlistName)
+private fun FilmCard.poster() = PosterModel(playlistId, key, name, logo, null, badge = badge)
+private fun ShowCard.poster() = PosterModel(playlistId, key, name, logo, playlistName, badge = badge)
 private fun ContinueCard.poster() =
-    PosterModel(playlistId, key, title, logo, caption, fraction, VodPlay(play, startMs))
+    PosterModel(playlistId, key, title, logo, caption, fraction, VodPlay(play, startMs), badge = badge)

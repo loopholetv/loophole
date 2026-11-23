@@ -14,6 +14,8 @@ import io.github.loopholetv.phone.decodePairings
 import io.github.loopholetv.phone.encodePairings
 import io.github.loopholetv.util.takeCodePoints
 import io.github.loopholetv.record.REMINDER_LEAD_CHOICES
+import io.github.loopholetv.data.vod.TitleKind
+import io.github.loopholetv.data.vod.VodFilter
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -59,6 +61,19 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         }
         return id
     }
+
+    /** The Sort & filter choice of Movies ([TitleKind.FILM]) or Series. Not part of [AppSettings], so not copied by Copy setup. */
+    fun vodFilter(kind: TitleKind): Flow<VodFilter> =
+        store.data.map { VodFilter.decode(it[vodFilterKey(kind)]) }.distinctUntilChanged()
+
+    /** Remembers [f] for [kind]; the default choice removes the stored one. */
+    suspend fun setVodFilter(kind: TitleKind, f: VodFilter) {
+        store.edit { prefs ->
+            if (f.isDefault) prefs.remove(vodFilterKey(kind)) else prefs[vodFilterKey(kind)] = f.encode()
+        }
+    }
+
+    private fun vodFilterKey(kind: TitleKind) = if (kind == TitleKind.FILM) VOD_FILTER_MOVIES else VOD_FILTER_SERIES
 
     /** Whether the one-off film and show fill after the update is done (or was never needed). Not part of [AppSettings]. */
     override suspend fun isFilled(): Boolean = store.data.first()[VOD_FILLED] == true
@@ -149,6 +164,7 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
             padBeforeMin = this[PAD_BEFORE_MIN].validOr(AppSettings.PAD_CHOICES, d.padBeforeMin),
             padAfterMin = this[PAD_AFTER_MIN].validOr(AppSettings.PAD_CHOICES, d.padAfterMin),
             askedNotifications = this[ASKED_NOTIFICATIONS] ?: d.askedNotifications,
+            tmdbKey = this[TMDB_KEY]?.trim() ?: d.tmdbKey,
         )
     }
 
@@ -226,6 +242,7 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         this[PAD_BEFORE_MIN] = s.padBeforeMin
         this[PAD_AFTER_MIN] = s.padAfterMin
         this[ASKED_NOTIFICATIONS] = s.askedNotifications
+        putOrRemove(TMDB_KEY, s.tmdbKey)
     }
 
     private fun MutablePreferences.writeRemote(r: RemoteSettings) {
@@ -341,6 +358,9 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         val PAD_BEFORE_MIN = intPreferencesKey("pad_before_min")
         val PAD_AFTER_MIN = intPreferencesKey("pad_after_min")
         val ASKED_NOTIFICATIONS = booleanPreferencesKey("asked_notifications")
+        val TMDB_KEY = stringPreferencesKey("tmdbKey")
+        val VOD_FILTER_MOVIES = stringPreferencesKey("vodFilterMovies")
+        val VOD_FILTER_SERIES = stringPreferencesKey("vodFilterSeries")
         val EPG_PAST_DAYS_AUTO_APPLIED = booleanPreferencesKey("epg_past_days_auto_applied")
     }
 }

@@ -1,6 +1,7 @@
 package io.github.loopholetv.ui.settings
 
 import io.github.loopholetv.data.net.UserAgents
+import io.github.loopholetv.data.tmdb.KeyStatus
 import io.github.loopholetv.data.repo.COPY_NOTICE_PREFIX
 import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
 import io.github.loopholetv.data.xtream.XTREAM_FORMAT_HLS
@@ -107,6 +108,34 @@ fun <T> choiceText(choices: List<Pair<T, String>>, value: T, fallback: (T) -> St
 
 /** The Settings section for the phone and laptop setup page. */
 internal const val SECTION_COMPANION = "Companion"
+
+// --- Film and show details page ---
+
+internal const val SECTION_DETAILS = "Film and show details"
+internal const val DT_KEY = "TMDB key"
+internal const val DT_REMOVE = "Remove key"
+internal const val DT_NOT_SET = "Not set"
+internal const val DT_KEY_HINT = "Get a free key at themoviedb.org → Settings → API"
+internal const val TMDB_CREDIT = "This product uses the TMDB API but is not endorsed or certified by TMDB."
+
+/** The status line under the key; none when no key is set. */
+internal fun keyStatusText(status: KeyStatus): String? = when (status) {
+    KeyStatus.NONE -> null
+    KeyStatus.CHECKING -> "Checking…"
+    KeyStatus.WORKING -> "Working"
+    KeyStatus.BAD_KEY -> "Key not accepted"
+    KeyStatus.UNREACHABLE -> "Couldn't reach TMDB"
+}
+
+/** `••••` and the last four characters; a key too short to hide part of shows only the dots. */
+internal fun maskedTmdbKey(key: String): String {
+    val k = key.trim()
+    return when {
+        k.isEmpty() -> DT_NOT_SET
+        k.length <= 8 -> "••••"
+        else -> "••••" + k.takeLast(4)
+    }
+}
 
 // --- Playback page ---
 

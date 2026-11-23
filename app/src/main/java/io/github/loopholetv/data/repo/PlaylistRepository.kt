@@ -86,6 +86,8 @@ class PlaylistRepository internal constructor(
     private val downloadUa: suspend (PlaylistEntity?) -> String = { "Loophole/test" },
     /** Shared with the guide's repository, so [exclusive] stops guide updates too. */
     private val stops: RefreshStops = RefreshStops(),
+    /** Told the new playlist's id after each successful add; a failure in it is ignored. */
+    private val onAdded: suspend (Long) -> Unit = {},
 ) {
     private val playlistDao = db.playlistDao()
     private val channelDao = db.channelDao()
@@ -100,8 +102,27 @@ class PlaylistRepository internal constructor(
 
     fun playlists(): Flow<List<PlaylistEntity>> = playlistDao.all()
 
+    // Adds: each reports a successful import to [onAdded] once the lock is released.
+    suspend fun addM3u(name: String, rawUrl: String, progress: (Int) -> Unit): ImportResult = reportAdded(newM3u(name, rawUrl, progress))
+    suspend fun addXtream(name: String, creds: XtreamCredentials, progress: (Int) -> Unit): ImportResult = reportAdded(newXtream(name, creds, progress))
+    suspend fun addLocalFile(name: String, location: String, progress: (Int) -> Unit): ImportResult = reportAdded(newLocalFile(name, location, progress))
+    suspend fun addStalker(name: String, cfg: PortalConfig, progress: (Int) -> Unit): ImportResult = reportAdded(newStalker(name, cfg, progress))
+
+    private suspend fun reportAdded(result: ImportResult): ImportResult {
+        if (result is ImportResult.Success) {
+            try {
+                onAdded(result.playlistId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // A listener failure must not fail the add.
+            }
+        }
+        return result
+    }
+
     /** [progress] receives the running channel count after each batch (on a database thread). */
-    suspend fun addM3u(name: String, rawUrl: String, progress: (Int) -> Unit): ImportResult = mutex.withLock {
+    private suspend fun newM3u(name: String, rawUrl: String, progress: (Int) -> Unit): ImportResult = mutex.withLock {
         val url = withHttpScheme(rawUrl)
         runImport({ m3uSecrets(url) }) {
             m3u.open(url, downloadUa(null)).use { source ->
@@ -113,7 +134,7 @@ class PlaylistRepository internal constructor(
     }
 
     /** [creds] already default a scheme-less server address to http:// (see [XtreamCredentials]). */
-    suspend fun addXtream(name: String, creds: XtreamCredentials, progress: (Int) -> Unit): ImportResult = mutex.withLock {
+    private suspend fun newXtream(name: String, creds: XtreamCredentials, progress: (Int) -> Unit): ImportResult = mutex.withLock {
         runImport({ xtreamSecrets(creds) }) {
             xtream.open(creds, downloadUa(null)).use { source ->
                 importInto(source, progress) {
@@ -133,7 +154,7 @@ class PlaylistRepository internal constructor(
      * A local M3U file ([location]: `content://` URI, `file:` URI or absolute path). What was read
      * is kept as the playlist's last-good copy.
      */
-    suspend fun addLocalFile(name: String, location: String, progress: (Int) -> Unit): ImportResult = mutex.withLock {
+    private suspend fun newLocalFile(name: String, location: String, progress: (Int) -> Unit): ImportResult = mutex.withLock {
         val opener = local ?: return@withLock unsupported()
         val loc = location.trim()
         runImport({ localSecrets(loc) }) {
@@ -149,7 +170,7 @@ class PlaylistRepository internal constructor(
      * A MAC portal: finds the portal endpoint and authenticates before the import transaction opens,
      * then stores the endpoint and token with the new row.
      */
-    suspend fun addStalker(name: String, cfg: PortalConfig, progress: (Int) -> Unit): ImportResult = mutex.withLock {
+    private suspend fun newStalker(name: String, cfg: PortalConfig, progress: (Int) -> Unit): ImportResult = mutex.withLock {
         val client = stalker ?: return@withLock unsupported()
         // The one place a NEW portal is created: blank device details are derived here and saved.
         val config = cfg.normalised().withDerivedIdentity()

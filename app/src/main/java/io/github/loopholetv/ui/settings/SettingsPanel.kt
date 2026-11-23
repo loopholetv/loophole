@@ -57,12 +57,14 @@ sealed interface SettingsPage {
     data object Remote : SettingsPage { override val key = "remote" }
     data object Phone : SettingsPage { override val key = "phone" }
     data object Recordings : SettingsPage { override val key = "recordings" }
+    /** "Film and show details": the TMDB key. */
+    data object Details : SettingsPage { override val key = "details" }
     /** The buttons set up for [context], one row each. */
     data class RemoteButtons(val context: BindingContext) : SettingsPage { override val key = "remoteButtons:${context.key}" }
     data object About : SettingsPage { override val key = "about" }
 
     companion object {
-        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Recordings, Remote, Phone, About).associateBy { it.key }
+        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Recordings, Details, Remote, Phone, About).associateBy { it.key }
 
         /** Unknown or malformed keys give [Sections]. */
         fun fromKey(key: String): SettingsPage {
@@ -93,6 +95,7 @@ private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     SettingsPage.Remote -> "Remote control"
     SettingsPage.Phone -> SECTION_COMPANION
     SettingsPage.Recordings -> SECTION_RECORDINGS
+    SettingsPage.Details -> SECTION_DETAILS
     is SettingsPage.RemoteButtons -> context.title
     SettingsPage.About -> "About"
 }
@@ -209,6 +212,7 @@ fun SettingsPanel(
                 is SettingsPage.RemoteButtons -> RemoteButtonsPage(p.context, ui, vm, focusKey, consumeFocus)
                 SettingsPage.Phone -> PhonePage(ui, vm, onShowQr = onShowPhoneQr)
                 SettingsPage.Recordings -> RecordingsPage(ui, vm, focusKey, consumeFocus)
+                SettingsPage.Details -> DetailsPage(ui, vm, focusKey, consumeFocus)
                 SettingsPage.About -> AboutPage()
             }
         }
@@ -225,7 +229,7 @@ internal fun playlistRowKey(id: Long) = "row:$id"
 internal fun PillButton(label: String, modifier: Modifier = Modifier, onFocus: () -> Unit = {}, onClick: () -> Unit) =
     OnboardingPillButton(label, selected = false, modifier = modifier, containerColor = Tokens.Surface, onFocus = onFocus, onClick = onClick)
 
-private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Recordings, SettingsPage.Remote, SettingsPage.Phone, SettingsPage.About)
+private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Recordings, SettingsPage.Details, SettingsPage.Remote, SettingsPage.Phone, SettingsPage.About)
 
 @Composable
 private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
@@ -237,6 +241,7 @@ private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
         SectionItem("EPG", requesters.getValue(SettingsPage.Epg)) { onOpen(SettingsPage.Epg) }
         SectionItem("Playback", requesters.getValue(SettingsPage.Playback)) { onOpen(SettingsPage.Playback) }
         SectionItem(SECTION_RECORDINGS, requesters.getValue(SettingsPage.Recordings)) { onOpen(SettingsPage.Recordings) }
+        SectionItem(SECTION_DETAILS, requesters.getValue(SettingsPage.Details)) { onOpen(SettingsPage.Details) }
         SectionItem("Remote control", requesters.getValue(SettingsPage.Remote)) { onOpen(SettingsPage.Remote) }
         SectionItem(SECTION_COMPANION, requesters.getValue(SettingsPage.Phone)) { onOpen(SettingsPage.Phone) }
         // Not focusable: D-pad moves straight from Companion to About.
@@ -322,5 +327,7 @@ private fun AboutPage() {
         }
         Spacer(Modifier.height(8.dp))
         Text(PLAYER_ONLY_NOTICE, style = MaterialTheme.typography.bodyMedium, color = Tokens.Muted)
+        Spacer(Modifier.height(8.dp))
+        TmdbCredit()
     }
 }

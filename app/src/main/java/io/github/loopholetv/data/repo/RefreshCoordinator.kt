@@ -36,12 +36,15 @@ class RefreshCoordinator(
     private val clock: () -> Instant = Instant::now,
     private val updateSourceFn: suspend (Long, SourceEdit, (Int) -> Unit) -> ImportResult =
         { _, _, _ -> throw UnsupportedOperationException("No source editing") },
+    /** Told the playlist id after each successful playlist import; a failure in it is ignored. */
+    private val onPlaylistRefreshed: suspend (Long) -> Unit = {},
 ) {
     constructor(
         playlists: PlaylistRepository,
         epg: EpgRepository,
         settings: SettingsStore,
         clock: () -> Instant = Instant::now,
+        onPlaylistRefreshed: suspend (Long) -> Unit = {},
     ) : this(
         playlists = { playlists.playlists().first() },
         epgStatus = { epg.status(it).first() },
@@ -50,6 +53,7 @@ class RefreshCoordinator(
         settings = { settings.current() },
         clock = clock,
         updateSourceFn = { id, edit, progress -> playlists.updateSource(id, edit, progress) },
+        onPlaylistRefreshed = onPlaylistRefreshed,
     )
 
     /** Not reentrant: public entry points take it, the private helpers below assume it is held. */
@@ -66,7 +70,8 @@ class RefreshCoordinator(
             if (chainEpg) {
                 refreshPlaylistLocked(id, progress)
             } else {
-                guarded { refreshPlaylistFn(id, progress) } ?: ImportResult.Failure(ImportError.Unexpected, "Playlist update failed")
+                (guarded { refreshPlaylistFn(id, progress) } ?: ImportResult.Failure(ImportError.Unexpected, "Playlist update failed"))
+                    .also { notifyIfSuccess(id, it) }
             }
         }
 
@@ -79,6 +84,7 @@ class RefreshCoordinator(
         lock.withLock {
             val result = guarded { updateSourceFn(id, edit, progress) }
                 ?: return@withLock ImportResult.Failure(ImportError.Unexpected, "Playlist update failed")
+            notifyIfSuccess(id, result)
             if (result is ImportResult.Success) chainEpg(id, skipIfRecent = false)
             result
         }
@@ -146,6 +152,7 @@ class RefreshCoordinator(
     private suspend fun refreshPlaylistLocked(id: Long, progress: (Int) -> Unit): ImportResult {
         val result = guarded { refreshPlaylistFn(id, progress) }
             ?: return ImportResult.Failure(ImportError.Unexpected, "Playlist update failed")
+        notifyIfSuccess(id, result)
         if (result is ImportResult.Success) chainEpg(id, skipIfRecent = true)
         return result
     }
@@ -166,6 +173,7 @@ class RefreshCoordinator(
         var chained = false
         if (startRefreshWanted(effectiveOnStart(p, s), p.lastRefreshedAt, effectiveHours(p, s), clock())) {
             val result = refreshPlaylistFn(id) {}
+            notifyIfSuccess(id, result)
             // Stopped: a copied setup is replacing this playlist, so its guide is not wanted either.
             if (result == ImportResult.Stopped) return
             if (result is ImportResult.Failure &&
@@ -179,6 +187,17 @@ class RefreshCoordinator(
         val epgLast = epgStatus(id)?.updatedAt
         val epgWanted = startRefreshWanted(s.epgUpdateOnStart, epgLast, s.epgUpdateHours, clock())
         if (epgWanted || (chained && !recent(epgLast))) refreshEpgFn(id) {}
+    }
+
+    private suspend fun notifyIfSuccess(id: Long, result: ImportResult) {
+        if (result !is ImportResult.Success) return
+        try {
+            onPlaylistRefreshed(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // A listener failure must not fail the refresh.
+        }
     }
 
     private suspend fun epgRecentlyUpdated(id: Long) = recent(epgStatus(id)?.updatedAt)

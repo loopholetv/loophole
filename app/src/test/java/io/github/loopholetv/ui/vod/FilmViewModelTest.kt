@@ -5,7 +5,12 @@ import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.FilmEntity
 import io.github.loopholetv.data.db.VodProgressEntity
 import io.github.loopholetv.data.db.addPlaylist
+import io.github.loopholetv.data.db.MatchState
+import io.github.loopholetv.data.db.TmdbGenreEntity
+import io.github.loopholetv.data.db.TmdbTitleEntity
+import io.github.loopholetv.data.db.VodMatchEntity
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.tmdb.TmdbKind
 import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodLibraryRepository
@@ -18,6 +23,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -116,5 +122,66 @@ class FilmViewModelTest {
     @Test fun myListLabelShowsTheState() {
         assertEquals("+ My list", myListLabel(false))
         assertEquals("✓ In My list", myListLabel(true))
+    }
+
+    private suspend fun matchHeat(badge: String? = "4K") {
+        val tmdb = db.tmdbDao()
+        tmdb.upsertGenres(listOf(TmdbGenreEntity(TmdbKind.MOVIE, 28, "Action", "en-US"), TmdbGenreEntity(TmdbKind.MOVIE, 80, "Crime", "en-US")))
+        tmdb.upsertTitle(
+            TmdbTitleEntity(
+                TmdbKind.MOVIE, 949, "Heat (TMDB)", "Heat", 1995, "A thief and a detective.", "/heat.jpg", "/heat-bd.jpg",
+                8.26, 7000, 170, null, "Al Pacino, Robert De Niro, Val Kilmer", "en-US", now,
+            ),
+            listOf(80, 28),
+        )
+        tmdb.upsertMatch(
+            VodMatchEntity(playlist, TitleKind.FILM, "f1", "fp", MatchState.MATCHED, TmdbKind.MOVIE, 949, badge, "Heat", null, now, now),
+        )
+    }
+
+    @Test fun filmUiCarriesDetailsWhenMatched() = runTest {
+        matchHeat()
+        val ui = vm.ui.first { it?.details != null }!!
+
+        assertEquals("Heat (TMDB)", ui.title)
+        assertEquals("https://image.tmdb.org/t/p/w342/heat.jpg", ui.logo)
+        val d = ui.details!!
+        assertEquals(1995, d.year)
+        assertEquals(170, d.runtimeMinutes)
+        assertNull(d.seasonCount)
+        assertEquals(8.26, d.rating!!, 0.0001)
+        assertEquals(listOf("Action", "Crime"), d.genres)
+        assertEquals("A thief and a detective.", d.overview)
+        assertEquals(listOf("Al Pacino", "Robert De Niro", "Val Kilmer"), d.cast)
+        assertEquals("https://image.tmdb.org/t/p/w1280/heat-bd.jpg", d.backdropUrl)
+        assertEquals("4K", d.badge)
+        assertEquals("1995 · 2 h 50 min · ★ 8.3 · Action, Crime", formatMeta(d))
+    }
+
+    @Test fun filmUiNullDetailsWhenUnmatched() = runTest {
+        db.tmdbDao().upsertMatch(
+            VodMatchEntity(playlist, TitleKind.FILM, "f1", "fp", MatchState.NOT_FOUND, null, null, "4K", "Heat", null, now, now),
+        )
+        val ui = vm.ui.first { it != null }!!
+
+        assertNull(ui.details)
+        assertEquals("Heat", ui.title)
+        assertEquals("http://logo.test/h.png", ui.logo)
+    }
+
+    @Test fun rejectDetailsRevertsToPlaylistData() = runTest {
+        matchHeat()
+        assertNotNull(vm.ui.first { it?.details != null })
+
+        vm.rejectDetails()
+        val ui = vm.ui.first { it != null && it.details == null }!!
+
+        assertEquals("Heat", ui.title)
+        assertEquals("Crime", ui.category)
+        assertEquals("http://logo.test/h.png", ui.logo)
+        val m = db.tmdbDao().match(playlist, TitleKind.FILM, "f1")!!
+        assertEquals(MatchState.REJECTED, m.state)
+        assertNull(m.tmdbId)
+        assertEquals(now, m.lookedUpAt)
     }
 }
