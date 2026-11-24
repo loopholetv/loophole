@@ -390,5 +390,107 @@ class VodDetailContentTest {
         // In full, not squeezed into a sliver of the header.
         compose.onNodeWithText("Season 1").assertHeightIsAtLeast(32.dp)
     }
-}
 
+    private val noEpisodes = show.copy(
+        summary = "0 episodes", tabs = emptyList(), episodes = emptyList(), continueLabel = null, continueKey = null,
+    )
+
+    @Test fun noEpisodesPageStillTakesFocus() {
+        compose.setContent { ShowContent(noEpisodes.copy(episodesState = EpisodesState.LOADING), onSelectTab = {}, onPlay = { _, _ -> }) }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1_000)
+
+        compose.onNodeWithText(LOADING_EPISODES).assertIsDisplayed()
+        compose.onNodeWithText(TRY_AGAIN).assertDoesNotExist()
+        compose.onNodeWithText("+ My list").assertIsFocused()
+    }
+
+    @Test fun emptyShowSaysNoEpisodesYetAndOffersTryAgain() {
+        var retried = 0
+        compose.setContent {
+            ShowContent(
+                noEpisodes.copy(episodesState = EpisodesState.EMPTY), onSelectTab = {}, onRetryEpisodes = { retried++ },
+                onPlay = { _, _ -> },
+            )
+        }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1_000)
+
+        compose.onNodeWithText(NO_EPISODES).assertIsDisplayed()
+        // Focus stays on My list; Try again is one press down.
+        compose.onNodeWithText("+ My list").assertIsFocused()
+        compose.onNodeWithText("+ My list").performKeyInput { pressKey(Key.DirectionDown) }
+        compose.waitForIdle()
+        compose.onNodeWithText(TRY_AGAIN).assertIsFocused()
+        compose.onNodeWithText(TRY_AGAIN).performKeyInput { pressKey(Key.DirectionCenter) }
+        compose.waitForIdle()
+        assertEquals(1, retried)
+    }
+
+    @Test fun providerDetailsHaveNoWrongDetailsButton() {
+        val provider = details.copy(badge = null, fromTmdb = false)
+        compose.setContent { ShowContent(show.copy(details = provider.copy(runtimeMinutes = null)), onSelectTab = {}, onPlay = { _, _ -> }) }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("1995 · ★ 8.3 · Crime").assertExists()
+        compose.onNodeWithText("A thief and a detective.").assertExists()
+        compose.onNodeWithText(WRONG_DETAILS_LABEL).assertDoesNotExist()
+    }
+
+    @Test fun filmProviderDetailsHaveNoWrongDetailsButton() {
+        compose.setContent { FilmContent(film.copy(details = details.copy(badge = null, fromTmdb = false)), onPlay = {}) }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("1995 · 2 h 50 min · ★ 8.3 · Crime").assertExists()
+        compose.onNodeWithText(WRONG_DETAILS_LABEL).assertDoesNotExist()
+    }
+
+    @Test fun tryAgainShownOnFailure() {
+        var ui by mutableStateOf(noEpisodes.copy(episodesState = EpisodesState.FAILED))
+        var retried = 0
+        compose.setContent {
+            ShowContent(
+                ui, onSelectTab = {}, onRetryEpisodes = { retried++; ui = ui.copy(episodesState = EpisodesState.LOADING) },
+                onPlay = { _, _ -> },
+            )
+        }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1_000)
+
+        compose.onNodeWithText(EPISODES_FAILED).assertIsDisplayed()
+        // The only thing in the list area takes focus, so OK retries straight away.
+        compose.onNodeWithText(TRY_AGAIN).assertIsFocused()
+
+        compose.onNodeWithText(TRY_AGAIN).performKeyInput { pressKey(Key.DirectionCenter) }
+        compose.waitForIdle()
+
+        assertEquals(1, retried)
+        compose.onNodeWithText(LOADING_EPISODES).assertIsDisplayed()
+        // The button went away; focus is not lost with it.
+        compose.onNodeWithText("+ My list").assertIsFocused()
+
+        // A second failure brings the button back, focused.
+        ui = ui.copy(episodesState = EpisodesState.FAILED)
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.onNodeWithText(TRY_AGAIN).assertIsFocused()
+    }
+
+    @Test fun tryAgainReachableFromMyList() {
+        // Opened with a stale fetch running; it fails while the user is on My list.
+        var ui by mutableStateOf(noEpisodes.copy(episodesState = EpisodesState.LOADING))
+        compose.setContent { ShowContent(ui, onSelectTab = {}, onPlay = { _, _ -> }) }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.onNodeWithText("+ My list").assertIsFocused()
+
+        ui = ui.copy(episodesState = EpisodesState.FAILED)
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.onNodeWithText("+ My list").performSemanticsAction(SemanticsActions.RequestFocus)
+        compose.onNodeWithText("+ My list").performKeyInput { pressKey(Key.DirectionDown) }
+        compose.waitForIdle()
+
+        compose.onNodeWithText(TRY_AGAIN).assertIsFocused()
+    }
+}

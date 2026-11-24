@@ -246,6 +246,8 @@ internal const val RC_POPUPS = "Pop-ups over other apps"
 internal const val RC_STANDBY = "Keep recording in standby"
 internal const val RC_CONNECTIONS = "Connections allowed"
 internal const val RC_STREAM_FORMAT = "Stream format"
+internal const val RC_FILMS_AND_SERIES = "Films and series"
+internal const val UPDATE_NOW = "Update now"
 
 internal const val RC_NOT_SET = "Not set"
 internal const val RC_NOT_SET_HINT = "Pick a network folder or a USB drive"

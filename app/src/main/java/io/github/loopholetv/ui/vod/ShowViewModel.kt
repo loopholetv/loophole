@@ -7,6 +7,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.data.db.VodProgressEntity
+import io.github.loopholetv.data.repo.EpisodeFetch
+import io.github.loopholetv.data.repo.XtreamEpisodes
 import io.github.loopholetv.data.vod.ContinueTarget
 import io.github.loopholetv.data.vod.EpisodeView
 import io.github.loopholetv.data.vod.ShowDetail
@@ -17,6 +19,7 @@ import io.github.loopholetv.data.vod.VodProgressRepository
 import io.github.loopholetv.data.vod.VodRepository
 import io.github.loopholetv.data.vod.continueTarget
 import io.github.loopholetv.data.vod.resumeFrom
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -43,9 +46,16 @@ data class EpisodeRowUi(
 }
 
 /**
+ * What the show page's episode list area holds: the list ([READY]: there are episodes, or the show
+ * is not fetched on demand), or a line saying they are loading, failed to load (with Try again) or
+ * that the show has none yet.
+ */
+enum class EpisodesState { READY, LOADING, FAILED, EMPTY }
+
+/**
  * What the show page shows. [tabs] are the seasons, then "Other"; [episodes] are those of the
- * [selectedTab]. [continueKey] is null when the show has no episodes. [details] are TMDB's, null
- * when the show is not matched; [name] and [logo] are then the playlist's own.
+ * [selectedTab]. [continueKey] is null when the show has no episodes. [details] are TMDB's, else the
+ * provider's, null when there are neither; [name] and [logo] are the playlist's own unless TMDB matched.
  */
 data class ShowUi(
     val name: String,
@@ -59,21 +69,36 @@ data class ShowUi(
     val continueStartMs: Long,
     val inMyList: Boolean = false,
     val details: TitleDetailsUi? = null,
+    val episodesState: EpisodesState = EpisodesState.READY,
 )
 
-/** One show with its seasons and the episode its primary button plays. Null while loading or when the show is gone. */
+/**
+ * One show with its seasons and the episode its primary button plays. Null while loading or when the
+ * show is gone. An Xtream show's episodes are fetched through [episodes] when the page opens, if
+ * they are missing or stale.
+ */
 class ShowViewModel(
     private val playlistId: Long,
     private val key: String,
     private val repo: VodRepository,
     progress: VodProgressRepository,
     private val library: VodLibraryRepository,
+    private val episodes: XtreamEpisodes? = null,
 ) : ViewModel() {
+    private val fetchesEpisodes = episodes != null && XtreamEpisodes.isXtreamShow(key)
+
+    // The page's own episode fetch: whether one runs, and what the last one did.
+    private val fetch = MutableStateFlow(FetchStatus(running = fetchesEpisodes, last = null))
+
     // Until a tab or an episode is picked the page sits on the season of the continue episode.
     private val pick = MutableStateFlow<TabPick?>(null)
 
     /** What [ui] was last built from, so [showEpisode] can change it before the page is drawn. */
     private var latest: ShowInputs? = null
+
+    /** The page's latest episode fetch; null when the show isn't fetched on demand. */
+    internal var episodeFetch: Job? = null
+        private set
 
     private val _ui = MutableStateFlow<ShowUi?>(null)
     private val _loaded = MutableStateFlow(false)
@@ -89,13 +114,30 @@ class ShowViewModel(
                 progress.observeEpisodes(playlistId, key),
                 pick,
                 library.inMyList(TitleKind.SHOW, playlistId, key),
-                repo.showDetails(playlistId, key),
-            ) { detail, progress, picked, inMyList, tmdb ->
-                ShowInputs(detail, progress, inMyList, tmdb).also { latest = it }.toUi(picked)
+                combine(repo.showDetails(playlistId, key), fetch, ::Pair),
+            ) { detail, progress, picked, inMyList, (tmdb, fetched) ->
+                ShowInputs(detail, progress, inMyList, tmdb, fetched.takeIf { fetchesEpisodes })
+                    .also { latest = it }.toUi(picked)
             }.collect {
                 _ui.value = it
                 _loaded.value = true
             }
+        }
+        if (fetchesEpisodes) fetchEpisodes(force = false)
+    }
+
+    /** Try again: fetches the show's episodes now, however fresh they are. */
+    fun retryEpisodes() {
+        if (!fetchesEpisodes || fetch.value.running) return
+        fetchEpisodes(force = true)
+    }
+
+    private fun fetchEpisodes(force: Boolean) {
+        val fetcher = episodes ?: return
+        fetch.value = fetch.value.copy(running = true)
+        episodeFetch = viewModelScope.launch {
+            val result = fetcher.refreshIfStale(playlistId, key, force)
+            fetch.value = FetchStatus(running = false, last = result)
         }
     }
 
@@ -126,6 +168,9 @@ class ShowViewModel(
     }
 }
 
+/** The page's episode fetch: [running], and what the last one did ([last], null before the first ends). */
+private data class FetchStatus(val running: Boolean, val last: EpisodeFetch?)
+
 /** The season tab the user chose, or the season of an episode to show. */
 private sealed interface TabPick {
     data class Tab(val index: Int) : TabPick
@@ -137,8 +182,24 @@ private class ShowInputs(
     val progress: Map<String, VodProgressEntity>,
     val inMyList: Boolean,
     val tmdb: TmdbDetail?,
+    val fetch: FetchStatus?,
 ) {
-    fun toUi(picked: TabPick?): ShowUi? = showUi(detail, progress, picked, inMyList, tmdb)
+    fun toUi(picked: TabPick?): ShowUi? = showUi(detail, progress, picked, inMyList, tmdb, fetch)
+}
+
+/**
+ * The list area's state for a show fetched on demand ([fetch] non-null). "No episodes yet" needs the
+ * stored fetch time, which is written with the episodes, so a fetch that has just ended but whose
+ * episodes the page hasn't read yet still shows as loading. A show already fetched empty says so
+ * while the page's first check runs; Try again shows as loading.
+ */
+private fun episodesState(detail: ShowDetail, fetch: FetchStatus?): EpisodesState = when {
+    fetch == null || detail.seasons.any { it.episodes.isNotEmpty() } -> EpisodesState.READY
+    fetch.running && (detail.show.episodesFetchedAt == null || fetch.last != null) -> EpisodesState.LOADING
+    fetch.last == EpisodeFetch.FAILED -> EpisodesState.FAILED
+    // NOT_NEEDED with nothing stored: nothing more will come, so don't spin.
+    detail.show.episodesFetchedAt != null || fetch.last == EpisodeFetch.NOT_NEEDED -> EpisodesState.EMPTY
+    else -> EpisodesState.LOADING
 }
 
 private fun showUi(
@@ -147,6 +208,7 @@ private fun showUi(
     picked: TabPick?,
     inMyList: Boolean,
     tmdb: TmdbDetail?,
+    fetch: FetchStatus?,
 ): ShowUi? {
     detail ?: return null
     val tmdbEpisodes = tmdb?.episodes.orEmpty().associateBy { it.season to it.episode }
@@ -191,7 +253,10 @@ private fun showUi(
         continueKey = target?.key,
         continueStartMs = target?.let { resumeFrom(progress[it.key]) } ?: 0L,
         inMyList = inMyList,
-        details = tmdb?.toUi(),
+        details = tmdb?.toUi() ?: detail.show.let {
+            providerDetailsUi(it.plot, it.cast, it.genre, it.rating, it.year, null, it.backdrop)
+        },
+        episodesState = episodesState(detail, fetch),
     )
 }
 
@@ -209,6 +274,6 @@ private fun continueLabel(t: ContinueTarget): String {
 fun showViewModelFactory(playlistId: Long, key: String): ViewModelProvider.Factory = viewModelFactory {
     initializer {
         val c = (this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
-        ShowViewModel(playlistId, key, c.vod, c.vodProgress, c.vodLibrary)
+        ShowViewModel(playlistId, key, c.vod, c.vodProgress, c.vodLibrary, c.xtreamEpisodes)
     }
 }

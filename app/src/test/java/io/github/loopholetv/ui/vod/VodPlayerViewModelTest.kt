@@ -18,6 +18,7 @@ import io.github.loopholetv.player.StreamTags
 import io.github.loopholetv.player.VOD_CHANNEL_ID
 import io.github.loopholetv.player.catchup.PlayMode
 import io.github.loopholetv.ui.MainDispatcherRule
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -128,6 +129,8 @@ class VodPlayerViewModelTest {
         autoPlay: Boolean = true,
         dao: FakeProgressDao = FakeProgressDao(),
         beforePlay: suspend (VodRef) -> Boolean = { true },
+        next: suspend (VodRef) -> VodRef? = nextOf,
+        prefetchNext: suspend (VodRef) -> Unit = {},
     ): Rig {
         val playback = FakePlayback()
         val progress = VodProgressRepository(dao) { Instant.ofEpochSecond(1_000_000) }
@@ -135,10 +138,11 @@ class VodPlayerViewModelTest {
         val vm = main.keep(
             VodPlayerViewModel(
                 start, startMs, playback, items, progress,
-                next = nextOf,
+                next = next,
                 label = { "Next: ${it.key}" },
                 autoPlay = { autoPlay },
                 beforePlay = beforePlay,
+                prefetchNext = prefetchNext,
             ) { testScheduler.currentTime },
         )
         val events = mutableListOf<VodPlayerEvent>()
@@ -668,5 +672,72 @@ class VodPlayerViewModelTest {
         film.vm.onBack()
         runCurrent()
         assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), film.events)
+    }
+
+    @Test fun missingNextPrefetchesThenFindsIt() = runTest(dispatcher) {
+        // e6 has no next episode until the show's episodes are fetched again and bring e7.
+        var fetched = false
+        val asked = mutableListOf<VodRef>()
+        val r = rig(
+            start = episode(6),
+            next = { if (it == episode(6) && fetched) episode(7) else nextOf(it) },
+            prefetchNext = { asked += it; fetched = true },
+        )
+        assertEquals(listOf(episode(6)), asked)
+        endEpisode(r)
+        assertEquals(AutoNextUi.Countdown("Next: e7", COUNTDOWN_SECONDS), r.vm.autoNext.value)
+        assertTrue(r.events.isEmpty())
+    }
+
+    @Test fun storedNextMeansNoPrefetch() = runTest(dispatcher) {
+        val asked = mutableListOf<VodRef>()
+        rig(start = episode(1), prefetchNext = { asked += it })
+        val film = rig(prefetchNext = { asked += it })
+        assertTrue(asked.isEmpty())
+        film.vm.onBack()
+        runCurrent()
+    }
+
+    @Test fun noPrefetchWithoutAutoPlayNext() = runTest(dispatcher) {
+        val asked = mutableListOf<VodRef>()
+        val r = rig(start = episode(6), autoPlay = false, prefetchNext = { asked += it })
+        assertTrue(asked.isEmpty())
+        r.vm.onBack()
+        runCurrent()
+    }
+
+    @Test fun noPrefetchOnceTheItemChanged() = runTest(dispatcher) {
+        // The lookup for e6 answers only after the screen has moved on (here: left).
+        val answer = CompletableDeferred<VodRef?>()
+        val asked = mutableListOf<VodRef>()
+        val r = rig(start = episode(6), next = { if (it == episode(6)) answer.await() else nextOf(it) }, prefetchNext = { asked += it })
+        r.vm.onBack()
+        runCurrent()
+        answer.complete(null)
+        runCurrent()
+        assertTrue(asked.isEmpty())
+    }
+
+    @Test fun failedPrefetchMeansNoNext() = runTest(dispatcher) {
+        val r = rig(start = episode(6), prefetchNext = { throw java.io.IOException("offline") })
+        endEpisode(r)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e6")), r.events)
+    }
+
+    @Test fun endBeforePrefetchFinishesMeansNoNext() = runTest(dispatcher) {
+        val latch = CompletableDeferred<Unit>()
+        var fetched = false
+        val r = rig(
+            start = episode(6),
+            next = { if (it == episode(6) && fetched) episode(7) else nextOf(it) },
+            prefetchNext = { latch.await(); fetched = true },
+        )
+        endEpisode(r)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e6")), r.events)
+        latch.complete(Unit)
+        passTime(r, 15_000)
+        assertEquals(listOf("e6"), r.openedKeys())
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
     }
 }

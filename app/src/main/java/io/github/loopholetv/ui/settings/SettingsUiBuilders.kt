@@ -6,6 +6,7 @@ import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.repo.EPG_NO_SOURCE
 import io.github.loopholetv.data.repo.PORTAL_EPG_SOURCE
+import io.github.loopholetv.data.repo.VOD_NOT_UPDATED
 import io.github.loopholetv.data.repo.announcedEpgUrls
 import io.github.loopholetv.data.repo.m3uSecrets
 import io.github.loopholetv.data.repo.playlistSecrets
@@ -81,6 +82,8 @@ internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
 
     fun row(p: PlaylistEntity, count: Int, op: PlaylistOp, films: Int = 0, shows: Int = 0): PlaylistRowUi {
         val (status, isError) = status(p, op, films, shows)
+        val isXtream = p.type == PlaylistType.XTREAM
+        val busy = op is PlaylistOp.Updating
         return PlaylistRowUi(
             id = p.id,
             name = p.name,
@@ -96,7 +99,13 @@ internal class PlaylistRowText(zone: ZoneId, private val locale: Locale) {
             connectionsAllowed = p.connectionsAllowed,
             autoConnections = p.accountMaxConnections?.takeIf { it > 0 } ?: DEFAULT_CONNECTIONS,
             xtreamFormat = p.xtreamFormat,
-            isXtream = p.type == PlaylistType.XTREAM,
+            isXtream = isXtream,
+            xtreamVod = p.xtreamVod,
+            // vodError can outlive a change of type away from Xtream: only an Xtream playlist shows it.
+            vodStatusText = p.vodError?.takeIf { isXtream && !busy && !isError }?.let { VOD_NOT_UPDATED },
+            // Useful before the first complete update, and after a failed one; not for an account
+            // that simply has no films or series.
+            offerVodUpdate = isXtream && p.xtreamVod && !busy && (p.vodUpdatedAt == null || p.vodError != null),
             accountRows = accountRows(p),
         )
     }

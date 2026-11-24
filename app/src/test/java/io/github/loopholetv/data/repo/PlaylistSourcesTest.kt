@@ -516,20 +516,21 @@ class PlaylistSourcesTest {
         repo.setUserAgent(id, " ")
         assertNull(playlist(id).userAgent)
 
-        // Xtream: every call (login, categories, streams), on add and on refresh.
+        // Xtream: every call (login, live categories and streams, then films and series), on add and on refresh.
         requests.clear()
         val res = { path: String -> javaClass.classLoader!!.getResourceAsStream("fixtures/xtream/$path")!!.readBytes().decodeToString() }
         serve("/player_api.php", res("auth_ok.json"))
         serve("get_live_categories", res("categories.json"))
         serve("get_live_streams", res("live_streams.json"))
+        for (action in listOf("get_vod_categories", "get_vod_streams", "get_series_categories", "get_series")) serve(action, "[]")
         val creds = XtreamCredentials("http://${server.hostName}:${server.port}", "user1", "pass1")
         val xt = successOf(repo.addXtream("X", creds) {}).playlistId
-        assertEquals(3, requests.size)
+        assertEquals(7, requests.size)
         assertTrue(requests.all { it.getHeader("User-Agent") == "General/1" })
         requests.clear()
         repo.setUserAgent(xt, "Xt/3")
         successOf(repo.refresh(xt) {})
-        assertEquals(3, requests.size)
+        assertEquals(7, requests.size)
         assertTrue(requests.all { it.getHeader("User-Agent") == "Xt/3" })
     }
 

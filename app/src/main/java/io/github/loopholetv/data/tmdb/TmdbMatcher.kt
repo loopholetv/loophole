@@ -21,13 +21,14 @@ private val NUMERIC_ID = Regex("\\d+")
 private const val YEAR_TOLERANCE = 1
 
 /**
- * Decides which TMDB id a playlist title is. Prefers a provider id, then a strict name and year search:
+ * Decides which TMDB id a playlist title is. Prefers a provider id, then a strict name and year search
+ * (the year in the name, else the provider's [matchFilm]/[matchShow] `year`):
  * only the top hit is considered, and only when its title is exactly the cleaned name. No match is better
  * than a wrong one.
  */
 class TmdbMatcher(private val lookup: TmdbLookup) {
 
-    suspend fun matchFilm(name: String, tvgId: String?, language: String): MatchOutcome {
+    suspend fun matchFilm(name: String, tvgId: String?, language: String, year: Int? = null): MatchOutcome {
         val id = tvgId?.trim().orEmpty()
         if (IMDB_ID.matches(id)) {
             when (val found = lookup.findImdb(id, language)) {
@@ -39,10 +40,10 @@ class TmdbMatcher(private val lookup: TmdbLookup) {
                 is TmdbResult.NotFound -> Unit
             }
         }
-        return searchByName(name, TmdbKind.MOVIE, language)
+        return searchByName(name, TmdbKind.MOVIE, language, year)
     }
 
-    suspend fun matchShow(name: String, tvgId: String?, language: String): MatchOutcome {
+    suspend fun matchShow(name: String, tvgId: String?, language: String, year: Int? = null): MatchOutcome {
         val id = tvgId?.trim().orEmpty()
         if (NUMERIC_ID.matches(id)) {
             id.toLongOrNull()?.let { return MatchOutcome.Matched(TmdbKind.TV, it) }
@@ -57,23 +58,25 @@ class TmdbMatcher(private val lookup: TmdbLookup) {
                 is TmdbResult.NotFound -> Unit
             }
         }
-        return searchByName(name, TmdbKind.TV, language)
+        return searchByName(name, TmdbKind.TV, language, year)
     }
 
-    private suspend fun searchByName(name: String, kind: TmdbKind, language: String): MatchOutcome {
+    /** [providerYear] is used only when the name carries no year of its own. */
+    private suspend fun searchByName(name: String, kind: TmdbKind, language: String, providerYear: Int?): MatchOutcome {
         val clean = cleanTitle(name)
         if (clean.query.isBlank()) return MatchOutcome.NotFound
+        val year = clean.year ?: providerYear
         val search: suspend (String, Int?) -> TmdbResult<List<SearchHit>> = { q, y ->
             if (kind == TmdbKind.MOVIE) lookup.searchMovie(q, y, language) else lookup.searchTv(q, y, language)
         }
 
-        var hits = when (val r = search(clean.query, clean.year)) {
+        var hits = when (val r = search(clean.query, year)) {
             is TmdbResult.Ok -> r.value
             is TmdbResult.NotFound -> emptyList()
             is TmdbResult.BadKey -> return MatchOutcome.BadKey
             is TmdbResult.Failed -> return MatchOutcome.Failed(r.retryAfterSec)
         }
-        if (hits.isEmpty() && clean.year != null) {
+        if (hits.isEmpty() && year != null) {
             hits = when (val r = search(clean.query, null)) {
                 is TmdbResult.Ok -> r.value
                 is TmdbResult.NotFound -> emptyList()
@@ -81,7 +84,7 @@ class TmdbMatcher(private val lookup: TmdbLookup) {
                 is TmdbResult.Failed -> return MatchOutcome.Failed(r.retryAfterSec)
             }
         }
-        accepted(hits.firstOrNull(), clean.query, clean.year)?.let { return MatchOutcome.Matched(kind, it.id) }
+        accepted(hits.firstOrNull(), clean.query, year)?.let { return MatchOutcome.Matched(kind, it.id) }
 
         // A bare trailing number may belong to the title ("Wonder Woman 1984").
         if (clean.year != null && !clean.yearBracketed) {

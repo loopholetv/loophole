@@ -161,6 +161,7 @@ internal class SetupExporter(
         portalSignature = portalSignature,
         connectionsAllowed = connectionsAllowed,
         xtreamFormat = xtreamFormat,
+        xtreamVod = xtreamVod,
         file = file,
         guideLinks = links,
         channelEdits = channelEdits,

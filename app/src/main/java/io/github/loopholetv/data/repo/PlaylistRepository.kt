@@ -96,8 +96,10 @@ class PlaylistRepository internal constructor(
     private val vodProgress = db.vodProgressDao()
     private val vodLibrary = db.vodLibraryDao()
     private val recordDao = db.recordDao()
+    private val xtreamVodDao = db.xtreamVodDao()
+    private val xtreamVod = XtreamVodImport(xtream, db, now)
     private val m3u = M3uSourceOpener(http)
-    private val xtream = XtreamSourceOpener(xtream)
+    private val xtreamLive = XtreamSourceOpener(xtream)
     private val mutex = Mutex()
 
     fun playlists(): Flow<List<PlaylistEntity>> = playlistDao.all()
@@ -133,20 +135,41 @@ class PlaylistRepository internal constructor(
         }
     }
 
-    /** [creds] already default a scheme-less server address to http:// (see [XtreamCredentials]). */
+    /**
+     * [creds] already default a scheme-less server address to http:// (see [XtreamCredentials]).
+     * The live import commits the new row first, then the films and series are fetched; an account
+     * with neither channels nor titles leaves no playlist behind.
+     */
     private suspend fun newXtream(name: String, creds: XtreamCredentials, progress: (Int) -> Unit): ImportResult = mutex.withLock {
         runImport({ xtreamSecrets(creds) }) {
-            xtream.open(creds, downloadUa(null)).use { source ->
-                importInto(source, progress) {
-                    playlistDao.insert(
-                        newPlaylist(name, PlaylistType.XTREAM).copy(
-                            xtreamServer = creds.server,
-                            xtreamUser = creds.username,
-                            xtreamPass = creds.password,
-                        ),
-                    )
-                }
+            val ua = downloadUa(null)
+            val row = newPlaylist(name, PlaylistType.XTREAM).copy(
+                xtreamServer = creds.server,
+                xtreamUser = creds.username,
+                xtreamPass = creds.password,
+            )
+            val live = xtreamLive.open(creds, ua).use { source ->
+                importInto(source, progress, m3uVod = false, allowEmpty = row.xtreamVod) { playlistDao.insert(row) }
             }
+            val id = live.playlistId
+            if (live.channelCount > 0) {
+                updateXtreamVod(id, creds, ua, live.channelCount)
+            } else {
+                val vod = try {
+                    xtreamVod.run(id, creds, ua, liveChannels = 0)
+                } catch (e: Throwable) {
+                    // Cancelled (or broken) before anything showed up: no empty playlist is left behind.
+                    deleteLocked(id)
+                    throw e
+                }
+                if (vod.films + vod.shows == 0) {
+                    deleteLocked(id)
+                    // Neither list could be read: that is the error, not "no channels".
+                    throw vod.bothFailed ?: ImportFailure(ImportError.EmptyPlaylist, NO_CHANNELS)
+                }
+                recordVod(id, vod)
+            }
+            live
         }
     }
 
@@ -245,6 +268,23 @@ class PlaylistRepository internal constructor(
     /** null or blank = use the general user agent. */
     suspend fun setUserAgent(playlistId: Long, ua: String?) = playlistDao.setUserAgent(playlistId, ua.blankToNull())
 
+    /**
+     * The "Films and series" setting of an Xtream playlist. Waits for a running update to finish.
+     * Off removes the playlist's Xtream films, shows, episodes and provider details at once (watch
+     * progress and My list stay); On fetches them at the next update.
+     */
+    suspend fun setXtreamVod(playlistId: Long, on: Boolean): Unit = mutex.withLock {
+        if (on) {
+            playlistDao.setXtreamVod(playlistId, true)
+        } else {
+            db.withTransaction {
+                playlistDao.setXtreamVod(playlistId, false)
+                xtreamVodDao.removeAll(playlistId)
+                playlistDao.clearVodStatus(playlistId)
+            }
+        }
+    }
+
     /** Null = "Same as default" for either option; [hours] 0 = Off. */
     suspend fun setUpdateOptions(playlistId: Long, hours: Int?, onStart: Boolean?) {
         require(hours == null || hours >= 0) { "Invalid update interval" }
@@ -274,7 +314,9 @@ class PlaylistRepository internal constructor(
      * The remaining playlists' guide numbers close up. Programmes no remaining channel uses,
      * the file copy, the file grant and the portal session go too.
      */
-    suspend fun delete(playlistId: Long): Unit = mutex.withLock {
+    suspend fun delete(playlistId: Long): Unit = mutex.withLock { deleteLocked(playlistId) }
+
+    private suspend fun deleteLocked(playlistId: Long) {
         // Once started, a delete finishes with its clean-up even if the caller goes away (Settings
         // closed): a cancelled clean-up would leak the file copy and the URI grant.
         withContext(NonCancellable) {
@@ -309,9 +351,7 @@ class PlaylistRepository internal constructor(
             }
             PlaylistType.XTREAM -> {
                 val creds = playlistCredentials(playlist)
-                runImport({ xtreamSecrets(creds) }) {
-                    xtream.open(creds, downloadUa(playlist)).use { importInto(it, progress) { playlist.id } }
-                }
+                runImport({ xtreamSecrets(creds) }) { refreshXtream(playlist.id, creds, downloadUa(playlist), progress) }
             }
             PlaylistType.M3U_FILE -> {
                 val opener = local
@@ -354,39 +394,96 @@ class PlaylistRepository internal constructor(
     }
 
     /**
+     * An Xtream refresh: the live import commits first, then the films and series follow (or are
+     * removed when the setting is Off). With no live channels the live import is rolled back. A
+     * playlist that had channels keeps them: the live part fails as [ImportError.EmptyPlaylist], but
+     * the films and series are still updated. One that had none is committed empty if the account
+     * lists films or shows; otherwise it fails the same way (or with the lists' error when neither
+     * could be read).
+     */
+    private suspend fun refreshXtream(id: Long, creds: XtreamCredentials, ua: String, progress: (Int) -> Unit): ImportResult.Success =
+        xtreamLive.open(creds, ua).use { source ->
+            val live = try {
+                importInto(source, progress, m3uVod = false) { id }
+            } catch (empty: LiveEmpty) {
+                val hadChannels = channelDao.keyIds(id).isNotEmpty()
+                val vod = xtreamVod.run(id, creds, ua, liveChannels = 0)
+                val listed = vod.films + vod.shows > 0
+                if (hadChannels && (listed || vod.failed)) recordVod(id, vod)
+                if (hadChannels || !listed) throw vod.bothFailed ?: ImportFailure(ImportError.EmptyPlaylist, NO_CHANNELS)
+                return@use importInto(NoLiveChannels(source, empty.epgUrls), progress, m3uVod = false, allowEmpty = true) { id }
+                    .also { recordVod(id, vod) }
+            }
+            updateXtreamVod(id, creds, ua, live.channelCount)
+            live
+        }
+
+    /** Stores how a films-and-series update went: its error, or the time of a complete one. */
+    private suspend fun recordVod(id: Long, vod: XtreamVodResult) {
+        if (vod.failed) playlistDao.setVodError(id, VOD_NOT_UPDATED) else playlistDao.setVodUpdated(id, now())
+    }
+
+    /** After a committed live import: fetches the films and series, or removes them when the setting is Off. */
+    private suspend fun updateXtreamVod(id: Long, creds: XtreamCredentials, ua: String, liveChannels: Int) {
+        if (playlistDao.byId(id)?.xtreamVod == false) {
+            db.withTransaction {
+                xtreamVodDao.removeAll(id)
+                playlistDao.clearVodStatus(id)
+            }
+            return
+        }
+        val vod = xtreamVod.run(id, creds, ua, liveChannels)
+        recordVod(id, vod)
+    }
+
+    /**
      * One transaction: obtain the playlist id ([playlistId] may insert the row), stream every
      * channel, prune vanished ones and mark the playlist refreshed. Throwing anywhere rolls it all back.
      *
      * After a source edit (`rekeyPending`), the carry-over moves edits, favourites and history from vanished
      * keys to new keys with the same name and group. The old list is read before the writer
      * streams, because [ChannelWriter.finish] deletes the vanished rows.
+     *
+     * [m3uVod] false (Xtream): films and series come later from [XtreamVodImport], so playlist-entry
+     * films and episodes are removed instead of written. [allowEmpty] commits a source with nothing in
+     * it; otherwise an Xtream playlist with "Films and series" On throws [LiveEmpty] (rolled back) so
+     * its films and series can still be fetched.
      */
     private suspend fun importInto(
         source: ChannelSource,
         progress: (Int) -> Unit,
         keepRefreshTime: Boolean = false,
+        m3uVod: Boolean = true,
+        allowEmpty: Boolean = false,
         playlistId: suspend () -> Long,
     ): ImportResult.Success = db.withTransaction {
         val id = playlistId()
         val row = playlistDao.byId(id)
         val rekey = row?.rekeyPending == true
+        // A playlist that stopped being Xtream: its Xtream titles go first, so the M3U writer neither
+        // carries their progress over nor counts them as already known.
+        if (m3uVod) xtreamVodDao.removeAll(id) else xtreamVodDao.removeM3uVod(id)
         val before = if (rekey) maintenance.keyNameGroups(id) else emptyList()
         val existing = channelDao.keyIds(id)
-        val vodBefore = if (rekey) vodNameGroups(id) else null
+        val vodBefore = if (rekey && m3uVod) vodNameGroups(id) else null
         val writer = ChannelWriter(channelDao, id, existing, progress)
-        val vodWriter = VodWriter(vodDao, db.channelPrefsDao(), id, now(), rekey)
+        val vodWriter = if (m3uVod) VodWriter(vodDao, db.channelPrefsDao(), id, now(), rekey) else null
         val epgUrls = pipe<ImportItem, String>(
             produce = { emit -> source.stream(emit) },
             consume = {
                 when (it) {
                     is ImportedChannel -> writer.add(it)
-                    is ImportedVod -> vodWriter.add(it)
+                    is ImportedVod -> vodWriter?.add(it)
                 }
             },
         )
         val count = writer.finish()
-        val vodCount = vodWriter.finish()
-        if (count == 0 && vodCount == 0) throw ImportFailure(source.noChannelsError(), "The playlist contains no channels")
+        val vodCount = vodWriter?.finish() ?: 0
+        if (count == 0 && vodCount == 0 && !allowEmpty) {
+            if (!m3uVod && row?.xtreamVod == true) throw LiveEmpty(epgUrls)
+            throw ImportFailure(source.noChannelsError(), NO_CHANNELS)
+        }
+        xtreamVodDao.deleteDetailsWithoutFilm(id)
         if (rekey) carryOver(id, before, existing)
         if (vodBefore != null) carryOverProgress(id, vodBefore)
         val orphanCutoff = now().minus(ORPHAN_PROGRESS_DAYS.toLong(), ChronoUnit.DAYS)
@@ -547,7 +644,19 @@ class PlaylistRepository internal constructor(
         signature = signature.blankToNull(),
     )
 
+    /** The live import found no channels, but the playlist's films and series may still fill it. */
+    private class LiveEmpty(val epgUrls: String) : Exception()
+
+    /** Replays [source]'s account and archive details, and [epgUrls], with no channels (a films-and-series-only account). */
+    private class NoLiveChannels(private val source: ChannelSource, private val epgUrls: String) : ChannelSource {
+        override suspend fun stream(emit: (ImportItem) -> Unit): String = epgUrls
+        override fun noChannelsError(): ImportError = source.noChannelsError()
+        override fun archiveInfo() = source.archiveInfo()
+        override fun accountInfo() = source.accountInfo()
+    }
+
     private companion object {
+        const val NO_CHANNELS = "The playlist contains no channels"
         const val GENERIC_FAILURE = "Something went wrong while loading the playlist."
         const val UNSUPPORTED = "This playlist type isn't supported yet."
         val COPY_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)

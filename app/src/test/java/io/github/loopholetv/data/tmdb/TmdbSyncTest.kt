@@ -6,6 +6,7 @@ import io.github.loopholetv.data.db.EpisodeEntity
 import io.github.loopholetv.data.db.FilmEntity
 import io.github.loopholetv.data.db.MatchState
 import io.github.loopholetv.data.db.ShowEntity
+import io.github.loopholetv.data.db.ShowSource
 import io.github.loopholetv.data.db.addPlaylist
 import io.github.loopholetv.data.db.inMemoryDb
 import io.github.loopholetv.data.db.rowCount
@@ -67,10 +68,13 @@ private class FakeTmdb : TmdbDetailsSource {
     }
 
     override suspend fun findImdb(id: String, language: String) = answer("find/$id|$language") { FindResult(emptyList(), emptyList()) }
+    /** The year each search asked with, as "query:year". */
+    val searchYears = mutableListOf<String>()
+
     override suspend fun searchMovie(query: String, year: Int?, language: String) =
-        answer("search/movie/$query|$language") { movieSearch[query].orEmpty() }
+        answer("search/movie/$query|$language") { movieSearch[query].orEmpty() }.also { searchYears += "$query:$year" }
     override suspend fun searchTv(query: String, year: Int?, language: String) =
-        answer("search/tv/$query|$language") { tvSearch[query].orEmpty() }
+        answer("search/tv/$query|$language") { tvSearch[query].orEmpty() }.also { searchYears += "$query:$year" }
     override suspend fun movie(id: Long, language: String): TmdbResult<MovieDetails> {
         detail()
         return answer("movie/$id|$language") { movies[id to language] }
@@ -153,6 +157,17 @@ class TmdbSyncTest {
             },
         )
     }
+
+    /** A show as an Xtream list gives it: its own TMDB hint and year, and no episodes until opened. */
+    private suspend fun addXtreamShow(key: String, name: String, tvgId: String?, year: Int? = null) =
+        db.vodWriteDao().insertShows(
+            listOf(
+                ShowEntity(
+                    playlistId = p, key = key, name = name, groupTitle = "Series", category = null, logo = null,
+                    firstSeenAt = t0, position = 0, source = ShowSource.XTREAM, tvgId = tvgId, year = year,
+                ),
+            ),
+        )
 
     private suspend fun match(key: String, kind: TitleKind = TitleKind.FILM, pl: Long = p) = db.tmdbDao().match(pl, kind, key)
 
@@ -614,5 +629,95 @@ class TmdbSyncTest {
         addFilm("f2", "EN | Hamlet")
         sync().run()
         assertEquals(2, tmdb.count("search/"))
+    }
+
+    @Test fun filmTmdbHintAcceptedWhenNameMatches() = runTest {
+        tmdb.movies[603L to "en-US"] = movie(603, "The Matrix")
+        addFilm("xm:1", "EN | The Matrix (1999) 4K", tvgId = "tmdb:603")
+        assertEquals(SyncOutcome.Done, sync().run())
+
+        val m = match("xm:1")!!
+        assertEquals(MatchState.MATCHED, m.state)
+        assertEquals(TmdbKind.MOVIE, m.tmdbKind)
+        assertEquals(603L, m.tmdbId)
+        assertEquals(1, tmdb.count("movie/"))
+        assertEquals(0, tmdb.count("search/"))
+        assertEquals(0, tmdb.count("find/"))
+    }
+
+    @Test fun filmTmdbHintRejectedFallsBackToSearch() = runTest {
+        tmdb.movies[999L to "en-US"] = movie(999, "Some Other Film")
+        knownFilm(603, "The Matrix")
+        addFilm("xm:1", "The Matrix", tvgId = "tmdb:999")
+        assertEquals(SyncOutcome.Done, sync().run())
+
+        assertEquals(603L, match("xm:1")!!.tmdbId)
+        assertEquals(1, tmdb.count("search/movie/The Matrix|"))
+        assertEquals(0, tmdb.count("find/"))
+        assertNull(db.tmdbDao().title(TmdbKind.MOVIE, 999).first())
+    }
+
+    @Test fun filmTmdbHintNotOnTmdbFallsBackToSearch() = runTest {
+        knownFilm(603, "The Matrix")
+        addFilm("xm:1", "The Matrix", tvgId = "tmdb:404")
+        assertEquals(SyncOutcome.Done, sync().run())
+        assertEquals(603L, match("xm:1")!!.tmdbId)
+    }
+
+    @Test fun providerYearReachesTheSearch() = runTest {
+        db.vodWriteDao().upsertFilms(
+            listOf(
+                FilmEntity(p, "xm:1", "The Matrix", "Films", null, "http://s.example.test/1", null, null, null, 0, t0, providerYear = 1999),
+            ),
+        )
+        addXtreamShow("xs:1", "Breaking Bad", tvgId = null, year = 2008)
+        sync().run()
+        assertTrue(tmdb.searchYears.toString(), "The Matrix:1999" in tmdb.searchYears)
+        assertTrue(tmdb.searchYears.toString(), "Breaking Bad:2008" in tmdb.searchYears)
+    }
+
+    @Test fun xtreamShowUsesOwnTvgId() = runTest {
+        tmdb.shows[1396L to "en-US"] = show(1396, "Breaking Bad", seasons = listOf(1))
+        tmdb.seasons[1396L to 1] = emptyList()
+        addXtreamShow("xs:7", "Breaking Bad", tvgId = "1396", year = 2008)
+        assertEquals(SyncOutcome.Done, sync().run())
+
+        val m = match("xs:7", TitleKind.SHOW)!!
+        assertEquals(1396L, m.tmdbId)
+        assertEquals("1396", m.sourceTvgId)
+        assertEquals(0, tmdb.count("search/"))
+    }
+
+    @Test fun xtreamShowHintWithDifferentNameFallsBackToSearch() = runTest {
+        tmdb.shows[1234L to "en-US"] = show(1234, "Some Other Show")
+        tmdb.tvSearch["Doctor Who"] = listOf(hit(57243, "Doctor Who"))
+        tmdb.shows[57243L to "en-US"] = show(57243, "Doctor Who", seasons = listOf(1))
+        tmdb.seasons[57243L to 1] = emptyList()
+        addXtreamShow("xs:8", "Doctor Who", tvgId = "1234")
+        assertEquals(SyncOutcome.Done, sync().run())
+        assertEquals(57243L, match("xs:8", TitleKind.SHOW)!!.tmdbId)
+    }
+
+    @Test fun m3uShowStillUsesEpisodeTvgId() = runTest {
+        tmdb.shows[1234L to "en-US"] = show(1234, "Doctor Who", seasons = listOf(1))
+        tmdb.seasons[1234L to 1] = emptyList()
+        addShow("g:DW", "Doctor Who", tvgId = "1234")
+        assertEquals(SyncOutcome.Done, sync().run())
+
+        val m = match("g:DW", TitleKind.SHOW)!!
+        assertEquals(1234L, m.tmdbId)
+        assertEquals("1234", m.sourceTvgId)
+        // Same fingerprint as before shows had their own tvg-id, so earlier matches and rejections carry over.
+        assertEquals(fingerprint(TitleKind.SHOW, "1234", "Doctor Who"), m.fingerprint)
+        assertEquals(0, tmdb.count("search/"))
+    }
+
+    @Test fun blankShowTvgIdFallsBackToEpisodeTvgId() = runTest {
+        tmdb.shows[1234L to "en-US"] = show(1234, "Doctor Who", seasons = listOf(1))
+        tmdb.seasons[1234L to 1] = emptyList()
+        addShow("g:DW", "Doctor Who", tvgId = "1234")
+        db.openHelper.writableDatabase.execSQL("UPDATE vod_shows SET tvgId = '  ' WHERE `key` = 'g:DW'")
+        assertEquals(SyncOutcome.Done, sync().run())
+        assertEquals("1234", match("g:DW", TitleKind.SHOW)!!.sourceTvgId)
     }
 }

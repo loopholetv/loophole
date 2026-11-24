@@ -13,9 +13,9 @@ import androidx.room.TypeConverters
         MyListEntity::class, ContinueDismissalEntity::class,
         ReminderEntity::class, SeriesRuleEntity::class, RecordingEntity::class,
         TmdbTitleEntity::class, TmdbTitleGenreEntity::class, TmdbGenreEntity::class, TmdbEpisodeEntity::class,
-        VodMatchEntity::class,
+        VodMatchEntity::class, ProviderDetailsEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -41,4 +41,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun recordDao(): RecordDao
     abstract fun tmdbDao(): TmdbDao
     abstract fun vodFilterDao(): VodFilterDao
+    abstract fun xtreamVodDao(): XtreamVodDao
 }

@@ -92,6 +92,7 @@ fun ShowScreen(
             onSelectTab = vm::selectTab,
             onToggleMyList = vm::toggleMyList,
             onWrongDetails = vm::rejectDetails,
+            onRetryEpisodes = vm::retryEpisodes,
             restoreEpisodeKey = lastEpisode,
             onEpisodeUsed = { used ->
                 lastEpisode = used
@@ -108,6 +109,7 @@ internal fun ShowContent(
     onSelectTab: (Int) -> Unit,
     onToggleMyList: () -> Unit = {},
     onWrongDetails: () -> Unit = {},
+    onRetryEpisodes: () -> Unit = {},
     restoreEpisodeKey: String? = null,
     onEpisodeUsed: (episodeKey: String?) -> Unit = {},
     onPlay: (episodeKey: String, startMs: Long) -> Unit,
@@ -115,6 +117,7 @@ internal fun ShowContent(
     val continueButton = remember { FocusRequester() }
     val selectedTab = remember { FocusRequester() }
     val myListButton = remember { FocusRequester() }
+    val tryAgainButton = remember { FocusRequester() }
     val rowRequesters = remember { HashMap<String, FocusRequester>() }
     // A new list state per season, so switching season starts at the top.
     val listState = key(ui.selectedTab) { rememberLazyListState() }
@@ -168,10 +171,19 @@ internal fun ShowContent(
                 // The buttons and season tabs: always shown in full.
                 Column {
                     // Opening on an episode to restore leaves focus to that; otherwise Continue, or the season
-                    // tabs when there is nothing to continue.
+                    // tabs when there is nothing to continue, else Try again when the episodes failed to
+                    // load, else My list. Each takes focus again when it appears, so focus follows the
+                    // episodes as they load (and isn't lost when Try again goes away).
                     val openRestoring = remember { restoreKey != null }
-                    if (ui.continueKey == null && !openRestoring && ui.tabs.isNotEmpty()) RequestFocusOnOpen(selectedTab)
-                    if (ui.continueKey != null && !openRestoring) RequestFocusOnOpen(continueButton)
+                    if (!openRestoring) {
+                        val failed = ui.episodesState == EpisodesState.FAILED
+                        when {
+                            ui.continueKey != null -> RequestFocusOnOpen(continueButton)
+                            ui.tabs.isNotEmpty() -> RequestFocusOnOpen(selectedTab)
+                            failed -> RequestFocusOnOpen(tryAgainButton)
+                            else -> RequestFocusOnOpen(myListButton)
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 16.dp)) {
                         // The button stays in the row as its label changes with progress, so focus stays on it.
                         if (ui.continueKey != null && ui.continueLabel != null) {
@@ -191,7 +203,7 @@ internal fun ShowContent(
                             modifier = Modifier.focusRequester(myListButton),
                             onClick = onToggleMyList,
                         )
-                        if (ui.details != null) {
+                        if (ui.details?.fromTmdb == true) {
                             // The button goes away with the details, so focus moves first to Continue, else the
                             // season tab, else the first episode, else My list.
                             WrongDetailsButton {
@@ -208,19 +220,54 @@ internal fun ShowContent(
                     }
                     SeasonTabs(ui.tabs, ui.selectedTab, selectedTab, onSelectTab)
                 }
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.padding(top = 12.dp).testTag(EPISODE_LIST_TAG),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    items(ui.episodes, key = { it.key }) { row ->
-                        EpisodeRow(row, Modifier.focusRequester(rowRequesters.requesterFor(row.key))) {
-                            onEpisodeUsed(row.key)
-                            onPlay(row.key, row.resumeMs ?: 0L)
+                if (ui.episodesState == EpisodesState.READY) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.padding(top = 12.dp).testTag(EPISODE_LIST_TAG),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(ui.episodes, key = { it.key }) { row ->
+                            EpisodeRow(row, Modifier.focusRequester(rowRequesters.requesterFor(row.key))) {
+                                onEpisodeUsed(row.key)
+                                onPlay(row.key, row.resumeMs ?: 0L)
+                            }
                         }
+                    }
+                } else {
+                    EpisodesMessage(ui.episodesState, tryAgainButton) {
+                        // The button goes away while the fetch runs, so focus moves to My list first.
+                        myListButton.tryFocus()
+                        onRetryEpisodes()
                     }
                 }
             }
+        }
+    }
+}
+
+internal const val LOADING_EPISODES = "Loading episodes…"
+internal const val EPISODES_FAILED = "Couldn't load episodes"
+internal const val TRY_AGAIN = "Try again"
+internal const val NO_EPISODES = "No episodes yet"
+
+/** The list area of a show whose episodes are loading, failed to load or are none yet; the last two offer Try again ([onRetry]). */
+@Composable
+private fun EpisodesMessage(state: EpisodesState, tryAgain: FocusRequester, onRetry: () -> Unit) {
+    Column(Modifier.padding(top = 12.dp).testTag(EPISODE_LIST_TAG)) {
+        val line = when (state) {
+            EpisodesState.LOADING -> LOADING_EPISODES
+            EpisodesState.FAILED -> EPISODES_FAILED
+            EpisodesState.EMPTY, EpisodesState.READY -> NO_EPISODES
+        }
+        Text(line, style = MaterialTheme.typography.titleMedium, color = Tokens.Muted)
+        // A show with none yet may only have been refused for now, so it can be asked again too.
+        if (state == EpisodesState.FAILED || state == EpisodesState.EMPTY) {
+            PillButton(
+                label = TRY_AGAIN,
+                selected = false,
+                modifier = Modifier.focusRequester(tryAgain).padding(top = 12.dp),
+                onClick = onRetry,
+            )
         }
     }
 }

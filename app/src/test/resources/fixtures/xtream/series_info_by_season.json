@@ -1,0 +1,13 @@
+{
+ "seasons":[{"season_number":1}],
+ "info":{"name":"Breaking Bad"},
+ "episodes":{
+  "1":[
+   {"id":"101","episode_num":1,"title":"Pilot","container_extension":"mkv","info":{"movie_image":"http://img/e1.jpg","duration_secs":3500},"season":1},
+   {"id":102,"episode_num":"2","title":"Cat's in the Bag","container_extension":"mp4","info":{"movie_image":""},"season":1}
+  ],
+  "2":[
+   {"id":"201","episode_num":1,"title":"Seven Thirty-Seven","container_extension":"avi","info":{"movie_image":"http://img/e3.jpg"},"season":2}
+  ]
+ }
+}

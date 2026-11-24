@@ -6,11 +6,18 @@ import androidx.paging.PagingData
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.EpisodeEntity
 import io.github.loopholetv.data.db.MatchState
+import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.data.db.ProviderDetailsEntity
 import io.github.loopholetv.data.db.filmGrid
 import io.github.loopholetv.data.db.filterQuery
 import io.github.loopholetv.data.db.showGrid
 import io.github.loopholetv.data.tmdb.Genre
+import io.github.loopholetv.data.repo.playlistCredentials
 import io.github.loopholetv.data.tmdb.TmdbKind
+import io.github.loopholetv.data.xtream.XtreamProtocolException
+import io.github.loopholetv.data.xtream.XtreamVodKind
+import io.github.loopholetv.data.xtream.xtreamIdOf
+import io.github.loopholetv.data.xtream.xtreamVodUrl
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -88,6 +95,10 @@ class VodRepository(private val db: AppDatabase, private val clock: () -> Instan
     /** TMDB's details for a film, or null while it is not matched (never looked up, not found or rejected). */
     fun filmDetails(playlistId: Long, key: String): Flow<TmdbDetail?> = details(playlistId, TitleKind.FILM, key)
 
+    /** An Xtream film's details from its provider; null until they are fetched. */
+    fun providerFilmDetails(playlistId: Long, key: String): Flow<ProviderDetailsEntity?> =
+        db.xtreamVodDao().providerDetails(playlistId, key)
+
     /** Like [filmDetails], with the episodes found for the show. */
     fun showDetails(playlistId: Long, key: String): Flow<TmdbDetail?> = details(playlistId, TitleKind.SHOW, key)
 
@@ -129,15 +140,32 @@ class VodRepository(private val db: AppDatabase, private val clock: () -> Instan
 
     suspend fun playlistsWithCategory(title: String): List<Long> = dao.playlistsWithCategory(title)
 
-    /** The stream and request headers of [ref]'s row, with its [displayTitle], or null when it no longer exists. */
+    /**
+     * The stream and request headers of [ref]'s row, with its [displayTitle], or null when it no longer exists.
+     * An Xtream film or episode (`xm:` / `xe:`) gets its URL from the playlist's current login, so a changed
+     * password or server applies at once; its row on a playlist that is no longer Xtream is stale and not playable.
+     */
     suspend fun playable(ref: VodRef): VodPlayable? = when (ref.kind) {
         VodKind.MOVIE -> dao.filmRow(ref.playlistId, ref.key)?.let {
-            VodPlayable(ref, displayTitle(ref) ?: it.name, it.streamUrl, it.userAgent, it.referrer)
+            val url = streamUrl(ref, "xm:", XtreamVodKind.MOVIE, it.container, it.streamUrl)
+            url?.let { u -> VodPlayable(ref, displayTitle(ref) ?: it.name, u, it.userAgent, it.referrer) }
         }
         VodKind.EPISODE -> dao.episodeRow(ref.playlistId, ref.key)?.let {
-            VodPlayable(ref, displayTitle(ref) ?: it.name, it.streamUrl, it.userAgent, it.referrer)
+            val url = streamUrl(ref, "xe:", XtreamVodKind.SERIES, it.container, it.streamUrl)
+            url?.let { u -> VodPlayable(ref, displayTitle(ref) ?: it.name, u, it.userAgent, it.referrer) }
         }
         VodKind.RECORDING -> null
+    }
+
+    private suspend fun streamUrl(ref: VodRef, prefix: String, kind: XtreamVodKind, container: String?, stored: String): String? {
+        if (!ref.key.startsWith(prefix)) return stored
+        val playlist = db.playlistDao().byId(ref.playlistId)?.takeIf { it.type == PlaylistType.XTREAM } ?: return null
+        val id = xtreamIdOf(ref.key, prefix) ?: return null
+        return try {
+            xtreamVodUrl(playlistCredentials(playlist), kind, id, container)
+        } catch (_: XtreamProtocolException) {
+            null
+        }
     }
 
     /**

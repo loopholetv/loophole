@@ -28,11 +28,17 @@ interface VodProgressDao {
     @Query("UPDATE OR IGNORE vod_progress SET `key` = :to WHERE kind = :kind AND playlistId = :p AND `key` = :from")
     suspend fun rekey(kind: VodKind, p: Long, from: String, to: String)
 
-    /** Drops rows last watched before [before] whose item is in neither the films nor the episodes of its playlist. */
+    /**
+     * Drops rows last watched before [before] whose item is in neither the films nor the episodes of its playlist.
+     * Xtream episodes are stored only once their show is opened, so their progress is kept while the playlist
+     * still lists Xtream shows.
+     */
     @Query(
         "DELETE FROM vod_progress WHERE lastWatchedAt < :before " +
             "AND NOT EXISTS (SELECT 1 FROM vod_films f WHERE f.playlistId = vod_progress.playlistId AND f.`key` = vod_progress.`key`) " +
-            "AND NOT EXISTS (SELECT 1 FROM vod_episodes e WHERE e.playlistId = vod_progress.playlistId AND e.`key` = vod_progress.`key`)",
+            "AND NOT EXISTS (SELECT 1 FROM vod_episodes e WHERE e.playlistId = vod_progress.playlistId AND e.`key` = vod_progress.`key`) " +
+            "AND NOT (kind = 'EPISODE' AND `key` LIKE 'xe:%' AND EXISTS " +
+            "(SELECT 1 FROM vod_shows s WHERE s.playlistId = vod_progress.playlistId AND s.source = 'XTREAM'))",
     )
     suspend fun deleteOrphans(before: Instant)
 

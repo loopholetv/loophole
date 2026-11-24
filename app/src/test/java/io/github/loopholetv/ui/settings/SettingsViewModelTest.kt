@@ -6,6 +6,7 @@ import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.repo.ImportError
 import io.github.loopholetv.data.repo.ImportResult
+import io.github.loopholetv.data.repo.VOD_NOT_UPDATED
 import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.BufferPreset
@@ -119,12 +120,15 @@ class SettingsViewModelTest {
         var internalFree: Long? = null
         val connectionsSet = mutableListOf<Pair<Long, Int?>>()
         val formatSet = mutableListOf<Pair<Long, String?>>()
+        val vod = MutableStateFlow<Map<Long, VodCounts>>(emptyMap())
+        val xtreamVodSet = mutableListOf<Pair<Long, Boolean>>()
         val tmdbStatus = MutableStateFlow(io.github.loopholetv.data.tmdb.KeyStatus.NONE)
         val tmdbCalls = mutableListOf<String>()
 
         fun vm(pipSupported: Boolean = false, permissions: () -> PermissionStates = { PermissionStates() }) = SettingsViewModel(
             playlists = playlists,
             channelCounts = counts,
+            vodCounts = vod,
             epgStatus = { id -> statuses.map { it[id] } },
             refreshPlaylist = { id, p -> playlistRefreshes += id; refreshPlaylist(id, p) },
             deletePlaylist = { id -> deleted += id; playlists.update { l -> l.filterNot { it.id == id } } },
@@ -168,6 +172,7 @@ class SettingsViewModelTest {
             internalFreeBytes = { internalFree },
             setConnectionsAllowed = { id, n -> connectionsSet += id to n },
             setXtreamFormat = { id, f -> formatSet += id to f },
+            setXtreamVod = { id, on -> xtreamVodSet += id to on },
             tmdbStatus = tmdbStatus,
             saveTmdbKey = { k -> tmdbCalls += "save:$k" },
             removeTmdbKey = { tmdbCalls += "remove" },
@@ -364,6 +369,94 @@ class SettingsViewModelTest {
         vm.setXtreamFormat(2, null)
         vm.setXtreamFormat(2, "bogus")
         assertEquals(listOf<Pair<Long, String?>>(2L to "hls", 2L to null), f.formatSet)
+    }
+
+    private val creds = XtreamCredentials("http://example.test:8080", "u", "p")
+
+    private fun xtream(id: Long, xtreamVod: Boolean = true, vodError: String? = null, lastError: String? = null, vodUpdatedAt: Instant? = null) =
+        playlist(id, type = PlaylistType.XTREAM, url = null, xtream = creds, lastRefreshedAt = Instant.parse("2026-11-09T14:05:00Z"), lastError = lastError)
+            .copy(xtreamVod = xtreamVod, vodError = vodError, vodUpdatedAt = vodUpdatedAt)
+
+    @Test fun filmsAndSeriesRowOnlyForXtream() = runTest {
+        val f = Fakes(listOf(playlist(1), xtream(2), xtream(3, xtreamVod = false)))
+        val rows = f.vm().state.value.playlists.associateBy { it.id }
+        assertEquals("Films and series", RC_FILMS_AND_SERIES)
+        assertEquals("Update now", UPDATE_NOW)
+        assertFalse(rows.getValue(1).isXtream)
+        assertTrue(rows.getValue(2).isXtream)
+        assertTrue(rows.getValue(2).xtreamVod)
+        assertFalse(rows.getValue(3).xtreamVod)
+        assertEquals("Off", onOff(rows.getValue(3).xtreamVod))
+    }
+
+    @Test fun turningFilmsAndSeriesOffCallsRepository() = runTest {
+        val f = Fakes(listOf(xtream(2)))
+        val vm = f.vm()
+        vm.setXtreamVod(2, false)
+        vm.setXtreamVod(2, true)
+        assertEquals(listOf(2L to false, 2L to true), f.xtreamVodSet)
+    }
+
+    @Test fun vodErrorShownAsExtraLine() = runTest {
+        val f = Fakes(
+            listOf(
+                xtream(1, vodError = VOD_NOT_UPDATED),
+                xtream(2),
+                // A playlist that stopped being Xtream can still hold an old VOD error: never shown.
+                playlist(3, lastRefreshedAt = Instant.parse("2026-11-09T14:05:00Z")).copy(vodError = VOD_NOT_UPDATED),
+            ),
+        )
+        val rows = f.vm().state.value.playlists.associateBy { it.id }
+        assertEquals("Updated 9 Nov 14:05", rows.getValue(1).statusText)
+        assertFalse(rows.getValue(1).statusIsError)
+        assertEquals("Films and series couldn't be updated", rows.getValue(1).vodStatusText)
+        assertNull(rows.getValue(2).vodStatusText)
+        assertNull(rows.getValue(3).vodStatusText)
+        // The playlists list keeps its one-line summary.
+        assertEquals("3 channels · On · Updated 9 Nov 14:05", rows.getValue(1).secondaryText)
+    }
+
+    @Test fun vodLineHiddenWhileUpdatingOrOnError() = runTest {
+        val f = Fakes(listOf(xtream(1, vodError = VOD_NOT_UPDATED), xtream(2, vodError = VOD_NOT_UPDATED, lastError = "Server returned HTTP 500")))
+        val gate = CompletableDeferred<ImportResult>()
+        f.refreshPlaylist = { _, _ -> gate.await() }
+        val vm = f.vm()
+        assertTrue(vm.state.value.playlists.single { it.id == 2L }.statusIsError)
+        assertNull(vm.state.value.playlists.single { it.id == 2L }.vodStatusText)
+
+        vm.updatePlaylist(1)
+        assertTrue(vm.state.value.playlists.single { it.id == 1L }.busy)
+        assertNull(vm.state.value.playlists.single { it.id == 1L }.vodStatusText)
+        gate.complete(ImportResult.Failure(ImportError.Unreachable, "raw"))
+        val failed = vm.state.value.playlists.single { it.id == 1L }
+        assertTrue(failed.statusIsError)
+        assertNull(failed.vodStatusText)
+    }
+
+    @Test fun updateNowOfferedOnlyWhenUseful() = runTest {
+        val at = Instant.parse("2026-11-09T14:05:00Z")
+        val f = Fakes(
+            listOf(
+                playlist(1),
+                xtream(2), // never updated
+                xtream(3, xtreamVod = false),
+                xtream(4, vodUpdatedAt = at),
+                xtream(5, vodUpdatedAt = at), // a live-only account: updated, with no titles
+                xtream(6, vodUpdatedAt = at, vodError = VOD_NOT_UPDATED),
+            ),
+        )
+        f.vod.value = mapOf(4L to VodCounts(films = 10), 6L to VodCounts(shows = 2))
+        val gate = CompletableDeferred<ImportResult>()
+        f.refreshPlaylist = { _, _ -> gate.await() }
+        val vm = f.vm()
+        val offered = { vm.state.value.playlists.filter { it.offerVodUpdate }.map { it.id } }
+        assertEquals(listOf(2L, 6L), offered())
+
+        vm.updatePlaylist(2)
+        assertEquals(listOf(6L), offered())
+        assertEquals(listOf(2L), f.playlistRefreshes)
+        gate.complete(ImportResult.Success(2, 3))
+        assertEquals(listOf(2L, 6L), offered())
     }
 
     @Test fun permissionStatesAreReadAgainOnDemand() = runTest {

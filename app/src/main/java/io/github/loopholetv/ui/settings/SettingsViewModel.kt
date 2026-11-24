@@ -94,6 +94,12 @@ data class PlaylistRowUi(
     /** Xtream playlists only: how live streams are fetched; null = MPEG-TS, "hls". */
     val xtreamFormat: String? = null,
     val isXtream: Boolean = false,
+    /** Xtream playlists only: the "Films and series" setting. */
+    val xtreamVod: Boolean = true,
+    /** The extra muted line under [statusText] when only the films and series failed to update; null otherwise. */
+    val vodStatusText: String? = null,
+    /** Offer "Update now" under "Films and series": an Xtream playlist with it on but no films or shows yet. */
+    val offerVodUpdate: Boolean = false,
     /** Read-only "Account" / "Expires" / "Connections" label and value pairs, only for what the provider told us. */
     val accountRows: List<Pair<String, String>> = emptyList(),
 ) {
@@ -248,6 +254,8 @@ class SettingsViewModel(
     private val permissions: () -> PermissionStates = { PermissionStates() },
     private val setConnectionsAllowed: suspend (Long, Int?) -> Unit = { _, _ -> },
     private val setXtreamFormat: suspend (Long, String?) -> Unit = { _, _ -> },
+    /** PlaylistRepository.setXtreamVod: Off removes the playlist's films and series at once. */
+    private val setXtreamVod: suspend (Long, Boolean) -> Unit = { _, _ -> },
     tmdbStatus: Flow<KeyStatus> = flowOf(KeyStatus.NONE),
     /** Stores and checks the TMDB key; blank removes it. */
     private val saveTmdbKey: suspend (String) -> Unit = {},
@@ -457,6 +465,11 @@ class SettingsViewModel(
     fun setXtreamFormat(id: Long, format: String?) {
         if (format != null && format != XTREAM_FORMAT_HLS) return
         work.launch { setXtreamFormat.invoke(id, format) }
+    }
+
+    /** The "Films and series" setting; On fetches them at the next update. */
+    fun setXtreamVod(id: Long, on: Boolean) {
+        work.launch { setXtreamVod.invoke(id, on) }
     }
 
     fun updatePlaylist(id: Long) {
@@ -814,6 +827,7 @@ class SettingsViewModel(
                     permissions = { PermissionStates(canDrawOverlays(app), ignoresBatteryOptimisations(app)) },
                     setConnectionsAllowed = { id, n -> c.db.playlistDao().setConnectionsAllowed(id, n) },
                     setXtreamFormat = { id, f -> c.db.playlistDao().setXtreamFormat(id, f) },
+                    setXtreamVod = { id, on -> c.playlistRepository.setXtreamVod(id, on) },
                     tmdbStatus = c.tmdbKeyService.status,
                     saveTmdbKey = { k -> c.tmdbKeyService.save(k) },
                     removeTmdbKey = { c.tmdbKeyService.remove() },

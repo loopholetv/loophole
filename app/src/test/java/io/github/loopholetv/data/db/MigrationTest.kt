@@ -517,6 +517,64 @@ class MigrationTest {
         }
     }
 
+    @Test fun migrate11To12AddsXtreamColumns() = runTest {
+        helper.createDatabase(DB, 11).use { v11 ->
+            v11.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
+            v11.execSQL(
+                """INSERT INTO vod_films (playlistId, `key`, name, category, streamUrl, position, firstSeenAt)
+                   VALUES (7, 'f', 'Film', 'C', 'http://s.test/f.mp4', 0, 5)""",
+            )
+            v11.execSQL(
+                """INSERT INTO vod_episodes (playlistId, `key`, showKey, groupTitle, name, streamUrl, position, firstSeenAt)
+                   VALUES (7, 'e', 'S', 'G', 'Ep', 'http://s.test/e.mp4', 0, 5)""",
+            )
+            v11.execSQL(
+                """INSERT INTO vod_shows (playlistId, `key`, name, groupTitle, firstSeenAt, position)
+                   VALUES (7, 'S', 'Show', 'G', 5, 0)""",
+            )
+        }
+
+        // Validates the migrated schema against the exported schema 12.json.
+        helper.runMigrationsAndValidate(DB, 12, true, MIGRATION_11_12).close()
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            val playlist = db.playlistDao().byId(7)!!
+            assertTrue(playlist.xtreamVod)
+            assertNull(playlist.vodError)
+            db.playlistDao().setXtreamVod(7, false)
+            db.playlistDao().setVodError(7, "Films and series couldn't be updated")
+            assertFalse(db.playlistDao().byId(7)!!.xtreamVod)
+            assertEquals("Films and series couldn't be updated", db.playlistDao().byId(7)!!.vodError)
+            db.playlistDao().setVodError(7, null)
+            assertNull(db.playlistDao().byId(7)!!.vodError)
+
+            val write = db.vodWriteDao()
+            val film = write.filmsByKeys(7, listOf("f")).single()
+            assertNull(film.container)
+            assertNull(film.providerYear)
+            assertNull(film.providerRating)
+            assertNull(write.episodesByKeys(7, listOf("e")).single().container)
+            val show = db.vodBrowseDao().show(7, "S").first()!!
+            assertEquals(ShowSource.M3U, show.source)
+            assertEquals(
+                listOf<Any?>(null, null, null, null, null, null, null, null, null),
+                listOf(
+                    show.tvgId, show.lastModified, show.episodesFetchedAt, show.plot, show.cast, show.genre,
+                    show.rating, show.year, show.backdrop,
+                ),
+            )
+
+            val details = ProviderDetailsEntity(7, "f", "Plot", "A, B", "Drama", 7.5, 1999, 136, "http://img.test/b.jpg", Instant.ofEpochMilli(9))
+            db.xtreamVodDao().upsertProviderDetails(details)
+            assertEquals(details, db.xtreamVodDao().providerDetailsNow(7, "f"))
+        } finally {
+            db.close()
+        }
+    }
+
     @Test fun migrate1To7ViaAllMigrations() = runTest {
         helper.createDatabase(DB, 1).use { v1 ->
             v1.execSQL(

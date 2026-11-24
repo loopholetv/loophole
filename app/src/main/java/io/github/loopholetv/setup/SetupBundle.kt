@@ -96,6 +96,8 @@ data class SetupPlaylist(
     val connectionsAllowed: Int? = null,
     /** Xtream live stream format: `hls`, or null for MPEG-TS. */
     val xtreamFormat: String? = null,
+    /** Xtream "Films and series"; absent from an older TV's bundle, so on. */
+    val xtreamVod: Boolean = true,
     val file: SetupFile? = null,
     /** Added guide links, in order. */
     val guideLinks: List<String> = emptyList(),
@@ -351,7 +353,7 @@ internal object SetupFields {
         "name", "type", "url", "xtreamServer", "xtreamUser", "xtreamPass", "manualEpgUrl", "enabled", "userAgent", "updateHours",
         "updateOnStart", "useSourceEpg", "mac", "portalLogin", "portalPassword", "portalSerial", "portalDeviceId",
         "portalDeviceId2", "portalSignature",
-        "connectionsAllowed", "xtreamFormat",
+        "connectionsAllowed", "xtreamFormat", "xtreamVod",
     )
 
     /**
@@ -361,7 +363,7 @@ internal object SetupFields {
     val PLAYLIST_NOT_COPIED = setOf(
         "id", "epgUrlsFromSource", "lastRefreshedAt", "lastError", "rekeyPending",
         "portalEndpoint", "portalToken", "xtreamTimeZone", "xtreamArchiveExt",
-        "accountMaxConnections", "accountStatus", "accountExpiresAt",
+        "accountMaxConnections", "accountStatus", "accountExpiresAt", "vodError", "vodUpdatedAt",
     )
 
     val CHANNEL_EDIT_COPIED = setOf(
@@ -597,6 +599,7 @@ object SetupJson {
         w.name("portalSignature").value(p.portalSignature)
         w.name("connectionsAllowed").value(p.connectionsAllowed?.toLong())
         w.name("xtreamFormat").value(p.xtreamFormat)
+        w.name("xtreamVod").value(p.xtreamVod)
         w.name("file")
         val file = p.file
         if (file == null) {
@@ -784,6 +787,7 @@ object SetupJson {
             portalSignature = v.string("portalSignature"),
             connectionsAllowed = v.int("connectionsAllowed"),
             xtreamFormat = v.string("xtreamFormat")?.takeIf { it == "hls" },
+            xtreamVod = v.bool("xtreamVod") ?: true,
             file = file,
             guideLinks = links,
             channelEdits = channelEdits,

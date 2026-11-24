@@ -219,9 +219,37 @@ val MIGRATION_10_11: Migration = SqlMigration(
     "CREATE INDEX IF NOT EXISTS `index_vod_matches_tmdbKind_tmdbId` ON `vod_matches` (`tmdbKind`, `tmdbId`)",
 )
 
+/**
+ * v11 → v12: Xtream films and series — the playlist's Films and series switch and update error, the
+ * provider's columns on films, episodes and shows, and the provider's film details. SQL matches Room's
+ * schema 12 export.
+ */
+val MIGRATION_11_12: Migration = SqlMigration(
+    11,
+    12,
+    "ALTER TABLE `playlists` ADD COLUMN `xtreamVod` INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE `playlists` ADD COLUMN `vodError` TEXT",
+    "ALTER TABLE `playlists` ADD COLUMN `vodUpdatedAt` INTEGER",
+    "ALTER TABLE `vod_films` ADD COLUMN `container` TEXT",
+    "ALTER TABLE `vod_films` ADD COLUMN `providerYear` INTEGER",
+    "ALTER TABLE `vod_films` ADD COLUMN `providerRating` REAL",
+    "ALTER TABLE `vod_episodes` ADD COLUMN `container` TEXT",
+    "ALTER TABLE `vod_shows` ADD COLUMN `source` TEXT NOT NULL DEFAULT 'M3U'",
+    "ALTER TABLE `vod_shows` ADD COLUMN `tvgId` TEXT",
+    "ALTER TABLE `vod_shows` ADD COLUMN `lastModified` TEXT",
+    "ALTER TABLE `vod_shows` ADD COLUMN `episodesFetchedAt` INTEGER",
+    "ALTER TABLE `vod_shows` ADD COLUMN `plot` TEXT",
+    "ALTER TABLE `vod_shows` ADD COLUMN `cast` TEXT",
+    "ALTER TABLE `vod_shows` ADD COLUMN `genre` TEXT",
+    "ALTER TABLE `vod_shows` ADD COLUMN `rating` REAL",
+    "ALTER TABLE `vod_shows` ADD COLUMN `year` INTEGER",
+    "ALTER TABLE `vod_shows` ADD COLUMN `backdrop` TEXT",
+    "CREATE TABLE IF NOT EXISTS `vod_provider_details` (`playlistId` INTEGER NOT NULL, `key` TEXT NOT NULL, `plot` TEXT, `cast` TEXT, `genre` TEXT, `rating` REAL, `year` INTEGER, `runtimeMinutes` INTEGER, `backdrop` TEXT, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `key`))",
+)
+
 val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-    MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
+    MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
 )
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */

@@ -151,4 +151,21 @@ class TmdbMatcherTest {
         val f = FakeLookup().apply { movies = { _, _ -> TmdbResult.NotFound } }
         assertEquals(MatchOutcome.NotFound, matcher(f).matchFilm("The Matrix", null, "en-US"))
     }
+
+    @Test fun providerYearUsedWhenNameHasNone() = runTest {
+        val f = FakeLookup().apply { movies = { _, _ -> ok(hit(1, "The Matrix", 2005)) } }
+        assertEquals(MatchOutcome.NotFound, matcher(f).matchFilm("The Matrix", null, "en-US", year = 1999))
+        // The provider's year rules out the 2005 hit; no "The Matrix 1999" retry, as the name has no year.
+        assertEquals(listOf("movie:The Matrix:1999"), f.calls)
+
+        val g = FakeLookup().apply { shows = { _, _ -> ok(hit(3, "Breaking Bad", 2008)) } }
+        assertEquals(MatchOutcome.Matched(TmdbKind.TV, 3), matcher(g).matchShow("Breaking Bad", null, "en-US", year = 2008))
+        assertEquals(listOf("tv:Breaking Bad:2008"), g.calls)
+    }
+
+    @Test fun nameYearWinsOverProviderYear() = runTest {
+        val f = FakeLookup().apply { movies = { _, _ -> ok(hit(1, "The Matrix", 1999)) } }
+        assertEquals(MatchOutcome.Matched(TmdbKind.MOVIE, 1), matcher(f).matchFilm("The Matrix (1999)", null, "en-US", year = 2010))
+        assertEquals(listOf("movie:The Matrix:1999"), f.calls)
+    }
 }

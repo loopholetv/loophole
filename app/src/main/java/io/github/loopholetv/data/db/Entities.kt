@@ -73,6 +73,12 @@ data class PlaylistEntity(
     val accountStatus: String? = null,
     /** Xtream: when the account expires, from the last login; null = unknown or never. */
     val accountExpiresAt: Instant? = null,
+    /** Xtream: whether the account's films and series are imported ("Films and series"). */
+    @ColumnInfo(defaultValue = "1") val xtreamVod: Boolean = true,
+    /** Xtream: fixed copy when the last films-and-series update failed; null after one succeeds. */
+    val vodError: String? = null,
+    /** Xtream: when films and series last updated in full; null before the first, and after turning them Off. */
+    val vodUpdatedAt: Instant? = null,
 )
 
 @Entity(

@@ -121,6 +121,7 @@ class SetupImportTest {
             playlist("Xtream", PlaylistType.XTREAM).copy(
                 xtreamServer = "http://xt.example.test", xtreamUser = "u", xtreamPass = "p",
                 xtreamTimeZone = "Europe/London", xtreamArchiveExt = "ts",
+                xtreamVod = false, vodError = "Films and series couldn't be updated",
             ),
         )
         val portal = pd.insert(
@@ -179,6 +180,7 @@ class SetupImportTest {
             it.copy(
                 epgUrlsFromSource = "", lastRefreshedAt = null, lastError = null, rekeyPending = false,
                 portalEndpoint = null, portalToken = null, xtreamTimeZone = null, xtreamArchiveExt = null,
+                vodError = null,
             )
         },
         channelEdits = channelEdits

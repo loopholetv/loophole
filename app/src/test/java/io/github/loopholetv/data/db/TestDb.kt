@@ -23,6 +23,18 @@ internal suspend fun AppDatabase.addPlaylist(name: String = "P"): Long = playlis
     ),
 )
 
+internal suspend fun AppDatabase.addXtreamPlaylist(
+    server: String = "http://xt.test",
+    user: String = "u",
+    pass: String = "p",
+    name: String = "X",
+): Long = playlistDao().insert(
+    PlaylistEntity(
+        name = name, type = PlaylistType.XTREAM, url = null, xtreamServer = server, xtreamUser = user,
+        xtreamPass = pass, epgUrlsFromSource = "", manualEpgUrl = null, lastRefreshedAt = null, lastError = null,
+    ),
+)
+
 internal fun channel(
     playlistId: Long,
     key: String,

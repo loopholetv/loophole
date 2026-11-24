@@ -22,6 +22,7 @@ internal fun vodPlayerViewModelFactory(ref: VodRef, startMs: Long): ViewModelPro
             autoPlay = { c.settingsSnapshot.current.playback.autoPlayNext },
             nowMs = SystemClock::elapsedRealtime,
             beforePlay = c.recordingCoordinator::beforeUserPlayVod,
+            prefetchNext = c.xtreamEpisodes::fetchForNext,
         )
     }
 }

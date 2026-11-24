@@ -12,8 +12,11 @@ import java.time.Instant
 
 private const val TOUCH_CHUNK = 500
 
-/** What a lookup needs from a playlist film or show. A show's [tvgId] is the one most of its episodes share. */
-data class VodTitleSource(val key: String, val name: String, val tvgId: String?)
+/**
+ * What a lookup needs from a playlist film or show. A show's [tvgId] is its own (an Xtream show's TMDB
+ * hint), else the one most of its episodes share. [year] is the provider's, when it gives one.
+ */
+data class VodTitleSource(val key: String, val name: String, val tvgId: String?, val year: Int? = null)
 
 /** TMDB details and the matches linking them to playlist films and shows. */
 @Dao
@@ -68,13 +71,13 @@ abstract class TmdbDao {
     @Query("SELECT * FROM tmdb_titles WHERE tmdbKind = :kind AND tmdbId = :id")
     abstract suspend fun titleNow(kind: TmdbKind, id: Long): TmdbTitleEntity?
 
-    @Query("SELECT `key`, name, tvgId FROM vod_films WHERE playlistId = :p")
+    @Query("SELECT `key`, name, tvgId, providerYear AS year FROM vod_films WHERE playlistId = :p")
     abstract suspend fun filmSources(p: Long): List<VodTitleSource>
 
     @Query(
-        """SELECT s.`key`, s.name, (SELECT e.tvgId FROM vod_episodes e
+        """SELECT s.`key`, s.name, COALESCE(NULLIF(TRIM(s.tvgId), ''), (SELECT e.tvgId FROM vod_episodes e
              WHERE e.playlistId = s.playlistId AND e.showKey = s.`key` AND TRIM(COALESCE(e.tvgId, '')) != ''
-             GROUP BY e.tvgId ORDER BY COUNT(*) DESC, e.tvgId LIMIT 1) AS tvgId
+             GROUP BY e.tvgId ORDER BY COUNT(*) DESC, e.tvgId LIMIT 1)) AS tvgId, s.year AS year
            FROM vod_shows s WHERE s.playlistId = :p""",
     )
     abstract suspend fun showSources(p: Long): List<VodTitleSource>

@@ -28,6 +28,9 @@ private val PRUNE_AFTER: Duration = Duration.ofDays(30)
 /** A present title's last-seen time is moved on at most this often (well inside [PRUNE_AFTER]). */
 private val TOUCH_AFTER: Duration = Duration.ofDays(1)
 
+/** A film's TMDB id as the provider gives it, stored as its tvg-id. */
+private val FILM_TMDB_HINT = Regex("tmdb:(\\d+)")
+
 /** A run gives up after this many titles fail one after another (TMDB or the network is down). */
 internal const val FAILURES_IN_A_ROW = 3
 
@@ -74,6 +77,7 @@ class TmdbSync(
         val key: String,
         val name: String,
         val tvgId: String?,
+        val year: Int?,
         val row: VodMatchEntity?,
     ) {
         val fingerprint = fingerprint(kind, tvgId, name)
@@ -147,7 +151,7 @@ class TmdbSync(
                 if (!playlist.enabled) continue
                 val rows = dao.matchesOf(playlist.id, kind).associateBy { it.key }
                 sources.forEach { s ->
-                    add(Title(playlist.id, kind, s.key, s.name, s.tvgId?.trim()?.ifEmpty { null }, rows[s.key]))
+                    add(Title(playlist.id, kind, s.key, s.name, s.tvgId?.trim()?.ifEmpty { null }, s.year, rows[s.key]))
                 }
             }
         }
@@ -196,17 +200,17 @@ class TmdbSync(
         if (row?.state == MatchState.MATCHED && kind != null && id != null) {
             return store(t, row, kind, id, details(kind, id, lang) { _, _ -> true })
         }
-        numericShowId(t)?.let { showId ->
-            // A provider's numeric show id is trusted only when TMDB's name for it is the show's name.
-            when (val f = details(TmdbKind.TV, showId, lang) { a, b -> sameName(t.name, a, b) }) {
-                is Fetch.Got, Fetch.Cached -> return store(t, row, TmdbKind.TV, showId, f)
+        providerTmdbId(t)?.let { (hintKind, hintId) ->
+            // A provider's TMDB id is trusted only when TMDB's name for it is the title's name.
+            when (val f = details(hintKind, hintId, lang) { a, b -> sameName(t.name, a, b) }) {
+                is Fetch.Got, Fetch.Cached -> return store(t, row, hintKind, hintId, f)
                 Fetch.Missing -> Unit
                 else -> return stop(f)
             }
         }
         val outcome = when (t.kind) {
-            TitleKind.FILM -> matcher.matchFilm(t.name, t.tvgId, lang)
-            TitleKind.SHOW -> matcher.matchShow(t.name, t.tvgId.takeIf { numericShowId(t) == null }, lang)
+            TitleKind.FILM -> matcher.matchFilm(t.name, t.tvgId, lang, t.year)
+            TitleKind.SHOW -> matcher.matchShow(t.name, t.tvgId.takeIf { numericShowId(t) == null }, lang, t.year)
         }
         return when (outcome) {
             is MatchOutcome.Matched -> store(t, row, outcome.kind, outcome.id, details(outcome.kind, outcome.id, lang) { _, _ -> true })
@@ -286,8 +290,15 @@ class TmdbSync(
     private fun numericShowId(t: Title): Long? =
         t.tvgId?.takeIf { t.kind == TitleKind.SHOW && it.all { c -> c in '0'..'9' } }?.toLongOrNull()
 
-    private fun sameName(showName: String, title: String, originalTitle: String?): Boolean {
-        val wanted = normaliseTitle(cleanTitle(showName).query)
+    /** A TMDB id given by the provider: a show's numeric tvg-id, or a film's `tmdb:<id>`. */
+    private fun providerTmdbId(t: Title): Pair<TmdbKind, Long>? = when (t.kind) {
+        TitleKind.SHOW -> numericShowId(t)?.let { TmdbKind.TV to it }
+        TitleKind.FILM -> t.tvgId?.let { FILM_TMDB_HINT.matchEntire(it) }?.groupValues?.get(1)?.toLongOrNull()
+            ?.let { TmdbKind.MOVIE to it }
+    }
+
+    private fun sameName(name: String, title: String, originalTitle: String?): Boolean {
+        val wanted = normaliseTitle(cleanTitle(name).query)
         if (wanted.isEmpty()) return false
         return wanted == normaliseTitle(title) || originalTitle?.let { normaliseTitle(it) } == wanted
     }

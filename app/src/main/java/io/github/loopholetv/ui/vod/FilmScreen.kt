@@ -129,7 +129,7 @@ internal fun FilmContent(
                     }
                     // The label changes with the state but the pill stays put, so focus stays on it.
                     PillButton(label = myListLabel(ui.inMyList), selected = false, onClick = onToggleMyList)
-                    if (ui.details != null) {
+                    if (ui.details?.fromTmdb == true) {
                         // The button goes away with the details, so focus moves to Play first.
                         WrongDetailsButton {
                             requesters[0].tryFocus()
@@ -186,7 +186,7 @@ internal fun DetailsText(d: TitleDetailsUi, overviewLines: Int = FILM_OVERVIEW_L
     }
 }
 
-/** "Wrong details?": drops the TMDB match without asking. */
+/** "Wrong details?": drops the TMDB match without asking. Not shown for the provider's own details. */
 @Composable
 internal fun WrongDetailsButton(onClick: () -> Unit) {
     PillButton(label = WRONG_DETAILS_LABEL, selected = false, onClick = onClick)

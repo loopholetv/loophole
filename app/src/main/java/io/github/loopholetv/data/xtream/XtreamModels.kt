@@ -38,6 +38,51 @@ data class XtreamLiveStream(
     val tvArchiveDays: Int?,
 )
 
+data class XtreamFilm(
+    val streamId: Long,
+    val name: String,
+    val icon: String?,
+    val categoryId: String?,
+    val container: String?,
+    val tmdbId: Long?,
+    val year: Int?,
+    val rating: Double?,
+)
+
+data class XtreamShow(
+    val seriesId: Long,
+    val name: String,
+    val cover: String?,
+    val categoryId: String?,
+    val plot: String?,
+    val cast: String?,
+    val genre: String?,
+    val rating: Double?,
+    val year: Int?,
+    val backdrop: String?,
+    val tmdbId: Long?,
+    val lastModified: String?,
+)
+
+data class XtreamEpisode(
+    val id: Long,
+    val season: Int?,
+    val episode: Int?,
+    val title: String?,
+    val container: String?,
+    val cover: String?,
+)
+
+data class XtreamFilmInfo(
+    val plot: String?,
+    val cast: String?,
+    val genre: String?,
+    val rating: Double?,
+    val year: Int?,
+    val runtimeMinutes: Int?,
+    val backdrop: String?,
+)
+
 /**
  * Stored as an account's expiry when the provider reports none (no `exp_date`, or 0): the account
  * never expires. A null expiry means the provider did not say. The settings page shows "Never".

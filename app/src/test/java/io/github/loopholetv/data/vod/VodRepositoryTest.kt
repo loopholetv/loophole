@@ -8,6 +8,8 @@ import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.ChannelPrefsEntity
 import io.github.loopholetv.data.db.ShowEntity
 import io.github.loopholetv.data.db.addPlaylist
+import io.github.loopholetv.data.db.addXtreamPlaylist
+import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.db.inMemoryDb
 import io.github.loopholetv.data.db.MatchState
 import io.github.loopholetv.data.db.TmdbEpisodeEntity
@@ -213,6 +215,49 @@ class VodRepositoryTest {
         assertNull(repo.playable(VodRef(VodKind.MOVIE, a, "missing")))
         assertNull(repo.playable(VodRef(VodKind.RECORDING, a, "rec:1")))
         assertEquals(listOf(a), repo.playlistsWithCategory("Action"))
+    }
+
+    @Test fun xtreamFilmUrlUsesCurrentLogin() = runTest {
+        val a = db.addXtreamPlaylist(pass = "old")
+        insertFilms(film(a, "xm:7").copy(streamUrl = "http://stale.test/x", container = "mkv"))
+        val ref = VodRef(VodKind.MOVIE, a, "xm:7")
+        assertEquals("http://xt.test/movie/u/old/7.mkv", repo.playable(ref)?.streamUrl)
+
+        db.playlistDao().update(db.playlistDao().byId(a)!!.copy(xtreamPass = "new"))
+        assertEquals("http://xt.test/movie/u/new/7.mkv", repo.playable(ref)?.streamUrl)
+    }
+
+    @Test fun xtreamEpisodeUrlUsesItsContainer() = runTest {
+        val a = db.addXtreamPlaylist()
+        db.vodWriteDao().upsertEpisodes(listOf(episode(a, "xe:55", "xs:1", 1, 1).copy(container = "avi")))
+        db.vodWriteDao().upsertEpisodes(listOf(episode(a, "xe:56", "xs:1", 1, 2)))
+
+        assertEquals("http://xt.test/series/u/p/55.avi", repo.playable(VodRef(VodKind.EPISODE, a, "xe:55"))?.streamUrl)
+        assertEquals("http://xt.test/series/u/p/56.mp4", repo.playable(VodRef(VodKind.EPISODE, a, "xe:56"))?.streamUrl)
+    }
+
+    @Test fun xtreamFilmIgnoresHlsFormat() = runTest {
+        val a = db.addXtreamPlaylist()
+        db.playlistDao().update(db.playlistDao().byId(a)!!.copy(xtreamFormat = "hls"))
+        insertFilms(film(a, "xm:9").copy(container = "ts"))
+
+        assertEquals("http://xt.test/movie/u/p/9.ts", repo.playable(VodRef(VodKind.MOVIE, a, "xm:9"))?.streamUrl)
+    }
+
+    @Test fun xtreamRowOnNonXtreamPlaylistIsNotPlayable() = runTest {
+        val a = db.addPlaylist()
+        insertFilms(film(a, "xm:7"))
+        db.vodWriteDao().upsertEpisodes(listOf(episode(a, "xe:5", "xs:1", 1, 1)))
+
+        assertNull(repo.playable(VodRef(VodKind.MOVIE, a, "xm:7")))
+        assertNull(repo.playable(VodRef(VodKind.EPISODE, a, "xe:5")))
+    }
+
+    @Test fun m3uFilmStillUsesStoredUrl() = runTest {
+        val a = db.addXtreamPlaylist()
+        insertFilms(film(a, "f1"))
+
+        assertEquals("http://s.test/f1.mp4", repo.playable(VodRef(VodKind.MOVIE, a, "f1"))?.streamUrl)
     }
 
     @Test fun hiddenGroupExcludedEverywhere() = runTest {

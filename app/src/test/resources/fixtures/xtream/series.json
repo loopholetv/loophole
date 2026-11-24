@@ -1,0 +1,4 @@
+[
+ {"num":1,"name":"Breaking Bad","series_id":7,"cover":"http://img/bb.jpg","plot":"A teacher.","cast":"Bryan Cranston","genre":"Crime","releaseDate":"2008-01-20","rating":"9.5","backdrop_path":["http://img/bd1.jpg","http://img/bd2.jpg"],"tmdb":"1396","last_modified":"1700000123","category_id":"20"},
+ {"series_id":"8","name":"Single Backdrop","backdrop_path":"http://img/one.jpg","category_id":"21","plot":""}
+]

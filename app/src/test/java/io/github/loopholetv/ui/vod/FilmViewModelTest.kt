@@ -4,7 +4,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.FilmEntity
 import io.github.loopholetv.data.db.VodProgressEntity
+import io.github.loopholetv.data.db.ProviderDetailsEntity
 import io.github.loopholetv.data.db.addPlaylist
+import io.github.loopholetv.data.db.addXtreamPlaylist
+import io.github.loopholetv.data.repo.XtreamFilmDetails
+import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.data.db.MatchState
 import io.github.loopholetv.data.db.TmdbGenreEntity
 import io.github.loopholetv.data.db.TmdbTitleEntity
@@ -20,6 +24,11 @@ import io.github.loopholetv.ui.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,6 +40,9 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -57,6 +69,7 @@ class FilmViewModelTest {
     @After fun tearDown() {
         main.clear()
         db.close()
+        server?.shutdown()
     }
 
     private suspend fun saveProgress(positionMs: Long, durationMs: Long? = null) = db.vodProgressDao().upsert(
@@ -183,5 +196,144 @@ class FilmViewModelTest {
         assertEquals(MatchState.REJECTED, m.state)
         assertNull(m.tmdbId)
         assertEquals(now, m.lookedUpAt)
+    }
+
+    // Xtream films: the provider's details, fetched when the page opens.
+
+    private var server: MockWebServer? = null
+    private val requests = CopyOnWriteArrayList<RecordedRequest>()
+
+    @Volatile private var reply: () -> MockResponse = { MockResponse().setBody(MATRIX_INFO) }
+
+    private val xm = "xm:42"
+
+    /** An Xtream playlist on a local server holding the film [xm], with the list's year and rating. */
+    private suspend fun xtreamFilm(): Long {
+        val s = MockWebServer().also { server = it }
+        s.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests += request
+                return reply()
+            }
+        }
+        s.start()
+        val p = db.addXtreamPlaylist(server = s.url("/").toString().trimEnd('/'))
+        db.xtreamVodDao().upsertFilms(
+            listOf(FilmEntity(p, xm, "Matrix", "Action", null, "http://s.test/42.mkv", null, null, null, 1, now, "mkv", 1998, 5.0)),
+        )
+        return p
+    }
+
+    private fun xvm(p: Long, key: String = xm): FilmViewModel {
+        val repo = VodRepository(db) { now }
+        val info = XtreamFilmDetails(db, XtreamClient(OkHttpClient()), userAgent = { "UA/1" }, clock = { now })
+        return main.keep(
+            FilmViewModel(p, key, repo, VodProgressRepository(db.vodProgressDao()) { now }, VodLibraryRepository(db, repo) { now }, info),
+        )
+    }
+
+    @Test fun providerDetailsWhenUnmatched() = runTest {
+        val p = xtreamFilm()
+        val model = xvm(p)
+        model.providerFetch!!.join()
+
+        val ui = model.ui.first { it?.details?.overview != null }!!
+        val d = ui.details!!
+
+        assertEquals("1999 · 2 h 16 min · ★ 7.9 · Action", formatMeta(d))
+        assertEquals("Neo wakes up.", d.overview)
+        assertEquals(listOf("Keanu Reeves", "Carrie-Anne Moss"), d.cast)
+        assertEquals("https://img.test/bd.jpg", d.backdropUrl)
+        // Provider details have no match to reject, so the page shows no "Wrong details?".
+        assertFalse(d.fromTmdb)
+        assertEquals("Matrix", ui.title)
+        assertEquals(1, requests.size)
+        assertEquals("get_vod_info", requests[0].requestUrl!!.queryParameter("action"))
+    }
+
+    @Test fun yearAndRatingFromListBeforeDetailsArrive() = runTest {
+        val p = xtreamFilm()
+        val gate = CountDownLatch(1)
+        reply = {
+            gate.await(10, TimeUnit.SECONDS)
+            MockResponse().setBody(MATRIX_INFO)
+        }
+        val model = xvm(p)
+
+        val before = model.ui.first { it?.details != null }!!.details!!
+        assertEquals("1998 · ★ 5.0", formatMeta(before))
+        assertNull(before.overview)
+        assertFalse(before.fromTmdb)
+
+        gate.countDown()
+        model.providerFetch!!.join()
+        val after = model.ui.first { it?.details?.overview != null }!!.details!!
+        assertEquals("1999 · 2 h 16 min · ★ 7.9 · Action", formatMeta(after))
+    }
+
+    @Test fun tmdbWinsOverProvider() = runTest {
+        val p = xtreamFilm()
+        db.xtreamVodDao().upsertProviderDetails(
+            ProviderDetailsEntity(p, xm, "Provider plot.", "Someone", "Western", 3.0, 1990, 90, "https://img.test/p.jpg", now),
+        )
+        val tmdb = db.tmdbDao()
+        tmdb.upsertTitle(
+            TmdbTitleEntity(TmdbKind.MOVIE, 603, "The Matrix", "The Matrix", 1999, "A hacker learns.", "/m.jpg", "/m-bd.jpg", 8.2, 9000, 136, null, null, "en-US", now),
+            emptyList(),
+        )
+        tmdb.upsertMatch(VodMatchEntity(p, TitleKind.FILM, xm, "fp", MatchState.MATCHED, TmdbKind.MOVIE, 603, null, "Matrix", null, now, now))
+        val model = xvm(p)
+
+        val d = model.ui.first { it?.details?.fromTmdb == true }!!.details!!
+
+        assertEquals("1999 · 2 h 16 min · ★ 8.2", formatMeta(d))
+        assertEquals("A hacker learns.", d.overview)
+        assertEquals("https://image.tmdb.org/t/p/w1280/m-bd.jpg", d.backdropUrl)
+        // Fetched just now, so the page doesn't ask again.
+        model.providerFetch?.join()
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test fun matchedFilmSkipsTheProviderFetch() = runTest {
+        val p = xtreamFilm()
+        val tmdb = db.tmdbDao()
+        tmdb.upsertTitle(
+            TmdbTitleEntity(TmdbKind.MOVIE, 603, "The Matrix", "The Matrix", 1999, "A hacker learns.", "/m.jpg", "/m-bd.jpg", 8.2, 9000, 136, null, null, "en-US", now),
+            emptyList(),
+        )
+        tmdb.upsertMatch(VodMatchEntity(p, TitleKind.FILM, xm, "fp", MatchState.MATCHED, TmdbKind.MOVIE, 603, null, "Matrix", null, now, now))
+        val model = xvm(p)
+
+        model.providerFetch!!.join()
+
+        // TMDB's details are shown, so the provider isn't asked for its own.
+        assertTrue(requests.isEmpty())
+        assertNull(db.xtreamVodDao().providerDetailsNow(p, xm))
+    }
+
+    @Test fun m3uFilmNeverRequests() = runTest {
+        xtreamFilm()
+        val model = xvm(playlist, key = "f1")
+
+        model.ui.first { it != null }
+
+        assertNull(model.providerFetch)
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test fun xtreamFilmIsAskedOncePerOpen() = runTest {
+        val p = xtreamFilm()
+        reply = { MockResponse().setResponseCode(500) }
+        val model = xvm(p)
+        model.providerFetch!!.join()
+
+        // A failure leaves the page on the list's year and rating, and doesn't retry on its own.
+        assertEquals("1998 · ★ 5.0", formatMeta(model.ui.first { it?.details != null }!!.details!!))
+        assertEquals(1, requests.size)
+    }
+
+    private companion object {
+        const val MATRIX_INFO = """{"info":{"plot":"Neo wakes up.","cast":"Keanu Reeves, Carrie-Anne Moss","genre":"Action",""" +
+            """"rating":"7.9","releasedate":"1999-03-31","duration_secs":8160,"backdrop_path":["https://img.test/bd.jpg"]}}"""
     }
 }

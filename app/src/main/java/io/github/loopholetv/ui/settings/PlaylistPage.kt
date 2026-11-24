@@ -19,6 +19,7 @@ import io.github.loopholetv.ui.manage.TextEntryDialog
 private const val NAME_KEY = "name"
 private const val ENABLED_KEY = "enabled"
 private const val UA_KEY = "userAgent"
+private const val VOD_KEY = "filmsAndSeries"
 
 /** Longest user agent typed. */
 private const val MAX_UA_LENGTH = 300
@@ -62,7 +63,7 @@ fun PlaylistPage(
         ActionRow(
             "Update playlist",
             { vm.updatePlaylist(id) },
-            supporting = row.statusText,
+            supporting = listOfNotNull(row.statusText, row.vodStatusText).joinToString("\n"),
             supportingIsError = row.statusIsError,
         )
         // Read-only, but focusable so the D-pad can reach and read them.
@@ -96,6 +97,14 @@ fun PlaylistPage(
                 { streamFormatText(it) },
                 key = "p$id:format",
             ) { vm.setXtreamFormat(id, it) }
+            ToggleRow(
+                RC_FILMS_AND_SERIES,
+                row.xtreamVod,
+                { vm.setXtreamVod(id, !row.xtreamVod) },
+                Modifier.focusRequester(host.requester(VOD_KEY)),
+            )
+            // Gone once the update starts: focus goes back to the setting above it.
+            if (row.offerVodUpdate) ActionRow(UPDATE_NOW, { vm.updatePlaylist(id); refocus = VOD_KEY })
         }
         ValueRow("User agent", userAgentText(row.userAgent), { dialog = UA_KEY }, Modifier.focusRequester(host.requester(UA_KEY)))
         ActionRow("Groups and channels", onOpenEditor, Modifier.focusRequester(host.requester(EDITOR_KEY)))

@@ -1,6 +1,8 @@
 package io.github.loopholetv.ui.vod
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TitleDetailsFormatTest {
@@ -19,5 +21,29 @@ class TitleDetailsFormatTest {
         assertEquals("3 seasons", formatMeta(base.copy(year = null, runtimeMinutes = null, seasonCount = 3, rating = null, genres = emptyList())))
         assertEquals("★ 7.5", formatMeta(base.copy(year = null, runtimeMinutes = null, rating = 7.46, genres = emptyList())))
         assertEquals("", formatMeta(base.copy(year = null, runtimeMinutes = null, rating = null, genres = emptyList())))
+    }
+
+    @Test fun providerDetailsSplitGenresAndCast() {
+        val d = providerDetailsUi(
+            plot = " A teacher turns. ", cast = "Bryan Cranston, ,Aaron Paul ", genre = "Drama / Crime|Thriller, ",
+            rating = 8.9, year = 2008, runtimeMinutes = 47, backdrop = "https://img.test/bd.jpg",
+        )!!
+
+        assertEquals(listOf("Drama", "Crime", "Thriller"), d.genres)
+        assertEquals(listOf("Bryan Cranston", "Aaron Paul"), d.cast)
+        assertEquals("A teacher turns.", d.overview)
+        assertEquals("https://img.test/bd.jpg", d.backdropUrl)
+        assertEquals("2008 · 47 min · ★ 8.9 · Drama, Crime, Thriller", formatMeta(d))
+        assertNull(d.seasonCount)
+        assertNull(d.badge)
+        assertFalse(d.fromTmdb)
+        // Only a web address is used as the backdrop.
+        assertNull(providerDetailsUi("Plot", null, null, null, null, null, "/bd.jpg")!!.backdropUrl)
+        assertEquals("http://img.test/bd.jpg", providerDetailsUi("Plot", null, null, null, null, null, "http://img.test/bd.jpg")!!.backdropUrl)
+    }
+
+    @Test fun providerDetailsAllBlankIsNull() {
+        assertNull(providerDetailsUi(null, null, null, null, null, null, null))
+        assertNull(providerDetailsUi(" ", "", " , ", null, null, null, "  "))
     }
 }

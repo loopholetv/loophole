@@ -1,0 +1,7 @@
+{
+ "a": {"name":"Stringly","stream_id":"21","stream_icon":"","rating":"6.5","category_id":22,"container_extension":"","tmdb":"0","releasedate":"2010-05-04"},
+ "b": {"stream_id":23,"name":"  "},
+ "c": {"name":"No id","stream_icon":"x"},
+ "d": {"stream_id":"24.0","title":"Titled","tmdb_id":"77","year":"abc","release_date":"2001-01-01","rating":"NaN"},
+ "e": "junk"
+}

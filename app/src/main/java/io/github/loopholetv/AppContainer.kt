@@ -328,6 +328,15 @@ class AppContainer(context: Context) {
 
     val vod: VodRepository by lazy { VodRepository(db) { java.time.Instant.now() } }
 
+    /** Xtream show episodes, fetched when a show page or the next episode needs them. */
+    val xtreamEpisodes: io.github.loopholetv.data.repo.XtreamEpisodes by lazy {
+        io.github.loopholetv.data.repo.XtreamEpisodes(db, xtream, userAgent = downloadUserAgent, clock = java.time.Instant::now)
+    }
+
+    val xtreamFilmDetails: io.github.loopholetv.data.repo.XtreamFilmDetails by lazy {
+        io.github.loopholetv.data.repo.XtreamFilmDetails(db, xtream, userAgent = downloadUserAgent, clock = java.time.Instant::now)
+    }
+
     val vodLibrary: VodLibraryRepository by lazy { VodLibraryRepository(db, vod) { java.time.Instant.now() } }
 
     val scopedChannels: ScopedChannels by lazy { ScopedChannels(db.channelDao(), db.favouriteDao()) }

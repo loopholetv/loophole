@@ -65,6 +65,21 @@ interface PlaylistDao {
     @Query("UPDATE playlists SET rekeyPending = :pending WHERE id = :id")
     suspend fun setRekeyPending(id: Long, pending: Boolean)
 
+    @Query("UPDATE playlists SET xtreamVod = :on WHERE id = :id")
+    suspend fun setXtreamVod(id: Long, on: Boolean)
+
+    /** [error] is fixed copy, never provider text. */
+    @Query("UPDATE playlists SET vodError = :error WHERE id = :id")
+    suspend fun setVodError(id: Long, error: String?)
+
+    /** A films-and-series update that completed: no error, updated [at]. */
+    @Query("UPDATE playlists SET vodError = NULL, vodUpdatedAt = :at WHERE id = :id")
+    suspend fun setVodUpdated(id: Long, at: Instant)
+
+    /** Films and series turned Off: no error, and no update to speak of. */
+    @Query("UPDATE playlists SET vodError = NULL, vodUpdatedAt = NULL WHERE id = :id")
+    suspend fun clearVodStatus(id: Long)
+
     /** The MAC portal's working endpoint and session token (null clears them). */
     @Query("UPDATE playlists SET portalEndpoint = :endpoint, portalToken = :token WHERE id = :id")
     suspend fun setPortalSession(id: Long, endpoint: String?, token: String?)

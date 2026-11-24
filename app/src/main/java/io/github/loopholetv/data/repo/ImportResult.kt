@@ -30,6 +30,9 @@ fun errorCopy(error: ImportError): String = when (error) {
     is ImportError.Http -> "The server returned an error (${error.code})."
 }
 
+/** Stored as a playlist's `vodError` when its Xtream films or series couldn't be updated (the channels may still have been). */
+const val VOD_NOT_UPDATED = "Films and series couldn't be updated"
+
 /** Trims [raw] and prepends "http://" unless it already starts with http:// or https:// (any case). */
 fun withHttpScheme(raw: String): String {
     val t = raw.trim()

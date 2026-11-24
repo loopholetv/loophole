@@ -62,6 +62,8 @@ class VodPlayerViewModel(
     private val autoPlay: () -> Boolean,
     /** Asked before the stream opens; false when a recording keeps the provider's stream (it may ask first). */
     private val beforePlay: suspend (VodRef) -> Boolean = { true },
+    /** Fetches the show's episodes again when an episode has no next one stored, so a new one is found. */
+    private val prefetchNext: suspend (VodRef) -> Unit = {},
     private val nowMs: () -> Long,
 ) : ViewModel() {
     private val _bar = MutableStateFlow<VodBarUi?>(null)
@@ -144,7 +146,11 @@ class VodPlayerViewModel(
         playback.playVod(item, startMs)
     }
 
-    /** Looks up, once per item, the episode that follows it. */
+    /**
+     * Looks up, once per item, the episode that follows it. With none stored (and Auto-play next on),
+     * the show's episodes are fetched in the background and looked up again; the end of the episode
+     * uses what is known by then and never waits for the fetch.
+     */
     private fun lookUpNext() {
         val r = current
         nextRef = null
@@ -156,6 +162,18 @@ class VodPlayerViewModel(
                 nextRef = n
                 nextKnown = true
             }
+            // Only worth a request when the end of this episode could play the next one.
+            if (n != null || finished || r != current || !autoPlay()) return@launch
+            try {
+                prefetchNext(r)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return@launch
+            }
+            if (r != current) return@launch
+            val found = nextSafely(r)
+            if (r == current) nextRef = found
         }
     }
 

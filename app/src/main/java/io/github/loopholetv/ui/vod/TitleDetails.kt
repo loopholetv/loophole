@@ -6,8 +6,9 @@ import io.github.loopholetv.data.vod.TmdbDetail
 import java.util.Locale
 
 /**
- * The TMDB details a film or show page shows for a matched title. [runtimeMinutes] is set for
- * films and [seasonCount] for shows. [badge] is the quality tag (e.g. "4K") the playlist name carried.
+ * The details a film or show page shows: TMDB's for a matched title, else the provider's
+ * ([fromTmdb] false, so there is no match to reject). [runtimeMinutes] is set for films and
+ * [seasonCount] for shows. [badge] is the quality tag (e.g. "4K") the playlist name carried.
  */
 data class TitleDetailsUi(
     val year: Int?,
@@ -19,6 +20,7 @@ data class TitleDetailsUi(
     val cast: List<String>,
     val backdropUrl: String?,
     val badge: String?,
+    val fromTmdb: Boolean = true,
 )
 
 private const val SEPARATOR = " · "
@@ -57,3 +59,39 @@ internal fun TmdbDetail.toUi(): TitleDetailsUi = TitleDetailsUi(
 
 /** TMDB's poster for a matched title, or the playlist's [fallback]. */
 internal fun TmdbDetail?.posterOr(fallback: String?): String? = this?.title?.posterPath?.let { TMDB_POSTER_BASE + it } ?: fallback
+
+/**
+ * The provider's own details (an Xtream show or film), or null when it gives none. Genres may be
+ * split by `,`, `/` or `|`; cast by `,`. Only a web address is used as the backdrop.
+ */
+fun providerDetailsUi(
+    plot: String?,
+    cast: String?,
+    genre: String?,
+    rating: Double?,
+    year: Int?,
+    runtimeMinutes: Int?,
+    backdrop: String?,
+): TitleDetailsUi? {
+    val d = TitleDetailsUi(
+        year = year?.takeIf { it > 0 },
+        runtimeMinutes = runtimeMinutes?.takeIf { it > 0 },
+        seasonCount = null,
+        rating = rating?.takeIf { it > 0.0 },
+        genres = genre.splitList(GENRE_SEPARATORS),
+        overview = plot?.trim()?.takeIf { it.isNotEmpty() },
+        cast = cast.splitList(CAST_SEPARATORS),
+        backdropUrl = backdrop?.trim()?.takeIf { it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true) },
+        badge = null,
+        fromTmdb = false,
+    )
+    val empty = d.year == null && d.runtimeMinutes == null && d.rating == null && d.genres.isEmpty() &&
+        d.overview == null && d.cast.isEmpty() && d.backdropUrl == null
+    return d.takeUnless { empty }
+}
+
+private val GENRE_SEPARATORS = charArrayOf(',', '/', '|')
+private val CAST_SEPARATORS = charArrayOf(',')
+
+private fun String?.splitList(separators: CharArray): List<String> =
+    this?.split(*separators)?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()

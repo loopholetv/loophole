@@ -299,6 +299,23 @@ class SetupBundleTest {
     }
 
     @Test
+    fun xtreamVodRoundTripsAndDefaultsOn() {
+        val base = sampleBundle()
+        assertTrue(decode(SetupJson.encode(base))!!.playlists.first { it.type == PlaylistType.XTREAM }.xtreamVod)
+        val off = base.copy(
+            playlists = base.playlists.map { if (it.type == PlaylistType.XTREAM) it.copy(xtreamVod = false) else it },
+        )
+        val json = String(SetupJson.encode(off))
+        assertTrue(json, "\"xtreamVod\":false" in json)
+        assertFalse(decode(json.toByteArray())!!.playlists.first { it.type == PlaylistType.XTREAM }.xtreamVod)
+
+        // A bundle from a TV that predates the setting has no such field: films and series stay on.
+        val older = json.replace(",\"xtreamVod\":false", "").replace(",\"xtreamVod\":true", "")
+        assertFalse(older, "xtreamVod" in older)
+        assertTrue(decode(older.toByteArray())!!.playlists.all { it.xtreamVod })
+    }
+
+    @Test
     fun aBundleWithoutANetworkFolderKeepsThisTvsStorage() {
         val target = AppSettings(
             recordStorage = StorageKind.SMB, smbHost = "mine.example.test", smbShare = "share", smbFolder = "rec",
