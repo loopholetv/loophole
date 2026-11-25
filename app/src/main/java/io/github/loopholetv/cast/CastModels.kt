@@ -22,6 +22,9 @@ enum class CastStatus { IDLE, WATCHING, CASTING }
  *
  * [rec] is the secret that opens this TV's recordings to other TVs; set while it has at least one
  * recording, absent otherwise and from TVs that predate recordings.
+ *
+ * [locked] says what the TV casts now is locked on the TV that plays it. Only that mark travels,
+ * never a name. A TV that predates it doesn't send the field, which reads as false.
  */
 data class CastAnnounce(
     val id: String,
@@ -36,15 +39,16 @@ data class CastAnnounce(
     val v: Int = 1,
     val setup: Int = 0,
     val rec: String? = null,
+    val locked: Boolean = false,
 ) {
     override fun toString() =
         "CastAnnounce(id=$id, name=$name, port=$port, status=$status, accepts=$accepts, castId=$castId, " +
             "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, seq=$seq, v=$v, setup=$setup, " +
-            "rec=${if (rec == null) "null" else "***"})"
+            "rec=${if (rec == null) "null" else "***"}, locked=$locked)"
 
     companion object {
         /** The setup-copy protocol this build speaks. */
-        const val SETUP_VERSION = 1
+        const val SETUP_VERSION = 2
     }
 }
 
@@ -63,18 +67,27 @@ data class CastPeer(
     val setup: Int = 0,
     /** See [CastAnnounce.rec]. */
     val rec: String? = null,
+    /** See [CastAnnounce.locked]. */
+    val locked: Boolean = false,
 ) {
     override fun toString() =
         "CastPeer(id=$id, name=$name, host=$host, port=$port, status=$status, accepts=$accepts, castId=$castId, " +
             "token=${if (token == null) "null" else "***"}, startedAt=$castStartedAtMs, lastSeenMs=$lastSeenMs, " +
-            "setup=$setup, rec=${if (rec == null) "null" else "***"})"
+            "setup=$setup, rec=${if (rec == null) "null" else "***"}, locked=$locked)"
 }
 
 /** Why a cast ended. Only [STOPPED] re-opens what played; the others leave playback to whoever ended it. */
 enum class StopReason { STOPPED, LEFT_APP, EXTERNAL_PLAYER, RECORDING }
 
 sealed interface CastEvent {
-    data class Playing(val castId: String, val epoch: Int, val path: String, val hls: Boolean) : CastEvent
+    /** [locked]: what plays is locked on the casting TV; false from a TV that predates the mark. */
+    data class Playing(
+        val castId: String,
+        val epoch: Int,
+        val path: String,
+        val hls: Boolean,
+        val locked: Boolean = false,
+    ) : CastEvent
 
     /**
      * The casting TV is playing nothing it can share (for example, paused live, or a stream that
@@ -109,6 +122,7 @@ object CastJson {
         name("v").value(a.v.toLong())
         name("setup").value(a.setup.toLong())
         name("rec").value(a.rec)
+        name("locked").value(a.locked)
     }
 
     /**
@@ -130,6 +144,7 @@ object CastJson {
             seq = f.long("seq")?.takeIf { it >= 0 } ?: return@parse null,
             setup = f.int("setup") ?: 0,
             rec = f.string("rec")?.takeIf { it.isNotEmpty() },
+            locked = f.bool("locked") ?: false,
         )
         val castComplete = a.castId != null && a.token != null && a.castStartedAtMs != null
         if (a.status == CastStatus.CASTING && !castComplete) null else a
@@ -143,6 +158,7 @@ object CastJson {
             name("epoch").value(e.epoch.toLong())
             name("path").value(e.path)
             name("hls").value(e.hls)
+            name("locked").value(e.locked)
         }
         is CastEvent.Idle -> write {
             name("e").value("idle")
@@ -173,6 +189,7 @@ object CastJson {
                 f.int("epoch") ?: return@parse null,
                 f.string("path") ?: return@parse null,
                 f.bool("hls") ?: return@parse null,
+                f.bool("locked") ?: false,
             )
             "idle" -> CastEvent.Idle(castId, f.string("reason"))
             "stopped" -> CastEvent.Stopped(

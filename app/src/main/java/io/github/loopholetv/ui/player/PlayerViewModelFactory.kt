@@ -6,6 +6,7 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.data.db.isChannelLocked
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.ui.guide.GuideFormat
@@ -46,6 +47,7 @@ internal fun playerViewModelFactory(channelId: Long, scope: ChannelScope, archiv
                 format = format,
                 cast = c.castController,
                 beforePlay = { ch, live -> c.recordingCoordinator.beforeUserPlay(ch, live) },
+                isLocked = { ch -> !c.parentalLock.isUnlocked && c.db.lockDao().isChannelLocked(ch.playlistId, ch.key) },
                 schedule = c.scheduleActions,
                 recordingChannels = c.recordingRunner.active.map { it.bookedChannelIds() },
             )

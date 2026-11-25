@@ -467,7 +467,7 @@ class PlaylistRepository internal constructor(
         val existing = channelDao.keyIds(id)
         val vodBefore = if (rekey && m3uVod) vodNameGroups(id) else null
         val writer = ChannelWriter(channelDao, id, existing, progress)
-        val vodWriter = if (m3uVod) VodWriter(vodDao, db.channelPrefsDao(), id, now(), rekey) else null
+        val vodWriter = if (m3uVod) VodWriter(vodDao, db.channelPrefsDao(), id, now(), rekey, db.lockDao()) else null
         val epgUrls = pipe<ImportItem, String>(
             produce = { emit -> source.stream(emit) },
             consume = {
@@ -522,12 +522,16 @@ class PlaylistRepository internal constructor(
     private suspend fun vodNameGroups(id: Long) =
         VodNameGroups(vodDao.filmNameGroups(id), vodDao.episodeNameGroups(id))
 
-    /** Viewing progress, My list and dismissals follow their film or episode to the new key, by the same name-and-group rule as channels. */
+    /**
+     * Viewing progress, My list, dismissals and a film's own edits (its lock and hide) follow their film or
+     * episode to the new key, by the same name-and-group rule as channels.
+     */
     private suspend fun carryOverProgress(id: Long, before: VodNameGroups) {
         val after = vodNameGroups(id)
         for ((from, to) in carryOverPlan(before.films, after.films)) {
             vodProgress.rekey(VodKind.MOVIE, id, from, to)
             vodLibrary.rekeyFilm(id, from, to)
+            maintenance.rekeyFilmPrefs(id, from, to)
         }
         for ((from, to) in carryOverPlan(before.episodes, after.episodes)) vodProgress.rekey(VodKind.EPISODE, id, from, to)
     }

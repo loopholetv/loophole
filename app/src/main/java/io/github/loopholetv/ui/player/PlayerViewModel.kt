@@ -12,6 +12,7 @@ import io.github.loopholetv.cast.CastState
 import io.github.loopholetv.cast.NoCast
 import io.github.loopholetv.data.catchup.catchup
 import io.github.loopholetv.data.db.ChannelEntity
+import io.github.loopholetv.data.db.failClosed
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.ProgrammeEntity
@@ -122,6 +123,8 @@ class PlayerViewModel(
      * keeps the provider's stream (it may ask the viewer first).
      */
     private val beforePlay: suspend (channel: ChannelEntity, live: Boolean) -> Boolean = { _, _ -> true },
+    /** Whether a channel is locked while the PIN is not entered; checked when the screen comes back. */
+    private val isLocked: suspend (ChannelEntity) -> Boolean = { false },
     /** Books, stops and extends recordings (the quick menu's record tile). */
     private val schedule: ScheduleActions = NoSchedule,
     /** Ids of the channels recording now. */
@@ -942,7 +945,11 @@ class PlayerViewModel(
     fun onScreenStarted() {
         if (exited || !started || notPlayedHere) return
         val ui = _ui.value ?: return
-        if (!catchup.onStarted(ui.channel) && playback.state.value is PlaybackState.Idle) playChecked(ui.channel)
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            // The app was left (which locks again) and is back: a locked channel behaves as gone.
+            if (failClosed { isLocked(ui.channel) }) return@launch exitHiddenOrMissing()
+            if (!catchup.onStarted(ui.channel) && playback.state.value is PlaybackState.Idle) playChecked(ui.channel)
+        }
     }
 
     override fun onCleared() {

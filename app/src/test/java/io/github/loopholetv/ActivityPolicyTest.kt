@@ -54,4 +54,9 @@ class ActivityPolicyTest {
         assertTrue(shouldReleaseOnStop(changingConfigurations = false))
         assertFalse(shouldReleaseOnStop(changingConfigurations = true))
     }
+
+    @Test fun openingPictureInPictureLocksAgain() {
+        assertTrue(shouldRelockOnPipChange(inPip = true))
+        assertFalse(shouldRelockOnPipChange(inPip = false))
+    }
 }

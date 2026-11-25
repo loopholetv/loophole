@@ -16,6 +16,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import io.github.loopholetv.cast.CastAnnounce
 import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.cast.CastStatus
 import io.github.loopholetv.data.repo.ImportResult
@@ -50,7 +51,7 @@ class CopyFromScreenTest {
         override fun cancel() {}
     }
 
-    private fun peer(id: String, name: String, setup: Int = 1) = CastPeer(
+    private fun peer(id: String, name: String, setup: Int = CastAnnounce.SETUP_VERSION) = CastPeer(
         id = id, name = name, host = "10.0.0.20", port = 8000, status = CastStatus.IDLE, accepts = true,
         castId = null, token = null, castStartedAtMs = null, lastSeenMs = 0, setup = setup,
     )

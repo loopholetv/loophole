@@ -43,6 +43,10 @@ import io.github.loopholetv.ui.common.ChannelOptionsDialog
 import io.github.loopholetv.ui.common.RequestFocusOnOpen
 import io.github.loopholetv.ui.common.StopPlaybackOnResume
 import io.github.loopholetv.ui.onboarding.PillButton
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.LocalPinPrompter
+import io.github.loopholetv.ui.parental.LockMarks
+import io.github.loopholetv.ui.parental.Padlock
 import io.github.loopholetv.ui.theme.Tokens
 
 private const val GRID_COLUMNS = 6
@@ -102,6 +106,7 @@ internal fun VodBrowse(
     onBack: () -> Unit,
     onOpenReminder: (ProgrammeTarget) -> Unit = {},
 ) {
+    val prompter = LocalPinPrompter.current
     val rows by vm.rows.collectAsStateWithLifecycle()
     val hidden by vm.hidden.collectAsStateWithLifecycle()
     StopPlaybackOnResume()
@@ -112,6 +117,7 @@ internal fun VodBrowse(
     VodBrowseContent(
         heading = heading, rows = rows, hidden = hidden, allHidden = allHidden,
         onHideCategory = vm::hideCategory, onShowCategory = vm::showCategory,
+        onLockCategory = { title, locked -> vm.lockCategory(title, locked, prompter::ensurePinThen) },
         onOpen = onOpen, onBack = onBack,
         myListKeys = myListKeys, onPlay = onPlay,
         onSetInMyList = vm::setInMyList, onDismissContinue = vm::dismissContinue,
@@ -136,6 +142,8 @@ internal fun VodBrowseContent(
     onShowCategory: (HiddenCategory) -> Unit,
     onOpen: (playlistId: Long, key: String) -> Unit,
     onBack: () -> Unit,
+    /** Locks (true) or unlocks a category's titles; offered while locks are available. */
+    onLockCategory: (title: String, locked: Boolean) -> Unit = { _, _ -> },
     lastOpenedSeed: String? = null,
     lastOpenedSlotSeed: Int = -1,
     myListKeys: Set<KeyRef> = emptySet(),
@@ -161,6 +169,7 @@ internal fun VodBrowseContent(
     // The row a hidden category was in: when it has gone, the row now at its place takes focus.
     var hiddenFrom by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var options by remember { mutableStateOf<MenuTarget?>(null) }
+    val marks = LocalLockMarks.current
     var listingHidden by remember { mutableStateOf(false) }
     var panelOpen by rememberSaveable { mutableStateOf(false) }
     // The filter row ([FILTER_BUTTON_ROW] or [FILTER_BAR_ROW]) whose Sort & filter button takes focus once it is first.
@@ -303,6 +312,7 @@ internal fun VodBrowseContent(
                                         } else {
                                             PosterCard(
                                                 title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction, badge = card.badge,
+                                                locked = LocalLockMarks.current.titleLocked(card),
                                                 onClick = { open(row, i, card) }, onLongClick = { longClick(row, i, card) },
                                                 modifier = Modifier.focusRequester(gridRequesters.requesterFor(cardId(id, card))),
                                             )
@@ -339,6 +349,13 @@ internal fun VodBrowseContent(
                     onHideCategory(row.title)
                     options = null
                 })
+                if (marks.lockAvailable) {
+                    val locked = marks.categoryTitle(row.title)
+                    add(ChannelOption(if (locked) OPTION_UNLOCK_CATEGORY else OPTION_LOCK_CATEGORY) {
+                        options = null
+                        onLockCategory(row.title, !locked)
+                    })
+                }
             }
             if (hidden.isNotEmpty()) add(ChannelOption(OPTION_SHOW_HIDDEN) { options = null; listingHidden = true })
         }
@@ -425,6 +442,8 @@ const val OPTION_OPEN_PAGE = "Open page"
 const val OPTION_ADD_MY_LIST = "Add to My list"
 const val OPTION_REMOVE_MY_LIST = "Remove from My list"
 const val OPTION_HIDE_CATEGORY = "Hide category"
+const val OPTION_LOCK_CATEGORY = "Lock category"
+const val OPTION_UNLOCK_CATEGORY = "Unlock category"
 const val OPTION_SHOW_HIDDEN = "Show hidden categories"
 const val ALL_HIDDEN_NOTE = "All categories are hidden"
 
@@ -435,9 +454,16 @@ private fun lazyIndexOf(rows: List<VodRowModel>, rowIndex: Int, gridCards: RowCa
     rows.take(rowIndex).sumOf { if (it is VodRowModel.Grid) 1 + chunkCount(gridCards?.count ?: 0) else 1 }
 
 @Composable
-private fun RowTitle(title: String) {
-    Text(title, style = MaterialTheme.typography.titleMedium, color = Tokens.OnBackground, modifier = Modifier.padding(bottom = 8.dp))
+private fun RowTitle(title: String, locked: Boolean = false) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = Tokens.OnBackground)
+        if (locked) Padlock(Modifier.padding(start = 8.dp))
+    }
 }
+
+/** A card of a film or show with its own lock. */
+private fun LockMarks.titleLocked(card: PosterModel): Boolean =
+    channel(card.playlistId, card.key) || show(card.playlistId, card.key)
 
 /**
  * One scrolling row, [rowId] among the screen's rows. Its scroll position is kept per row. [restore] (a card
@@ -462,6 +488,7 @@ private fun CardRow(
     val state = rememberLazyListState()
     val requesters = remember { HashMap<String, FocusRequester>() }
     val first = cards.peek(0)
+    val marks = LocalLockMarks.current
 
     suspend fun focusAt(index: Int): Boolean {
         state.scrollToItem(index)
@@ -490,7 +517,7 @@ private fun CardRow(
     }
 
     Column {
-        RowTitle(title)
+        RowTitle(title, locked = marks.categoryTitle(title))
         LazyRow(
             state = state,
             horizontalArrangement = Arrangement.spacedBy(CARD_GAP),
@@ -509,6 +536,7 @@ private fun CardRow(
                 } else {
                     PosterCard(
                         title = card.title, logo = card.logo, subtitle = card.subtitle, fraction = card.fraction, badge = card.badge,
+                        locked = marks.titleLocked(card),
                         onClick = { onOpen(i, card) }, onLongClick = { onLongClick(i, card) },
                         modifier = Modifier.focusRequester(requesters.requesterFor(cardId(rowId, card))),
                     )

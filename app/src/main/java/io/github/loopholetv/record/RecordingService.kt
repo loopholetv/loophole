@@ -240,4 +240,4 @@ class RecordingService : Service() {
 
 /** "Recording <title>" for one recording, "Recording <n> programmes" for several. */
 internal fun notificationText(titles: List<String>): String =
-    if (titles.size == 1) "Recording ${titles[0]}" else "Recording ${titles.size} programmes"
+    if (titles.size == 1) (if (titles[0] == LOCKED_TITLE) LOCKED_TITLE else "Recording ${titles[0]}") else "Recording ${titles.size} programmes"

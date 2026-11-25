@@ -43,8 +43,15 @@ import okhttp3.Request
 import okhttp3.Response
 
 /** One cast run by this TV. [token] is the secret in every relay path; [toString] leaves it out. */
-data class CastSession(val castId: String, val token: String, val startedAtMs: Long, val epoch: Int) {
-    override fun toString() = "CastSession(castId=$castId, token=***, startedAtMs=$startedAtMs, epoch=$epoch)"
+data class CastSession(
+    val castId: String,
+    val token: String,
+    val startedAtMs: Long,
+    val epoch: Int,
+    /** What plays now is locked on this TV; announced and sent with each [CastEvent.Playing]. */
+    val locked: Boolean = false,
+) {
+    override fun toString() = "CastSession(castId=$castId, token=***, startedAtMs=$startedAtMs, epoch=$epoch, locked=$locked)"
 }
 
 /**
@@ -174,6 +181,16 @@ class CastHost(
     private val _followers = MutableStateFlow(0)
     val followers: StateFlow<Int> = _followers.asStateFlow()
 
+    /**
+     * Sets the lock mark of the cast's first stream, before any [open] has run. Does nothing once a
+     * stream was opened (that [open] set the mark for what plays).
+     */
+    fun markUntilOpened(locked: Boolean) = synchronized(lock) {
+        val s = session?.takeIf { it.epoch == 0 && it.locked != locked } ?: return@synchronized
+        session = s.copy(locked = locked)
+        _active.value = session
+    }
+
     /** Starts a cast (or returns the one running): a new castId and 128-bit token, routes under `/c/<token>/`. */
     fun start(): CastSession = synchronized(lock) {
         session?.let { return it }
@@ -232,14 +249,15 @@ class CastHost(
      * The previous upstream is closed completely before the new one is requested. The provider's
      * response is awaited and its first bytes decide the relay, so [hls] (from the URL) only shapes
      * the loopback path when the provider refuses. An [archive] isn't paced by the provider, so the
-     * relay reads it only as fast as this TV's player does.
+     * relay reads it only as fast as this TV's player does. [locked] marks what plays as locked on this TV,
+     * for the announce and for followers.
      */
-    suspend fun open(stream: ResolvedStream, hls: Boolean, archive: Boolean = false): ResolvedStream = switching.withLock {
+    suspend fun open(stream: ResolvedStream, hls: Boolean, archive: Boolean = false, locked: Boolean = false): ResolvedStream = switching.withLock {
         val castId = synchronized(lock) { session?.castId } ?: return@withLock stream
         releaseCurrent()
         val epoch = synchronized(lock) {
             val s = session?.takeIf { it.castId == castId } ?: return@withLock stream
-            s.copy(epoch = s.epoch + 1).also {
+            s.copy(epoch = s.epoch + 1, locked = locked).also {
                 session = it
                 _active.value = it
             }.epoch
@@ -318,11 +336,11 @@ class CastHost(
             val base = "http://$LOOPBACK:$port/c/${s.token}"
             when (next) {
                 is Media.Ts -> {
-                    setCurrent(CastEvent.Playing(castId, epoch, "/c/${s.token}/$epoch.ts", hls = false))
+                    setCurrent(CastEvent.Playing(castId, epoch, "/c/${s.token}/$epoch.ts", hls = false, locked = s.locked))
                     loopback("$base/$epoch.ts?$LOCAL=$localKey")
                 }
                 is Media.Hls -> {
-                    setCurrent(CastEvent.Playing(castId, epoch, "/c/${s.token}/$epoch/index.m3u8", hls = true))
+                    setCurrent(CastEvent.Playing(castId, epoch, "/c/${s.token}/$epoch/index.m3u8", hls = true, locked = s.locked))
                     loopback("$base/$epoch/index.m3u8")
                 }
                 is Media.Failed -> {

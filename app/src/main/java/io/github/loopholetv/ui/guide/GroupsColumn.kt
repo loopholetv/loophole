@@ -41,6 +41,8 @@ import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.toArg
 import io.github.loopholetv.ui.common.OkPressTracker
 import io.github.loopholetv.ui.common.okPress
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.Padlock
 import io.github.loopholetv.ui.theme.Tokens
 
 private val HEADING_HEIGHT = 30.dp
@@ -165,6 +167,8 @@ private fun GroupRowItem(
         selected -> Tokens.Accent
         else -> Tokens.OnBackground
     }
+    val scope = group.scope
+    val locked = scope is ChannelScope.Group && LocalLockMarks.current.group(scope.playlistId, scope.title)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
@@ -178,14 +182,17 @@ private fun GroupRowItem(
             .then(if (moving) Modifier.border(2.dp, Tokens.Accent, GroupShape) else Modifier)
             .padding(horizontal = 14.dp),
     ) {
-        Text(
-            text = group.label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            Text(
+                text = group.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (locked) Padlock(Modifier.padding(start = 6.dp))
+        }
         Text(
             text = group.count.toString(),
             style = MaterialTheme.typography.labelSmall,

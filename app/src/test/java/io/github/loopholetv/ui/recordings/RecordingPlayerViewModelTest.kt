@@ -130,6 +130,7 @@ class RecordingPlayerViewModelTest {
         peer: CastPeer? = null,
         url: String? = "http://127.0.0.1:1/rec/t/file/1",
         remote: List<RemoteRecording> = emptyList(),
+        channelLocked: suspend (Long?, String?, String) -> Boolean = { _, _, _ -> false },
     ): Rig {
         val playback = FakePlayback()
         val vm = main.keep(
@@ -138,6 +139,7 @@ class RecordingPlayerViewModelTest {
                 clock = { base.plusMillis(testScheduler.currentTime) },
                 localUrl = { url },
                 listRemote = { remote },
+                channelLocked = channelLocked,
             ),
         )
         val events = mutableListOf<RecordingPlayerEvent>()
@@ -360,5 +362,75 @@ class RecordingPlayerViewModelTest {
         passTime(r, 1_000)
         assertEquals("10:01", r.vm.bar.value!!.total)
         assertEquals("1:00", r.vm.bar.value!!.elapsed)
+    }
+
+    @Test fun lockedRecordingRefused() = runTest(dispatcher) {
+        openDb()
+        val id = insert(row())
+        val asked = mutableListOf<Triple<Long?, String?, String>>()
+        val r = rig(id, channelLocked = { p, k, n -> asked += Triple(p, k, n); true })
+        assertEquals(listOf(Triple<Long?, String?, String>(1L, "c1", "News")), asked)
+        assertTrue(r.playback.opened.isEmpty())
+        assertEquals(CANT_PLAY_RECORDING, r.vm.error.value)
+    }
+
+    @Test fun lockedRemoteRecordingIsMatchedByChannelName() = runTest(dispatcher) {
+        openDb()
+        val peer = CastPeer(
+            id = "tv2", name = "TV2", host = "192.168.1.20", port = 8080, status = CastStatus.IDLE, accepts = true,
+            castId = null, token = null, castStartedAtMs = null, lastSeenMs = 0, rec = "tok",
+        )
+        val remote = RemoteRecording(
+            id = 7, title = "Show", channel = "News", start = 0, stop = 1, state = "DONE", reason = "NONE",
+            bytes = 10, recording = false, durationMs = 60_000,
+        )
+        val asked = mutableListOf<Triple<Long?, String?, String>>()
+        val r = rig(7, peer = peer, remote = listOf(remote), channelLocked = { p, k, n -> asked += Triple(p, k, n); true })
+        assertEquals(listOf(Triple<Long?, String?, String>(null, null, "News")), asked)
+        assertTrue(r.playback.opened.isEmpty())
+    }
+
+    @Test fun returningFromHomeToALockedRecordingLeaves() = runTest(dispatcher) {
+        openDb()
+        val id = insert(row())
+        var locked = false
+        val r = rig(id, channelLocked = { _, _, _ -> locked })
+        assertEquals(1, r.playback.opened.size)
+        r.vm.onScreenStopped()
+        r.playback.stop()
+        locked = true
+
+        r.vm.onScreenStarted()
+        runCurrent()
+
+        assertEquals(1, r.playback.opened.size)
+        assertEquals(listOf<RecordingPlayerEvent>(RecordingPlayerEvent.Exit), r.events)
+    }
+
+    @Test fun retryOfALockedRecordingLeaves() = runTest(dispatcher) {
+        openDb()
+        val id = insert(row())
+        var locked = false
+        val r = rig(id, channelLocked = { _, _, _ -> locked })
+        r.playback.fail()
+        locked = true
+        r.vm.retry()
+        runCurrent()
+        assertEquals(1, r.playback.opened.size)
+        assertEquals(listOf<RecordingPlayerEvent>(RecordingPlayerEvent.Exit), r.events)
+    }
+
+    @Test fun relockWhileAGrowingRecordingPlaysKeepsReplaying() = runTest(dispatcher) {
+        openDb()
+        val id = insert(row(state = RecordingState.RECORDING, startedAgoMin = 10, endedAgoMin = null))
+        var locked = false
+        val r = rig(id, channelLocked = { _, _, _ -> locked })
+        r.playback.playing(at = 120_000)
+        passTime(r, 500)
+        locked = true // the PIN timed out while watching full screen
+        r.playback.ended()
+        passTime(r, 3_500)
+        assertEquals(2, r.playback.opened.size)
+        assertEquals(emptyList<RecordingPlayerEvent>(), r.events)
     }
 }

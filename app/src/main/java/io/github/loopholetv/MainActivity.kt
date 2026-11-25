@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import io.github.loopholetv.data.db.channelScopeFromArg
+import io.github.loopholetv.data.db.isChannelLocked
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.orDefaultsOnError
 import io.github.loopholetv.player.DisplayModeSwitcher
@@ -90,6 +91,9 @@ class MainActivity : ComponentActivity() {
         var startSlot = StartSlot(null)
         val fresh = savedInstanceState == null
         lifecycleScope.launch {
+            // Channel visibility must reflect the PIN being asked for again before any screen reads it.
+            // A failed start-up lock throws here, so nothing is shown from stale visibility.
+            app.container.parentalReady.await()
             val exists = repo.playlists().first().isNotEmpty()
             // Resolve before the refresh starts so it cannot remove the channel in between;
             // never on recreation.
@@ -100,6 +104,9 @@ class MainActivity : ComponentActivity() {
                     resolveStartPlayback(
                         s.lastChannelOnStart, c.history::latest, channelScopeFromArg(s.lastGuideScope), c.scopedChannels::contains,
                         c.scopedChannels::resolve,
+                        isLocked = { ch ->
+                            !c.parentalLock.isUnlocked && c.db.lockDao().isChannelLocked(ch.playlistId, ch.key)
+                        },
                     ),
                 )
             }
@@ -114,6 +121,8 @@ class MainActivity : ComponentActivity() {
             if (it.isInPictureInPictureMode) displayModes.restore()
             // The setup screens can't show in the small window: other TVs' requests are refused meanwhile.
             app.container.setupController.setPaused(it.isInPictureInPictureMode)
+            // Home on the full-screen player only pauses the activity: lock here, as onStop would.
+            if (shouldRelockOnPipChange(it.isInPictureInPictureMode)) app.container.parentalLock.onLeftApp()
             updateForeground()
         }
         // The notification permission is asked for once, when a reminder is first booked.
@@ -244,7 +253,7 @@ class MainActivity : ComponentActivity() {
      * Leaving the app (Home, another app, screen off, or closing the picture-in-picture window)
      * ends this TV's cast or leaves the one it follows, stops the stream and the sleep timer and
      * gives the display back its own mode; screens restart playback on return. Picture-in-picture
-     * itself only pauses the activity.
+     * itself only pauses the activity (and locks again, from its mode-change listener).
      */
     override fun onStop() {
         super.onStop()
@@ -257,6 +266,7 @@ class MainActivity : ComponentActivity() {
             c.phoneServer.onForeground(false)
             c.playback.stop()
             c.sleepTimer.cancel()
+            c.parentalLock.onLeftApp()
             displayModes.restore()
         }
     }

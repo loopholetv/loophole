@@ -62,6 +62,8 @@ data class EditorGroupItem(
     val renamed: Boolean,
     val count: Int,
     val sort: GroupSort,
+    /** The group's own lock; only listed while unlocked, so it is a state to offer "Unlock group" for. */
+    val locked: Boolean = false,
 ) {
     val tags: List<String> get() = editorTags(hidden, renamed)
     val tagText: String? get() = tags.takeIf { it.isNotEmpty() }?.joinToString(", ")
@@ -81,7 +83,7 @@ class ManageViewModel(
     refreshEpg: (playlistId: Long) -> Unit,
 ) : ViewModel() {
     val groups: StateFlow<List<EditorGroupItem>> = groups
-        .map { rows -> rows.map { EditorGroupItem(it.title, it.label, it.hidden, it.renamed, it.count, it.sortMode) } }
+        .map { rows -> rows.map { EditorGroupItem(it.title, it.label, it.hidden, it.renamed, it.count, it.sortMode, it.locked) } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _openGroup = MutableStateFlow<String?>(null)

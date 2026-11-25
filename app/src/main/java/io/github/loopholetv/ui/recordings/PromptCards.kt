@@ -28,7 +28,7 @@ private val CARD_WIDTH = 520.dp
 
 internal fun warningHeadline(secondsLeft: Int): String = "Recording starts in $secondsLeft s"
 
-internal fun warningDetail(w: RecordPrompt.Warning): String = "${w.channel} · ${w.title}"
+internal fun warningDetail(w: RecordPrompt.Warning): String = if (w.channel.isEmpty()) w.title else "${w.channel} · ${w.title}"
 
 /** What Switch now would stop; null for a use a warning is never shown for. */
 internal fun warningStops(stops: Use): String? = when (stops) {
@@ -37,8 +37,11 @@ internal fun warningStops(stops: Use): String? = when (stops) {
     else -> null
 }
 
-internal fun holdsStreamText(title: String, until: Instant, zone: ZoneId): String =
-    "Recording $title until ${DateTimeFormatter.ofPattern("HH:mm").format(until.atZone(zone))}. Stop the recording and watch?"
+internal fun holdsStreamText(title: String, until: Instant, zone: ZoneId, hidden: Boolean = false): String {
+    val time = DateTimeFormatter.ofPattern("HH:mm").format(until.atZone(zone))
+    return if (hidden) "A recording is running until $time. Stop it and watch?"
+    else "Recording $title until $time. Stop the recording and watch?"
+}
 
 /** A reminder over whatever is on screen; Back (and Dismiss) dismisses. The first button takes focus. */
 @Composable
@@ -57,7 +60,7 @@ fun RecordWarningCard(w: RecordPrompt.Warning, onKeep: () -> Unit, onSwitch: () 
 /** A recording holds the stream the viewer asked for; Back cancels the play. */
 @Composable
 fun HoldsStreamDialog(p: RecordPrompt.HoldsStream, onStop: () -> Unit, onCancel: () -> Unit) {
-    val text = remember(p) { holdsStreamText(p.title, p.until, ZoneId.systemDefault()) }
+    val text = remember(p) { holdsStreamText(p.title, p.until, ZoneId.systemDefault(), p.hidden) }
     PromptCard(listOf(text), "Stop recording" to onStop, "Cancel" to onCancel, onBack = onCancel, focusSecond = true)
 }
 

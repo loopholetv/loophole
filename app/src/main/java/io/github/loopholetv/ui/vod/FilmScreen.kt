@@ -45,6 +45,8 @@ import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.ui.common.RequestFocusOnOpen
 import io.github.loopholetv.ui.common.StopPlaybackOnResume
 import io.github.loopholetv.ui.onboarding.PillButton
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.LocalPinPrompter
 import io.github.loopholetv.ui.theme.Tokens
 
 private val DETAIL_POSTER_WIDTH = 200.dp
@@ -68,6 +70,8 @@ fun FilmScreen(
     val starter = rememberVodStarter(rememberCast()) { ref, ms -> onPlay(ref, ms) }
     val loaded by vm.loaded.collectAsStateWithLifecycle()
     CloseWhenGone(present = ui != null, loaded = loaded, onBack = onBack)
+    val marks = LocalLockMarks.current
+    val prompter = LocalPinPrompter.current
     // The page is composed afresh when the player closes; the button used last takes focus again.
     var lastButton by rememberSaveable { mutableStateOf<Int?>(null) }
     ui?.let { film ->
@@ -77,6 +81,9 @@ fun FilmScreen(
             onUsed = { lastButton = it },
             onToggleMyList = vm::toggleMyList,
             onWrongDetails = vm::rejectDetails,
+            offerLock = marks.unlocked,
+            locked = marks.channel(playlistId, key),
+            onToggleLock = { vm.setLocked(!marks.channel(playlistId, key), prompter::ensurePinThen) },
         ) { ms ->
             starter.start(VodRef(VodKind.MOVIE, playlistId, key), ms)
         }
@@ -91,6 +98,10 @@ internal fun FilmContent(
     onUsed: (Int) -> Unit = {},
     onToggleMyList: () -> Unit = {},
     onWrongDetails: () -> Unit = {},
+    /** The lock pill is offered (a PIN exists and is entered); [locked] says which way it reads. */
+    offerLock: Boolean = false,
+    locked: Boolean = false,
+    onToggleLock: () -> Unit = {},
     onPlay: (startMs: Long) -> Unit,
 ) {
     val requesters = remember { List(2) { FocusRequester() } }
@@ -129,6 +140,7 @@ internal fun FilmContent(
                     }
                     // The label changes with the state but the pill stays put, so focus stays on it.
                     PillButton(label = myListLabel(ui.inMyList), selected = false, onClick = onToggleMyList)
+                    if (offerLock) PillButton(label = filmLockLabel(locked), selected = false, onClick = onToggleLock)
                     if (ui.details?.fromTmdb == true) {
                         // The button goes away with the details, so focus moves to Play first.
                         WrongDetailsButton {

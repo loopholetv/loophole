@@ -1201,7 +1201,7 @@ class SettingsViewModelTest {
     // --- Remote control page ---
 
     @Test fun remoteSectionEnabled() {
-        assertEquals(listOf("Appearance", "Parental controls", "Other"), DISABLED_SECTIONS)
+        assertEquals(listOf("Appearance", "Other"), DISABLED_SECTIONS)
         assertEquals(SettingsPage.Remote, SettingsPage.fromKey("remote"))
         assertEquals(SettingsPage.RemoteButtons(BindingContext.GUIDE), SettingsPage.fromKey("remoteButtons:guide"))
         assertEquals(SettingsPage.Sections, SettingsPage.fromKey("remoteButtons:other"))

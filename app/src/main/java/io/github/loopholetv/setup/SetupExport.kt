@@ -8,6 +8,7 @@ import io.github.loopholetv.data.db.FavouriteEntity
 import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.data.db.ShowPrefsEntity
 import io.github.loopholetv.data.repo.LocalM3uOpener
 import io.github.loopholetv.data.settings.SettingsStore
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,7 @@ internal class SetupExporter(
         val links: List<EpgSourceEntity>,
         val channelEdits: List<ChannelPrefsEntity>,
         val groupEdits: List<GroupPrefsEntity>,
+        val showLocks: List<ShowPrefsEntity>,
         val favourites: List<FavouriteEntity>,
     )
 
@@ -49,12 +51,13 @@ internal class SetupExporter(
         // One read transaction, so the tables agree with each other.
         val t = db.withTransaction {
             val dao = db.setupDao()
-            Tables(dao.playlists(), dao.epgSources(), dao.channelPrefs(), dao.groupPrefs(), dao.favourites())
+            Tables(dao.playlists(), dao.epgSources(), dao.channelPrefs(), dao.groupPrefs(), dao.lockedShowPrefs(), dao.favourites())
         }
         val current = settings.current()
         val links = t.links.groupBy { it.playlistId }
         val channelEdits = t.channelEdits.groupBy { it.playlistId }
         val groupEdits = t.groupEdits.groupBy { it.playlistId }
+        val showLocks = t.showLocks.groupBy { it.playlistId }
         val playlists = ArrayList<SetupPlaylist>()
         val position = HashMap<Long, Int>()
         var skipped = 0
@@ -81,6 +84,7 @@ internal class SetupExporter(
                     links = links[p.id].orEmpty().map { it.url },
                     channelEdits = channelEdits[p.id].orEmpty().mapNotNull { it.toSetup() },
                     groupEdits = groupEdits[p.id].orEmpty().filterNot { it.isDefault() }.map { it.toSetup() },
+                    showLocks = showLocks[p.id].orEmpty().map { SetupShowLock(it.showKey) },
                 )
             }
         } catch (e: Throwable) {
@@ -139,6 +143,7 @@ internal class SetupExporter(
         links: List<String>,
         channelEdits: List<SetupChannelEdit>,
         groupEdits: List<SetupGroupEdit>,
+        showLocks: List<SetupShowLock>,
     ) = SetupPlaylist(
         name = name,
         type = type,
@@ -166,6 +171,7 @@ internal class SetupExporter(
         guideLinks = links,
         channelEdits = channelEdits,
         groupEdits = groupEdits,
+        showLocks = showLocks,
     )
 
     /** Null when nothing copied is left (only a decoder or external player choice). */
@@ -179,6 +185,7 @@ internal class SetupExporter(
             epgShiftMinutes = epgShiftMinutes,
             position = position,
             aspectMode = aspectMode,
+            locked = locked,
         )
         return edit.takeUnless { it == SetupChannelEdit(channelKey) }
     }
@@ -189,5 +196,6 @@ internal class SetupExporter(
         customName = customName,
         position = position,
         sortMode = sortMode,
+        locked = locked,
     )
 }

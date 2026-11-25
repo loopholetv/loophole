@@ -186,6 +186,8 @@ data class ChannelPrefsEntity(
     val externalPlayer: String? = null,
     /** Picture fit for this channel; null means [AspectMode.FIT]. */
     val aspectMode: AspectMode? = null,
+    /** Hidden behind the PIN until unlocked. */
+    val locked: Boolean = false,
 ) {
     /** True when the row holds no edit (it can be deleted). */
     fun isDefault(): Boolean = this == ChannelPrefsEntity(playlistId, channelKey)
@@ -211,6 +213,8 @@ data class GroupPrefsEntity(
     val customName: String? = null,
     val position: Int? = null,
     val sortMode: GroupSort = GroupSort.PLAYLIST,
+    /** Hidden behind the PIN until unlocked. */
+    val locked: Boolean = false,
 ) {
     /** True when the row holds no edit (it can be deleted). */
     fun isDefault(): Boolean = this == GroupPrefsEntity(playlistId, groupTitle)
@@ -406,6 +410,8 @@ data class EditorGroupRow(
     /** Same mixed value as [GroupRow.order]: use the list order, not this, for display and moves. */
     @ColumnInfo(name = "order") val order: Int,
     val sortMode: GroupSort,
+    /** The group's own lock. */
+    val locked: Boolean = false,
 )
 
 /**
@@ -415,6 +421,8 @@ data class EditorGroupRow(
 data class EditorChannelRow(
     @Embedded val channel: ChannelEntity,
     val hidden: Boolean,
+    /** The channel's own lock (`channel_prefs.locked`), not that of its group. */
+    val locked: Boolean = false,
 )
 
 /**

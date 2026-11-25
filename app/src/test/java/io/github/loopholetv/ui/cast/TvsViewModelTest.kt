@@ -1,5 +1,6 @@
 package io.github.loopholetv.ui.cast
 
+import io.github.loopholetv.cast.CastAnnounce
 import io.github.loopholetv.cast.CastInvite
 import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.cast.CastState
@@ -51,7 +52,7 @@ class TvsViewModelTest {
         override fun cancel() {}
     }
 
-    private fun peer(id: String, name: String, status: CastStatus, setup: Int = 1) = CastPeer(
+    private fun peer(id: String, name: String, status: CastStatus, setup: Int = CastAnnounce.SETUP_VERSION) = CastPeer(
         id = id, name = name, host = "192.168.1.20", port = 8000, status = status, accepts = true,
         castId = if (status == CastStatus.CASTING) "c-$id" else null,
         token = if (status == CastStatus.CASTING) "t-$id" else null,
@@ -169,6 +170,20 @@ class TvsViewModelTest {
         // Casting still works with an older TV.
         assertTrue(vm.onAction(TvAction.JOIN))
         assertEquals(listOf("o"), cast.joined)
+    }
+
+    @Test
+    fun aTvOnTheOldSetupVersionCantCopy() {
+        val cast = FakeCast()
+        val setup = FakeSetup()
+        cast.peers.value = listOf(peer("o", "Den", CastStatus.IDLE, setup = CastAnnounce.SETUP_VERSION - 1))
+        val vm = TvsViewModel(cast, setup = setup)
+
+        vm.onOk(vm.ui.value.rows[1])
+        assertEquals("Den is on an older version of Loophole.", vm.menu.value!!.olderVersion)
+        assertFalse(vm.onAction(TvAction.COPY_FROM))
+        assertFalse(vm.onAction(TvAction.SEND_TO))
+        assertEquals(emptyList<String>(), setup.calls)
     }
 
     @Test

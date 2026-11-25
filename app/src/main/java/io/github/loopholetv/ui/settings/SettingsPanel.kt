@@ -15,7 +15,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -39,8 +42,10 @@ import io.github.loopholetv.update.cardFor
 import androidx.compose.ui.platform.LocalContext
 import io.github.loopholetv.ui.manage.GroupsAndChannelsEditor
 import io.github.loopholetv.ui.onboarding.PLAYER_ONLY_NOTICE
+import io.github.loopholetv.ui.parental.LocalPinPrompter
 import io.github.loopholetv.ui.onboarding.PillButton as OnboardingPillButton
 import io.github.loopholetv.ui.theme.Tokens
+import kotlinx.coroutines.launch
 
 /** The panel's pages. Saved as [key] (e.g. `"playlist:7"`) so a page with an id survives recreation. */
 sealed interface SettingsPage {
@@ -59,12 +64,13 @@ sealed interface SettingsPage {
     data object Recordings : SettingsPage { override val key = "recordings" }
     /** "Film and show details": the TMDB key. */
     data object Details : SettingsPage { override val key = "details" }
+    data object Parental : SettingsPage { override val key = "parental" }
     /** The buttons set up for [context], one row each. */
     data class RemoteButtons(val context: BindingContext) : SettingsPage { override val key = "remoteButtons:${context.key}" }
     data object About : SettingsPage { override val key = "about" }
 
     companion object {
-        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Recordings, Details, Remote, Phone, About).associateBy { it.key }
+        private val fixed = listOf(Sections, General, Playlists, Epg, Playback, Recordings, Details, Remote, Phone, Parental, About).associateBy { it.key }
 
         /** Unknown or malformed keys give [Sections]. */
         fun fromKey(key: String): SettingsPage {
@@ -84,6 +90,16 @@ sealed interface SettingsPage {
     }
 }
 
+/** The open page, saved with the screen; starts on [startPage], or the section list when null or unknown. */
+@Composable
+fun rememberSettingsPage(startPage: String?): MutableState<SettingsPage> =
+    rememberSaveable(saver = pageStateSaver) {
+        mutableStateOf(startPage?.let(SettingsPage::fromKey) ?: SettingsPage.Sections)
+    }
+
+private val pageStateSaver: Saver<MutableState<SettingsPage>, String> =
+    Saver(save = { it.value.key }, restore = { mutableStateOf(SettingsPage.fromKey(it)) })
+
 private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     SettingsPage.Sections -> "Settings"
     SettingsPage.General -> "General"
@@ -96,11 +112,13 @@ private fun SettingsPage.title(ui: SettingsUi): String = when (this) {
     SettingsPage.Phone -> SECTION_COMPANION
     SettingsPage.Recordings -> SECTION_RECORDINGS
     SettingsPage.Details -> SECTION_DETAILS
+    SettingsPage.Parental -> SECTION_PARENTAL
     is SettingsPage.RemoteButtons -> context.title
     SettingsPage.About -> "About"
 }
 
-internal val DISABLED_SECTIONS = listOf("Appearance", "Parental controls", "Other")
+internal const val SECTION_PARENTAL = "Parental controls"
+internal val DISABLED_SECTIONS = listOf("Appearance", "Other")
 private const val COMING_LATER = "Coming in a later update"
 
 /**
@@ -117,21 +135,38 @@ fun SettingsPanel(
     onShowPhoneQr: () -> Unit = {},
     /** The page to open on ([SettingsPage.key]); the section list when null or unknown. */
     startPage: String? = null,
+    /** The open page. Held by the caller when something (the Settings lock) must know it before this shows. */
+    pageState: MutableState<SettingsPage> = rememberSettingsPage(startPage),
     vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory),
 ) {
     val ui by vm.state.collectAsStateWithLifecycle()
 
-    var page by rememberSaveable(stateSaver = SettingsPage.Saver) { mutableStateOf(startPage?.let(SettingsPage::fromKey) ?: SettingsPage.Sections) }
+    var page by pageState
     var lastSection by rememberSaveable(stateSaver = SettingsPage.Saver) { mutableStateOf<SettingsPage>(SettingsPage.Playlists) }
     // The row to focus when a page (re)opens: after Back from a sub-page, a dialog or a confirmation.
     var focusKey by rememberSaveable { mutableStateOf<String?>(null) }
     val confirm = ui.confirmDelete
     val confirmClear = ui.confirmClearEpg
     val confirmRemove = ui.confirmRemoveSource
+    val confirmOff = ui.confirmTurnOff
     // After a removal the row is gone: focus goes to that playlist's "Add EPG source" field.
     val removeFieldKey = confirmRemove?.let { s -> ui.epg.firstOrNull { e -> e.sources.any { it.id == s.id } } }
         ?.let { fieldKey(it.playlistId) }
     val go: (SettingsPage, String?) -> Unit = { to, key -> focusKey = key; page = to }
+    // Pages the Settings lock guards ask for the PIN first; Cancel stays on the page that was open.
+    val prompter = LocalPinPrompter.current
+    val scope = rememberCoroutineScope()
+    var returnTick by remember { mutableIntStateOf(0) }
+    val open: (SettingsPage, String?) -> Unit = { to, key ->
+        val p = ui.options.parental
+        if (needsPin(to, p.settingsLock, p.hasPin)) {
+            scope.launch {
+                if (prompter.ask()) go(to, key) else returnTick++
+            }
+        } else {
+            go(to, key)
+        }
+    }
 
     // A deleted (or vanished) playlist's pages go back to the list.
     val current = page
@@ -141,7 +176,7 @@ fun SettingsPanel(
     }
 
     // The editor handles Back itself (its group page, move mode), so the page-level handler is off there.
-    val confirming = confirm != null || confirmClear || confirmRemove != null
+    val confirming = confirm != null || confirmClear || confirmRemove != null || confirmOff
     BackHandler(enabled = !confirming && page != SettingsPage.Sections && page !is SettingsPage.Editor) {
         when (val p = page) {
             is SettingsPage.Playlist -> go(SettingsPage.Playlists, playlistRowKey(p.id))
@@ -151,6 +186,7 @@ fun SettingsPanel(
     }
     BackHandler(enabled = confirm != null) { focusKey = DELETE_KEY; vm.cancelDelete() }
     BackHandler(enabled = confirmClear) { focusKey = CLEAR_EPG_KEY; vm.cancelClearEpg() }
+    BackHandler(enabled = confirmOff) { focusKey = TURN_OFF_KEY; vm.cancelTurnOff() }
     BackHandler(enabled = confirmRemove != null) {
         focusKey = confirmRemove?.let { epgSourceKey(it.id) }
         vm.cancelRemoveEpgSource()
@@ -161,6 +197,7 @@ fun SettingsPanel(
             when {
                 confirm != null -> "Delete playlist"
                 confirmClear -> "Clear EPG"
+                confirmOff -> TURN_OFF_TITLE
                 confirmRemove != null -> "Remove this guide link?"
                 else -> page.title(ui)
             },
@@ -181,6 +218,12 @@ fun SettingsPanel(
                 onClear = { focusKey = CLEAR_EPG_KEY; vm.confirmClearEpg() },
                 onCancel = { focusKey = CLEAR_EPG_KEY; vm.cancelClearEpg() },
             )
+            confirmOff -> Confirm(
+                text = lockSummary(ui.lockCounts),
+                action = "Turn off",
+                onAction = { focusKey = PIN_KEY; vm.confirmTurnOff() },
+                onCancel = { focusKey = TURN_OFF_KEY; vm.cancelTurnOff() },
+            )
             confirmRemove != null -> Confirm(
                 text = confirmRemove.url,
                 action = "Remove",
@@ -188,18 +231,18 @@ fun SettingsPanel(
                 onCancel = { focusKey = epgSourceKey(confirmRemove.id); vm.cancelRemoveEpgSource() },
             )
             else -> when (val p = page) {
-                SettingsPage.Sections -> SectionList(focus = lastSection) { lastSection = it; go(it, null) }
+                SettingsPage.Sections -> SectionList(focus = lastSection, refocus = returnTick) { lastSection = it; open(it, null) }
                 SettingsPage.General -> GeneralPage(ui, vm, focusKey, consumeFocus)
                 SettingsPage.Playlists -> PlaylistsPage(
                     ui, vm, focusKey, consumeFocus,
                     onAdd = onAddPlaylist,
-                    onOpen = { id -> go(SettingsPage.Playlist(id), null) },
+                    onOpen = { id -> open(SettingsPage.Playlist(id), null) },
                 )
                 is SettingsPage.Playlist -> ui.playlists.firstOrNull { it.id == p.id }?.let { row ->
                     PlaylistPage(
                         row, ui, vm, focusKey, consumeFocus,
                         onEditSource = { onEditPlaylist(p.id) },
-                        onOpenEditor = { go(SettingsPage.Editor(p.id), null) },
+                        onOpenEditor = { open(SettingsPage.Editor(p.id), null) },
                     )
                 }
                 is SettingsPage.Editor -> GroupsAndChannelsEditor(
@@ -213,6 +256,7 @@ fun SettingsPanel(
                 SettingsPage.Phone -> PhonePage(ui, vm, onShowQr = onShowPhoneQr)
                 SettingsPage.Recordings -> RecordingsPage(ui, vm, focusKey, consumeFocus)
                 SettingsPage.Details -> DetailsPage(ui, vm, focusKey, consumeFocus)
+                SettingsPage.Parental -> ParentalPage(ui, vm, focusKey, consumeFocus, onTurnOff = vm::requestTurnOff)
                 SettingsPage.About -> AboutPage()
             }
         }
@@ -229,12 +273,13 @@ internal fun playlistRowKey(id: Long) = "row:$id"
 internal fun PillButton(label: String, modifier: Modifier = Modifier, onFocus: () -> Unit = {}, onClick: () -> Unit) =
     OnboardingPillButton(label, selected = false, modifier = modifier, containerColor = Tokens.Surface, onFocus = onFocus, onClick = onClick)
 
-private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Recordings, SettingsPage.Details, SettingsPage.Remote, SettingsPage.Phone, SettingsPage.About)
+private val SECTIONS = listOf(SettingsPage.General, SettingsPage.Playlists, SettingsPage.Epg, SettingsPage.Playback, SettingsPage.Recordings, SettingsPage.Details, SettingsPage.Remote, SettingsPage.Phone, SettingsPage.Parental, SettingsPage.About)
 
 @Composable
-private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
+private fun SectionList(focus: SettingsPage, refocus: Int, onOpen: (SettingsPage) -> Unit) {
     val requesters = remember { SECTIONS.associateWith { FocusRequester() } }
-    LaunchedEffect(Unit) { focusSoon(requesters[focus] ?: requesters.getValue(SettingsPage.Playlists)) }
+    // Also when a PIN prompt over the list was cancelled: focus returns to the row that was pressed.
+    LaunchedEffect(refocus) { focusSoon(requesters[focus] ?: requesters.getValue(SettingsPage.Playlists)) }
     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SectionItem("General", requesters.getValue(SettingsPage.General)) { onOpen(SettingsPage.General) }
         SectionItem("Playlists", requesters.getValue(SettingsPage.Playlists)) { onOpen(SettingsPage.Playlists) }
@@ -244,8 +289,10 @@ private fun SectionList(focus: SettingsPage, onOpen: (SettingsPage) -> Unit) {
         SectionItem(SECTION_DETAILS, requesters.getValue(SettingsPage.Details)) { onOpen(SettingsPage.Details) }
         SectionItem("Remote control", requesters.getValue(SettingsPage.Remote)) { onOpen(SettingsPage.Remote) }
         SectionItem(SECTION_COMPANION, requesters.getValue(SettingsPage.Phone)) { onOpen(SettingsPage.Phone) }
-        // Not focusable: D-pad moves straight from Companion to About.
-        DISABLED_SECTIONS.forEach { DisabledSection(it) }
+        // Not focusable: D-pad skips them.
+        DISABLED_SECTIONS.take(1).forEach { DisabledSection(it) }
+        SectionItem(SECTION_PARENTAL, requesters.getValue(SettingsPage.Parental)) { onOpen(SettingsPage.Parental) }
+        DISABLED_SECTIONS.drop(1).forEach { DisabledSection(it) }
         SectionItem("About", requesters.getValue(SettingsPage.About)) { onOpen(SettingsPage.About) }
     }
 }

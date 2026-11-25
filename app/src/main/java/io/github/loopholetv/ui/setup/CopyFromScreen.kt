@@ -30,6 +30,7 @@ import androidx.tv.material3.ListItem
 import androidx.tv.material3.ListItemDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import io.github.loopholetv.cast.CastAnnounce
 import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.setup.SetupController
 import io.github.loopholetv.ui.settings.focusSoon
@@ -88,7 +89,7 @@ fun CopyFromScreen(peers: List<CastPeer>, onPick: (String) -> Unit) {
         ) {
             sorted.forEachIndexed { index, peer ->
                 key(peer.id) {
-                    val older = if (peer.setup < 1) SetupController.olderVersion(peer.name) else null
+                    val older = if (peer.setup < CastAnnounce.SETUP_VERSION) SetupController.olderVersion(peer.name) else null
                     ListItem(
                         selected = false,
                         onClick = { if (older == null) onPick(peer.id) },

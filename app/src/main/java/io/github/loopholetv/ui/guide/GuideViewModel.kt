@@ -21,6 +21,8 @@ import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.MAX_WINDOW_IDS
 import io.github.loopholetv.data.db.ProgrammeEntity
 import io.github.loopholetv.data.db.channelScopeFromArg
+import io.github.loopholetv.data.db.failClosed
+import io.github.loopholetv.data.db.isChannelLocked
 import io.github.loopholetv.data.db.displayName
 import io.github.loopholetv.data.db.label
 import io.github.loopholetv.data.db.ref
@@ -51,6 +53,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import io.github.loopholetv.data.parental.LockState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -211,6 +214,12 @@ private const val GROUPS_WAIT_MS = 2_000L
 /** The preview's notice is this and the channel's name. */
 const val PREVIEW_RECORDING_PREFIX = "Recording on "
 
+/** The preview notice when the recording's channel is locked. */
+const val PREVIEW_RECORDING_HIDDEN = "A recording is using the stream"
+
+private fun previewText(channel: String): String =
+    if (channel.isEmpty()) PREVIEW_RECORDING_HIDDEN else "$PREVIEW_RECORDING_PREFIX$channel"
+
 private const val WARNING_SEPARATOR = " \u00b7 "
 
 /** The booking's caveats as one line, or null when it has none. */
@@ -274,6 +283,8 @@ class GuideViewModel(
     /** Whether any film / show is available to browse (the rail's Movies / Series). */
     hasFilms: Flow<Boolean> = flowOf(false),
     hasShows: Flow<Boolean> = flowOf(false),
+    /** Whether a PIN exists: only then does the side menu list its lock item. */
+    hasPin: Flow<Boolean> = flowOf(false),
     /** Set when the player stopped on purpose (external player, sleep timer): come back idle. */
     private val previewHold: PreviewHold = PreviewHold(),
     /** Fires when the sleep timer has stopped playback. */
@@ -303,6 +314,12 @@ class GuideViewModel(
     private val channelByKey: suspend (playlistId: Long, key: String) -> ChannelEntity? = { _, _ -> null },
     /** The programmes on [channel] from shown time `at` on (time-shifted), the one airing then first. */
     private val programmesFrom: suspend (channel: ChannelEntity, at: Instant) -> List<ProgrammeEntity> = { _, _ -> emptyList() },
+    /** What the PIN currently allows; going back to Locked clears a preview of a locked channel. */
+    lockState: Flow<LockState> = emptyFlow(),
+    /** Whether channel [channelId] is locked and the PIN is not entered (its own lock or its group's). */
+    private val isLocked: suspend (channelId: Long) -> Boolean = { false },
+    /** Whether the full-screen live player is on screen: it owns the stream, and a relock leaves it playing. */
+    private val playerShowing: () -> Boolean = { false },
 ) : ViewModel() {
 
     /** The details of the showing [at] names, or null when its channel is gone or hidden, or the guide no longer lists it. */
@@ -346,12 +363,10 @@ class GuideViewModel(
     val groupEntries: StateFlow<List<GroupEntry>> = groups.map(::withHeadings)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** The side rail's entries: Movies and Series only while there are films / shows. */
-    val railItems: StateFlow<List<RailItem>> = combine(hasFilms, hasShows) { films, shows ->
-        RailItem.entries.filter { (it != RailItem.MOVIES || films) && (it != RailItem.SERIES || shows) }
-    }
+    /** The side rail's entries: Movies and Series only while there are films / shows, Locked channels only with a PIN. */
+    val railItems: StateFlow<List<RailItem>> = combine(hasFilms, hasShows, hasPin, ::railItemsFor)
         .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, RailItem.entries.filter { it != RailItem.MOVIES && it != RailItem.SERIES })
+        .stateIn(viewModelScope, SharingStarted.Eagerly, railItemsFor(films = false, shows = false, pin = false))
 
     /** Playlists exist but every one is turned off: the grid says so. */
     val allPlaylistsOff: StateFlow<Boolean> = combine(playlistsExist, playlistsOn) { exist, on -> exist && on == 0 }
@@ -440,8 +455,8 @@ class GuideViewModel(
 
     /** Shown over the preview while a recording holds the stream. */
     val previewNotice: StateFlow<String?> = previewTaken
-        .map { channel -> channel?.let { "$PREVIEW_RECORDING_PREFIX$it" } }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, previewTaken.value?.let { "$PREVIEW_RECORDING_PREFIX$it" })
+        .map { channel -> channel?.let(::previewText) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, previewTaken.value?.let(::previewText))
 
     private val _bookingWarning = MutableStateFlow<String?>(null)
 
@@ -1115,7 +1130,12 @@ class GuideViewModel(
         newRequest()
         _refocus.value = id
         viewModelScope.launch {
-            val channel = channelById(id) ?: return@launch
+            val channel = channelById(id)
+            if (channel == null) {
+                // A locked channel can't be shown, so it must not play on under an empty pane.
+                if (failClosed { isLocked(id) }) playback.stop()
+                return@launch
+            }
             _previewing.value = channel
             _focused.value = FocusedProgramme(channel, null)
         }
@@ -1126,6 +1146,25 @@ class GuideViewModel(
     init {
         // The sleep timer stopped playback (on any screen): the guide comes back with nothing previewing.
         viewModelScope.launch { sleepExpired.collect { _previewing.value = null } }
+        // Locking again takes a locked channel out of the preview. An unlocked channel keeps playing.
+        viewModelScope.launch {
+            lockState.map { it is LockState.Locked }.distinctUntilChanged().collect { locked ->
+                val previewed = _previewing.value
+                if (!locked || previewed == null || !failClosed { isLocked(previewed.id) }) return@collect
+                // Opening full screen hands the stream to the player, which a relock leaves alone (the
+                // guide stops it on return if it is still locked). Any other screen over the guide, such
+                // as Settings, leaves the preview playing, so it stops here.
+                // The stream must still be the preview's: a film, recording or other channel playing full screen
+                // (opened from Movies, Recordings or Search) is not touched.
+                val stillPreview = playback.state.value.channelIdOrNull() == previewed.id
+                if (playerPending || archivePending || playerShowing() || !stillPreview) {
+                    newRequest()
+                    _previewing.value = null
+                } else {
+                    stopPreview()
+                }
+            }
+        }
         viewModelScope.launch {
             val remembered = runCatching { initialScope() }.getOrDefault(ChannelScope.All)
             // A choice made meanwhile (OK on a group) wins, and is a change to remember.
@@ -1200,6 +1239,13 @@ class GuideViewModel(
                     playlistsExist = playlists.map { it.isNotEmpty() },
                     hasFilms = c.vod.hasFilms,
                     hasShows = c.vod.hasShows,
+                    hasPin = c.parentalLock.state.map { it !is LockState.NoPin }.distinctUntilChanged(),
+                    lockState = c.parentalLock.state,
+                    playerShowing = { c.pipGate.playerShowing },
+                    isLocked = { id ->
+                        !c.parentalLock.isUnlocked &&
+                            (channelDao.byId(id)?.let { c.db.lockDao().isChannelLocked(it.playlistId, it.key) } ?: false)
+                    },
                     previewHold = c.previewHold,
                     sleepExpired = c.sleepTimer.expired,
                     keyBindings = c.settingsStore.settings.map { it.remote.bindings }.distinctUntilChanged(),

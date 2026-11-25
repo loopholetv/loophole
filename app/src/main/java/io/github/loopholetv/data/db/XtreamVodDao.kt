@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
+import io.github.loopholetv.data.repo.KeyNameGroup
 import kotlinx.coroutines.flow.Flow
 import java.time.Instant
 
@@ -47,6 +48,14 @@ abstract class XtreamVodDao {
 
     @Query("SELECT `key` FROM vod_shows WHERE playlistId = :p AND source = 'XTREAM'")
     abstract suspend fun xtreamShowKeys(p: Long): List<String>
+
+    /** Xtream films with their name and category, for carrying edits to a title the provider gave a new id. */
+    @Query("SELECT `key`, name, category AS `group` FROM vod_films WHERE playlistId = :p AND `key` LIKE 'xm:%'")
+    abstract suspend fun xtreamFilmNameGroups(p: Long): List<KeyNameGroup>
+
+    /** Xtream shows with their name and group, as [xtreamFilmNameGroups]. */
+    @Query("SELECT `key`, name, groupTitle AS `group` FROM vod_shows WHERE playlistId = :p AND source = 'XTREAM'")
+    abstract suspend fun xtreamShowNameGroups(p: Long): List<KeyNameGroup>
 
     @Upsert abstract suspend fun upsertFilms(rows: List<FilmEntity>)
 

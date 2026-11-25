@@ -92,6 +92,13 @@ enum class RailItem(val label: String, val path: String) {
         "M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM12,20c-4.42,0 -8,-3.58 -8,-8s3.58,-8 8,-8" +
             " 8,3.58 8,8 -3.58,8 -8,8zM12,7c-2.76,0 -5,2.24 -5,5s2.24,5 5,5 5,-2.24 5,-5 -2.24,-5 -5,-5z",
     ),
+    // A padlock: shown only when a PIN exists; its label follows the lock (see SideRail's lockLabel).
+    LOCK(
+        "Locked channels",
+        "M18,8h-1V6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6v2H6c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2V10" +
+            "c0,-1.1 -0.9,-2 -2,-2zM12,17c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2zM15.1,8H8.9V6" +
+            "c0,-1.71 1.39,-3.1 3.1,-3.1 1.71,0 3.1,1.39 3.1,3.1v2z",
+    ),
     SETTINGS(
         "Settings",
         "M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94c0,-0.32 -0.02,-0.64 -0.07,-0.94l2.03,-1.58c0.18,-0.14 0.23,-0.41 " +
@@ -113,6 +120,10 @@ enum class RailItem(val label: String, val path: String) {
     }
 }
 
+/** The entries the side menu lists: Movies and Series only with [films] / [shows], the lock item only with a [pin]. */
+fun railItemsFor(films: Boolean, shows: Boolean, pin: Boolean): List<RailItem> =
+    RailItem.entries.filter { (it != RailItem.MOVIES || films) && (it != RailItem.SERIES || shows) && (it != RailItem.LOCK || pin) }
+
 /**
  * Thin icon rail; while it holds focus it widens into a labelled menu drawn over the content.
  * Entering it lands on TV (the current screen); Right leaves it for the guide ([onRight]).
@@ -124,6 +135,8 @@ fun SideRail(
     onSelect: (RailItem) -> Unit,
     onFocused: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The lock item's current label ("Show locked channels" / "Hide locked channels"); null leaves its own. */
+    lockLabel: String? = null,
     /** Right from any item: back into the guide (as TV does), not focus search. */
     onRight: () -> Unit = {},
     /** On TV (the current screen): the guide's Back opens the rail through it. */
@@ -157,6 +170,7 @@ fun SideRail(
         for (item in items) {
             RailButton(
                 item = item,
+                label = if (item == RailItem.LOCK) lockLabel ?: item.label else item.label,
                 current = item == RailItem.TV,
                 expanded = expanded,
                 onClick = { onSelect(item) },
@@ -211,7 +225,7 @@ private fun RailLogo(expanded: Boolean) {
 }
 
 @Composable
-private fun RailButton(item: RailItem, current: Boolean, expanded: Boolean, onClick: () -> Unit, modifier: Modifier) {
+private fun RailButton(item: RailItem, label: String, current: Boolean, expanded: Boolean, onClick: () -> Unit, modifier: Modifier) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val tint = when {
@@ -228,10 +242,10 @@ private fun RailButton(item: RailItem, current: Boolean, expanded: Boolean, onCl
             .background(if (focused) Tokens.SurfaceRaised else Color.Transparent, RoundedCornerShape(8.dp))
             .padding(horizontal = 10.dp),
     ) {
-        Icon(item.icon, contentDescription = item.label, tint = tint, modifier = Modifier.size(24.dp))
+        Icon(item.icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
         if (expanded) {
             Text(
-                text = item.label,
+                text = label,
                 style = MaterialTheme.typography.titleSmall,
                 color = tint,
                 maxLines = 1,

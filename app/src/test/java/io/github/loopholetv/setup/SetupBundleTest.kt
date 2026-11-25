@@ -5,14 +5,17 @@ import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.data.db.ShowPrefsEntity
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.data.settings.BufferPreset
 import io.github.loopholetv.data.settings.GuideAction
 import io.github.loopholetv.data.settings.KeyBindings
+import io.github.loopholetv.data.settings.ParentalSettings
 import io.github.loopholetv.data.settings.PlaybackSettings
 import io.github.loopholetv.data.settings.PlayerAction
 import io.github.loopholetv.data.settings.RemoteSettings
+import io.github.loopholetv.data.settings.SettingsLock
 import io.github.loopholetv.data.settings.SubtitleBackground
 import io.github.loopholetv.data.settings.SubtitleColour
 import io.github.loopholetv.data.settings.SubtitleEdge
@@ -34,6 +37,10 @@ import java.lang.reflect.Modifier
 /** Marks every secret-bearing value, so a leak in toString is easy to spot. */
 internal const val SECRET = "s3cr3t"
 
+/** A 32-byte PIN hash and a 16-byte salt, Base64, as a bundle carries them. */
+private const val HASH = "aGFzaC0kc2VjcmV0MDEyMzQ1Njc4OWFiY2RlZmdoaWo="
+private const val SALT = "c2FsdC0kc2VjcmV0MDEyMw=="
+
 /** A bundle that sets every copied value away from its default. */
 internal fun sampleBundle(secret: String = SECRET): SetupBundle = SetupBundle(
     fromName = "Living room",
@@ -47,12 +54,17 @@ internal fun sampleBundle(secret: String = SECRET): SetupBundle = SetupBundle(
                 SetupChannelEdit(
                     key = "http://stream.example.test/$secret/1.ts", hidden = true, customName = "One $secret",
                     customLogo = "http://logo.example.test/$secret.png", epgOverride = "one.$secret",
-                    epgShiftMinutes = 60, position = 3, aspectMode = AspectMode.ZOOM,
+                    epgShiftMinutes = 60, position = 3, aspectMode = AspectMode.ZOOM, locked = true,
                 ),
+                // A film's lock is a channel edit under its film key.
+                SetupChannelEdit(key = "film-$secret", locked = true),
             ),
             groupEdits = listOf(
-                SetupGroupEdit(title = "News", hidden = true, customName = "Headlines", position = 2, sortMode = GroupSort.CUSTOM),
+                SetupGroupEdit(
+                    title = "News", hidden = true, customName = "Headlines", position = 2, sortMode = GroupSort.CUSTOM, locked = true,
+                ),
             ),
+            showLocks = listOf(SetupShowLock("show-$secret")),
         ),
         SetupPlaylist(
             name = "Xtream", type = PlaylistType.XTREAM, xtreamServer = "http://xt.example.test",
@@ -98,6 +110,9 @@ internal fun changedSettings(secret: String = SECRET): AppSettings = AppSettings
     usbTreeUri = "content://usb/$secret", reminderLeadMin = 5, reminderAutoSwitch = true,
     padBeforeMin = 2, padAfterMin = 15,
     tmdbKey = "abcdef0123456789abcdef0123456789",
+    parental = ParentalSettings(
+        pinHash = HASH, pinSalt = SALT, unlockMinutes = 30, settingsLock = SettingsLock.PLAYLISTS_EPG,
+    ),
     remote = RemoteSettings(
         mediaKeysSeek = false, rwRewindsLive = false, leftRightSeek = false, leftRewindsLive = true,
         bindings = KeyBindings(
@@ -128,14 +143,14 @@ class SetupBundleTest {
     @Test
     fun versionIsCheckedBeforeAnythingElse() {
         val json = String(SetupJson.encode(sampleBundle()))
-        assertTrue(json.startsWith("{\"version\":1,"))
-        // A newer version: nothing after the version is read, so no file is staged.
-        assertNull(decode(json.replace("\"version\":1", "\"version\":2").toByteArray()))
+        assertTrue(json.startsWith("{\"version\":2,"))
+        // Another version: nothing after the version is read, so no file is staged.
+        assertNull(decode(json.replace("\"version\":2", "\"version\":3").toByteArray()))
         // Even when the rest wouldn't parse.
-        assertNull(decode("{\"version\":2,\"playlists\":[[[[".toByteArray()))
-        assertNull(decode("{\"version\":\"1\"}".toByteArray()))
+        assertNull(decode("{\"version\":3,\"playlists\":[[[[".toByteArray()))
+        assertNull(decode("{\"version\":\"2\"}".toByteArray()))
         // The version must come first.
-        val versionSecond = json.replace("\"version\":1,", "").replace(",\"skippedFiles\"", ",\"version\":1,\"skippedFiles\"")
+        val versionSecond = json.replace("\"version\":2,", "").replace(",\"skippedFiles\"", ",\"version\":2,\"skippedFiles\"")
         assertNull(decode(versionSecond.toByteArray()))
         assertEquals(0, staged)
     }
@@ -188,9 +203,57 @@ class SetupBundleTest {
     fun unknownVersionDecodesToNull() {
         val json = String(SetupJson.encode(sampleBundle()))
         assertNotNull(decode(json.toByteArray()))
-        assertFalse(json.contains("\"version\":2"))
-        assertNull(decode(json.replace("\"version\":1", "\"version\":2").toByteArray()))
-        assertNull(decode(json.replace("\"version\":1,", "").toByteArray()))
+        assertFalse(json.contains("\"version\":3"))
+        assertNull(decode(json.replace("\"version\":2", "\"version\":3").toByteArray()))
+        assertNull(decode(json.replace("\"version\":2,", "").toByteArray()))
+    }
+
+    @Test
+    fun version1BundleRefused() {
+        val json = String(SetupJson.encode(sampleBundle()))
+        assertNull(decode(json.replace("\"version\":2", "\"version\":1").toByteArray()))
+        assertEquals(2, SetupBundle.VERSION)
+    }
+
+    @Test
+    fun roundTripCarriesLocksAndPin() {
+        val decoded = decode(SetupJson.encode(sampleBundle()))!!
+        val main = decoded.playlists[0]
+        assertTrue("channel lock", main.channelEdits.first { it.key.startsWith("http") }.locked)
+        assertTrue("film lock", main.channelEdits.first { it.key.startsWith("film-") }.locked)
+        assertTrue("group lock", main.groupEdits.single().locked)
+        assertEquals(listOf(SetupShowLock("show-$SECRET")), main.showLocks)
+        assertEquals(emptyList<SetupShowLock>(), decoded.playlists[1].showLocks)
+        val p = decoded.settings.parental
+        assertEquals(HASH, p.pinHash)
+        assertEquals(SALT, p.pinSalt)
+        assertEquals(30, p.unlockMinutes)
+        assertEquals(SettingsLock.PLAYLISTS_EPG, p.settingsLock)
+        // A TV with no PIN round-trips as one too.
+        val none = sampleBundle().let { it.copy(settings = it.settings.copy(parental = ParentalSettings())) }
+        assertEquals(ParentalSettings(), decode(SetupJson.encode(none))!!.settings.parental)
+    }
+
+    @Test
+    fun aVersion2BundleMissingOrBadInNewFieldsIsRefused() {
+        val json = String(SetupJson.encode(sampleBundle()))
+        // No lock flag on an edit, no show locks, or any parental field missing or out of range: not a bundle.
+        assertNull(decode(json.replace("\"locked\":true", "\"x\":true").toByteArray()))
+        assertNull(decode(json.replace("\"showLocks\"", "\"other\"").toByteArray()))
+        for (field in listOf("parentalPinHash", "parentalPinSalt", "parentalUnlockMinutes", "parentalSettingsLock")) {
+            assertNull(field, decode(json.replace("\"$field\"", "\"x$field\"").toByteArray()))
+        }
+        assertNull(decode(json.replace("\"parentalUnlockMinutes\":30", "\"parentalUnlockMinutes\":7").toByteArray()))
+        assertNull(decode(json.replace("\"PLAYLISTS_EPG\"", "\"SOMETIMES\"").toByteArray()))
+        assertNull(decode(json.replace("\"parentalPinSalt\":\"$SALT\"", "\"parentalPinSalt\":null").toByteArray()))
+        assertNull(decode(json.replace("\"parentalPinHash\":\"$HASH\"", "\"parentalPinHash\":\"%%%\"").toByteArray()))
+        assertNull(decode(json.replace("\"showKey\":\"show-$SECRET\"", "\"showKey\":7").toByteArray()))
+        // Base64 of the wrong length is no PIN this TV could ever match: a 16-byte salt and a 32-byte hash only.
+        val shortSalt = "c2FsdC0kc2VjcmV0" // 12 bytes
+        val shortHash = "aGFzaC0kc2VjcmV0MDEyMzQ1Njc4OWFiY2RlZmdo" // 30 bytes
+        assertNull(decode(json.replace("\"parentalPinSalt\":\"$SALT\"", "\"parentalPinSalt\":\"$shortSalt\"").toByteArray()))
+        assertNull(decode(json.replace("\"parentalPinHash\":\"$HASH\"", "\"parentalPinHash\":\"$shortHash\"").toByteArray()))
+        assertNull(decode(json.replace("\"parentalPinSalt\":\"$SALT\"", "\"parentalPinSalt\":\"$HASH\"").toByteArray()))
     }
 
     @Test
@@ -227,11 +290,13 @@ class SetupBundleTest {
         val texts = buildList {
             add(bundle.toString())
             add(bundle.settings.toString())
+            add(bundle.settings.parental.toString())
             bundle.playlists.forEach { p ->
                 add(p.toString())
                 add(p.file.toString())
                 p.channelEdits.forEach { add(it.toString()) }
                 p.groupEdits.forEach { add(it.toString()) }
+                p.showLocks.forEach { add(it.toString()) }
             }
             bundle.favourites.forEach { add(it.toString()) }
             add(SetupExportResult(bundle, skippedLargeFiles = 1).toString())
@@ -241,7 +306,7 @@ class SetupBundleTest {
             add(SetupImportResult.Failed.toString())
         }
         for (text in texts) {
-            for (leak in listOf(SECRET, "example.test", "#EXTM3U", "Headlines")) {
+            for (leak in listOf(SECRET, "example.test", "#EXTM3U", "Headlines", "aGFzaC0", "c2FsdC0")) {
                 assertFalse("leaked $leak in $text", text.contains(leak))
             }
         }
@@ -260,6 +325,8 @@ class SetupBundleTest {
         assertClassified(PlaylistEntity::class.java, SetupFields.PLAYLIST_COPIED, SetupFields.PLAYLIST_NOT_COPIED)
         assertClassified(ChannelPrefsEntity::class.java, SetupFields.CHANNEL_EDIT_COPIED, SetupFields.CHANNEL_EDIT_NOT_COPIED)
         assertClassified(GroupPrefsEntity::class.java, SetupFields.GROUP_EDIT_COPIED, emptySet())
+        assertClassified(ShowPrefsEntity::class.java, SetupFields.SHOW_PREFS_COPIED, emptySet())
+        assertClassified(ParentalSettings::class.java, SetupFields.PARENTAL_COPIED, emptySet())
     }
 
     @Test

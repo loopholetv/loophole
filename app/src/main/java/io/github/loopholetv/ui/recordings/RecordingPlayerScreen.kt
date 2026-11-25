@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
+import io.github.loopholetv.data.db.isChannelLocked
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -272,6 +273,12 @@ private fun recordingPlayerViewModelFactory(id: Long, peer: CastPeer?, live: Boo
                 playback = c.playback,
                 clock = java.time.Instant::now,
                 localUrl = c.recordingsRoute::localFileUrl,
+                channelLocked = { playlistId, key, name ->
+                    !c.parentalLock.isUnlocked && when {
+                        playlistId != null && key != null -> c.db.lockDao().isChannelLocked(playlistId, key)
+                        else -> c.db.lockDao().channelNameLocked(name)
+                    }
+                },
             )
         }
     }

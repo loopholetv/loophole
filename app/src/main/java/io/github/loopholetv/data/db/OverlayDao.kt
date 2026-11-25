@@ -3,6 +3,24 @@ package io.github.loopholetv.data.db
 import androidx.room.Dao
 import androidx.room.Query
 
+/** The channel's playlist is enabled and neither it nor its group is hidden; written against `channels`. */
+internal const val CHANNEL_SHOWN =
+    """(SELECT enabled FROM playlists WHERE id = channels.playlistId)
+       AND NOT COALESCE((SELECT hidden FROM group_prefs
+           WHERE playlistId = channels.playlistId AND groupTitle = channels.groupTitle), 0)
+       AND NOT COALESCE((SELECT hidden FROM channel_prefs
+           WHERE playlistId = channels.playlistId AND channelKey = channels.`key`), 0)"""
+
+/** Neither the channel's group nor the channel is locked, or the PIN is entered; written against `channels`. */
+internal const val CHANNEL_NOT_LOCKED =
+    """(NOT COALESCE((SELECT locked FROM group_prefs
+           WHERE playlistId = channels.playlistId AND groupTitle = channels.groupTitle), 0) OR $LOCK_OPEN)
+       AND (NOT COALESCE((SELECT locked FROM channel_prefs
+           WHERE playlistId = channels.playlistId AND channelKey = channels.`key`), 0) OR $LOCK_OPEN)"""
+
+/** What `channels.visible` holds for one row. */
+internal const val CHANNEL_VISIBLE = "$CHANNEL_SHOWN AND $CHANNEL_NOT_LOCKED"
+
 /** Projection: an enabled playlist and its highest source number (0 when it has no channels). */
 data class PlaylistMaxNumber(val playlistId: Long, val maxNumber: Int)
 
@@ -51,7 +69,9 @@ abstract class OverlayDao {
         """UPDATE channels SET
            visible = (SELECT enabled FROM playlists WHERE id = :playlistId)
                AND NOT COALESCE((SELECT hidden FROM group_prefs
-                   WHERE playlistId = :playlistId AND groupTitle = channels.groupTitle), 0),
+                   WHERE playlistId = :playlistId AND groupTitle = channels.groupTitle), 0)
+               AND (NOT COALESCE((SELECT locked FROM group_prefs
+                   WHERE playlistId = :playlistId AND groupTitle = channels.groupTitle), 0) OR $LOCK_OPEN),
            customName = NULL, customLogo = NULL, epgShiftMinutes = 0, guideEpgId = epgChannelId,
            groupRank = number
            WHERE playlistId = :playlistId""",
@@ -62,7 +82,9 @@ abstract class OverlayDao {
     @Query(
         """UPDATE channels SET
            visible = visible AND NOT (SELECT hidden FROM channel_prefs
-               WHERE playlistId = channels.playlistId AND channelKey = channels.`key`),
+               WHERE playlistId = channels.playlistId AND channelKey = channels.`key`)
+               AND (NOT (SELECT locked FROM channel_prefs
+                   WHERE playlistId = channels.playlistId AND channelKey = channels.`key`) OR $LOCK_OPEN),
            customName = (SELECT customName FROM channel_prefs
                WHERE playlistId = channels.playlistId AND channelKey = channels.`key`),
            customLogo = (SELECT customLogo FROM channel_prefs
@@ -79,11 +101,7 @@ abstract class OverlayDao {
     /** Re-derives one channel's visibility and channel-edit columns (not its `groupRank`). */
     @Query(
         """UPDATE channels SET
-           visible = (SELECT enabled FROM playlists WHERE id = channels.playlistId)
-               AND NOT COALESCE((SELECT hidden FROM group_prefs
-                   WHERE playlistId = channels.playlistId AND groupTitle = channels.groupTitle), 0)
-               AND NOT COALESCE((SELECT hidden FROM channel_prefs
-                   WHERE playlistId = channels.playlistId AND channelKey = channels.`key`), 0),
+           visible = $CHANNEL_VISIBLE,
            customName = (SELECT customName FROM channel_prefs
                WHERE playlistId = channels.playlistId AND channelKey = channels.`key`),
            customLogo = (SELECT customLogo FROM channel_prefs

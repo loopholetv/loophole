@@ -8,6 +8,7 @@ import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.EditorGroupRow
+import io.github.loopholetv.data.db.isChannelLockedNow
 import io.github.loopholetv.data.repo.ChannelEdits
 import io.github.loopholetv.data.repo.FavouritesRepository
 import java.io.IOException
@@ -16,7 +17,9 @@ import kotlinx.coroutines.flow.first
 /**
  * The phone page's channel and group routes: one playlist's live channels, paged, and the same
  * rename, hide, favourite and reorder edits as the TV's channel editor, through its repositories.
- * The list reads what the editor reads: hidden channels and groups too, in editor order.
+ * The list reads what the editor reads: hidden channels and groups too, in editor order. Locked
+ * groups and channels (and channels of locked groups) are never listed or editable here, whatever
+ * the TV's lock state: to this page they don't exist.
  */
 class ChannelsApi(
     private val db: AppDatabase,
@@ -58,7 +61,7 @@ class ChannelsApi(
             }
             Action.CHANNEL_MOVE -> {
                 val to = body.to ?: return res.sendError(400, BAD_REQUEST)
-                onChannel(body) { edits.moveTo(it.ref(), to) }
+                onChannel(body) { edits.moveTo(it.ref(), fullChannelIndex(it, to)) }
             }
             Action.GROUP_RENAME -> {
                 val name = body.name ?: return res.sendError(400, BAD_REQUEST)
@@ -70,7 +73,7 @@ class ChannelsApi(
             }
             Action.GROUP_MOVE -> {
                 val to = body.to ?: return res.sendError(400, BAD_REQUEST)
-                onGroup(body) { edits.moveGroupTo(body.playlist, it, to) }
+                onGroup(body) { edits.moveGroupTo(body.playlist, it, fullGroupIndex(body.playlist, it, to)) }
             }
         }
         when (done) {
@@ -88,6 +91,7 @@ class ChannelsApi(
     private suspend fun onChannel(body: Edit, edit: suspend (ChannelEntity) -> Boolean): Done {
         val key = body.key ?: return Done.INVALID
         val channel = db.overlayDao().channelByKey(body.playlist, key) ?: return Done.GONE
+        if (db.lockDao().isChannelLockedNow(unlocked = false, body.playlist, key)) return Done.GONE
         return if (edit(channel)) Done.OK else Done.GONE
     }
 
@@ -96,6 +100,30 @@ class ChannelsApi(
         val title = body.title ?: return Done.INVALID
         if (groupRows(body.playlist).none { it.title == title }) return Done.GONE
         return if (edit(title)) Done.OK else Done.GONE
+    }
+
+    /**
+     * The page's index [to] counts only what it lists; the edit counts every row of the group, locked
+     * ones included. The row the page's list puts at [to] is where the moved one lands.
+     */
+    private suspend fun fullChannelIndex(channel: ChannelEntity, to: Int): Int {
+        val full = db.overlayDao().rankRows(channel.playlistId, channel.groupTitle)
+            .sortedWith(compareBy({ it.groupRank }, { it.number }, { it.id }))
+        val locked = db.lockDao().lockedChannels().first()
+            .filter { it.playlistId == channel.playlistId }.mapTo(HashSet()) { it.key }
+        val shown = full.filter { it.key !in locked }
+        val target = shown.getOrNull(to.coerceIn(0, (shown.size - 1).coerceAtLeast(0))) ?: return to
+        return full.indexOfFirst { it.key == target.key }
+    }
+
+    private suspend fun fullGroupIndex(playlistId: Long, title: String, to: Int): Int {
+        val full = db.overlayDao().groupRows(playlistId).sortedWith(
+            compareBy({ it.position == null }, { it.position }, { it.groupOrder }, { it.groupTitle }),
+        )
+        val visible = groupRows(playlistId).mapTo(HashSet()) { it.title }
+        val shown = full.filter { it.groupTitle in visible }
+        val target = shown.getOrNull(to.coerceIn(0, (shown.size - 1).coerceAtLeast(0))) ?: return to
+        return full.indexOfFirst { it.groupTitle == target.groupTitle }
     }
 
     /** Adds or removes the favourite only when it isn't in that state yet. */
@@ -168,7 +196,7 @@ class ChannelsApi(
     private fun number(req: HttpRequest, name: String): Int? =
         req.query[name]?.toLongOrNull()?.coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong())?.toInt()
 
-    private suspend fun groupRows(playlistId: Long): List<EditorGroupRow> = db.channelDao().editorGroups(playlistId).first()
+    private suspend fun groupRows(playlistId: Long): List<EditorGroupRow> = db.channelDao().phoneGroups(playlistId)
 
     private fun ChannelEntity.ref() = ChannelRef(playlistId, key)
 

@@ -20,7 +20,7 @@ import kotlinx.coroutines.launch
 const val DONE_SHOWS_MS = 4_000L
 
 /** OK on a remote, a keyboard or a game controller. */
-private val OK_KEYS = setOf(
+internal val OK_KEYS = setOf(
     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A,
 )
 
@@ -57,6 +57,9 @@ class SetupScreenModel(
     /** The code entry the pad last belonged to. */
     private var lastAsk: SetupState.EnterCode? = null
 
+    /** The PIN entry the pad last belonged to. */
+    private var lastPin: SetupState.AskPin? = null
+
     /** Keys pressed while a screen showed: only their release acts. */
     private val pressed = mutableSetOf<Int>()
 
@@ -89,11 +92,23 @@ class SetupScreenModel(
                     pad.clear()
                 }
             }
+            is SetupState.AskPin -> {
+                val last = lastPin
+                lastPin = state
+                // A wrong PIN empties the pad; a new entry starts on 1.
+                if (last == null) pad.reset() else if (state != last) pad.clear()
+            }
             is SetupState.Done -> {
-                if (state.message != SetupController.FINISH_FIRST) lastAsk = null
+                if (state.message != SetupController.FINISH_FIRST) {
+                    lastAsk = null
+                    lastPin = null
+                }
                 if (state.copied && state.received) onReturnToGuide()
             }
-            SetupState.Idle -> lastAsk = null
+            SetupState.Idle -> {
+                lastAsk = null
+                lastPin = null
+            }
             is SetupState.ShowingCode, is SetupState.Working -> Unit
         }
     }
@@ -120,7 +135,7 @@ class SetupScreenModel(
         }
         if (state == null) return false
         if (repeatCount == 0) pressed += keyCode else if (keyCode !in pressed) return true
-        if (state !is SetupState.EnterCode) return true
+        if (state !is SetupState.EnterCode && state !is SetupState.AskPin) return true
         val digit = digitFor(keyCode)
         when {
             digit != null -> if (repeatCount == 0) pad.type(digit)
@@ -136,7 +151,7 @@ class SetupScreenModel(
         val back = keyCode in BACK_KEYS
         when (state) {
             is SetupState.ShowingCode -> setup.cancel()
-            is SetupState.EnterCode -> if (back) pad.back() else pad.press()
+            is SetupState.EnterCode, is SetupState.AskPin -> if (back) pad.back() else pad.press()
             is SetupState.Working -> if (back) setup.cancel()
             is SetupState.Done -> dismiss(state)
             SetupState.Idle -> Unit

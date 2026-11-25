@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
@@ -83,6 +84,8 @@ class SearchViewModel(
     private val saveMyList: suspend (TitleKind, Long, String, Boolean) -> Unit = { _, _, _, _ -> },
     private val clock: () -> Instant = Instant::now,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Whether the PIN is entered, as stored: the searches read it, so a change runs the search again. */
+    unlocked: Flow<Boolean> = flowOf(false),
 ) : ViewModel() {
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -99,18 +102,27 @@ class SearchViewModel(
         viewModelScope.launch { saveMyList(kind, playlistId, key, inList) }
     }
 
+    /** The query last searched for, so a lock change re-runs it without the typing debounce. */
+    private var searched: String? = null
+
     // Eagerly: results must survive the screen being stopped (player on top) without re-running.
-    val results: StateFlow<SearchUi> = _query
-        .map { it.trim() }
-        .distinctUntilChanged()
+    // A relock (or unlock) runs the current query again, so locked hits never stay on screen.
+    val results: StateFlow<SearchUi> = combine(
+        _query.map { it.trim() }.distinctUntilChanged(),
+        unlocked.catch { emit(false) }.distinctUntilChanged(),
+    ) { q, _ -> q }
         .transformLatest { q ->
+            val typed = q != searched
+            searched = q
             val pattern = searchPattern(q)
             if (pattern == null) {
                 emit(SearchUi.Hint)
                 return@transformLatest
             }
-            delay(SEARCH_DEBOUNCE_MS) // cancelled by the next keystroke (latest wins)
-            emit(SearchUi.Searching)
+            if (typed) {
+                delay(SEARCH_DEBOUNCE_MS) // cancelled by the next keystroke (latest wins)
+                emit(SearchUi.Searching)
+            }
             val outcome = try {
                 val channels = withContext(io) { searchChannels(pattern) }
                 emit(SearchUi.Results(channels, emptyList(), programmesLoading = true))
@@ -148,6 +160,7 @@ class SearchViewModel(
                     searchShows = { vod.searchShows(it, SEARCH_LIMIT) },
                     myListKeysOf = library::myListKeys,
                     saveMyList = library::setInMyList,
+                    unlocked = app.container.db.lockDao().unlocked(),
                 ) as T
             }
         }

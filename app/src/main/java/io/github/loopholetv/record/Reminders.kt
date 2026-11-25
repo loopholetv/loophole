@@ -96,6 +96,11 @@ class Reminders(
     private val delayMs: suspend (Long) -> Unit = { delay(it) },
     /** Brings Loophole to the front on the channel; used when an answer or the timeout comes from outside it. */
     private val launch: (ChannelRef) -> Unit = {},
+    /**
+     * Whether the channel is locked and the PIN not entered. A reminder can fire on a cold start before any
+     * screen has run, so this reads the lock flags itself and must fail closed.
+     */
+    private val lockedNow: suspend (ChannelRef) -> Boolean = { false },
 ) {
     private val dao = db.recordDao()
     private val showing = ConcurrentHashMap<Long, Showing>()
@@ -135,6 +140,8 @@ class Reminders(
         val now = clock()
         if (row.stop <= now) return
         val ref = ChannelRef(row.playlistId, row.channelKey)
+        // A locked channel's reminder shows nothing; the row stays.
+        if (lockedNow(ref)) return
         val settings = settings()
         val remainingMin = ((row.start.toEpochMilli() - now.toEpochMilli() + 59_999L) / 60_000L).toInt()
         val lead = minOf(settings.reminderLeadMin, remainingMin).coerceAtLeast(0)

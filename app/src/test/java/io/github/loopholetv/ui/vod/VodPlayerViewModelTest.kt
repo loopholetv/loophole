@@ -131,6 +131,7 @@ class VodPlayerViewModelTest {
         beforePlay: suspend (VodRef) -> Boolean = { true },
         next: suspend (VodRef) -> VodRef? = nextOf,
         prefetchNext: suspend (VodRef) -> Unit = {},
+        isLocked: suspend (VodRef) -> Boolean = { false },
     ): Rig {
         val playback = FakePlayback()
         val progress = VodProgressRepository(dao) { Instant.ofEpochSecond(1_000_000) }
@@ -143,6 +144,7 @@ class VodPlayerViewModelTest {
                 autoPlay = { autoPlay },
                 beforePlay = beforePlay,
                 prefetchNext = prefetchNext,
+                isLocked = isLocked,
             ) { testScheduler.currentTime },
         )
         val events = mutableListOf<VodPlayerEvent>()
@@ -438,6 +440,40 @@ class VodPlayerViewModelTest {
         assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e6")), r.events)
         assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
         assertEquals(listOf("e6"), r.openedKeys())
+    }
+
+    @Test fun firstOpenOfALockedFilmLeaves() = runTest(dispatcher) {
+        val asked = mutableListOf<VodRef>()
+        // The lookup takes a moment, as the database does, so the screen is already listening for the exit.
+        val r = rig(isLocked = { kotlinx.coroutines.yield(); true }, beforePlay = { asked += it; true })
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), r.events)
+        assertTrue(r.playback.opened.isEmpty())
+        assertTrue("the recording gate is not asked", asked.isEmpty())
+    }
+
+    @Test fun returningFromHomeToALockedFilmLeaves() = runTest(dispatcher) {
+        var locked = false
+        val r = rig(isLocked = { locked })
+        r.playback.playing(durationMs = 3_600_000, at = 10_000)
+        r.vm.onScreenStopped()
+        r.playback.stop() // leaving the app stops the stream
+        locked = true
+
+        r.vm.onScreenStarted()
+        runCurrent()
+
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit(null)), r.events)
+        assertEquals(1, r.playback.opened.size)
+    }
+
+    @Test fun autoNextStopsAtLockedShow() = runTest(dispatcher) {
+        // The PIN went back on while e1 played: e2 belongs to a locked show, so there is no next episode.
+        val r = rig(start = episode(1), isLocked = { it.key == "e2" })
+        endEpisode(r)
+        assertEquals(listOf<VodPlayerEvent>(VodPlayerEvent.Exit("e1")), r.events)
+        assertEquals(AutoNextUi.Hidden, r.vm.autoNext.value)
+        passTime(r, 15_000)
+        assertEquals(listOf("e1"), r.openedKeys())
     }
 
     @Test fun pipEndExits() = runTest(dispatcher) {

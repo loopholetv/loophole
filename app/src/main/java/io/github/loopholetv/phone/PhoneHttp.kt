@@ -28,6 +28,13 @@ internal fun HttpResponse.sendError(code: Int, error: String) = sendJson(code) {
     endObject()
 }
 
+/** `{"pin":true}` with 401: the phone must enter the PIN and try again. */
+internal fun HttpResponse.sendPinRequired() = sendJson(401) {
+    beginObject()
+    name("pin").value(true)
+    endObject()
+}
+
 /** A status with no body. */
 internal fun HttpResponse.sendEmpty(code: Int) = start(code, null, 0)
 

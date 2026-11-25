@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -15,6 +16,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import io.github.loopholetv.ui.manage.TextEntryDialog
+import io.github.loopholetv.ui.parental.LocalPinPrompter
+import kotlinx.coroutines.launch
 
 private const val NAME_KEY = "name"
 private const val ENABLED_KEY = "enabled"
@@ -40,6 +43,8 @@ fun PlaylistPage(
 ) {
     val id = row.id
     val host = rememberChoiceHost()
+    val prompter = LocalPinPrompter.current
+    val scope = rememberCoroutineScope()
     var dialog by rememberSaveable { mutableStateOf<String?>(null) }
     var refocus by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
@@ -108,7 +113,17 @@ fun PlaylistPage(
         }
         ValueRow("User agent", userAgentText(row.userAgent), { dialog = UA_KEY }, Modifier.focusRequester(host.requester(UA_KEY)))
         ActionRow("Groups and channels", onOpenEditor, Modifier.focusRequester(host.requester(EDITOR_KEY)))
-        ActionRow("Delete playlist", { vm.requestDelete(id) }, Modifier.focusRequester(host.requester(DELETE_KEY)))
+        // A PIN guards deleting: a deleted and re-added playlist would otherwise drop every lock.
+        ActionRow(
+            "Delete playlist",
+            {
+                scope.launch {
+                    if (askWhenPinSet({ ui.options.parental.hasPin }) { prompter.ask() }) vm.requestDelete(id)
+                    else focusSoon(host.requester(DELETE_KEY))
+                }
+            },
+            Modifier.focusRequester(host.requester(DELETE_KEY)),
+        )
     }
     when (dialog) {
         NAME_KEY -> TextEntryDialog(

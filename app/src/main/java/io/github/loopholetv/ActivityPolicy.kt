@@ -26,5 +26,11 @@ fun shouldCloseAbovePlayerForPip(inPip: Boolean, currentRoute: String?): Boolean
  */
 fun shouldCloseWindowOnSleepExpiry(inPip: Boolean): Boolean = inPip
 
+/**
+ * Opening the picture-in-picture window leaves Loophole as much as Home does: the PIN is asked again
+ * (locked things leave the lists; the stream in the window plays on). Closing it locks nothing more.
+ */
+fun shouldRelockOnPipChange(inPip: Boolean): Boolean = inPip
+
 /** A stop for a configuration change keeps everything; any other stop releases the stream. */
 fun shouldReleaseOnStop(changingConfigurations: Boolean): Boolean = !changingConfigurations

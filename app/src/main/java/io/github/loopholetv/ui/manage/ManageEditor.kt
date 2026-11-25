@@ -50,6 +50,7 @@ import io.github.loopholetv.ui.common.KeyPhase
 import io.github.loopholetv.ui.common.channelOptionsTitle
 import io.github.loopholetv.ui.common.isOkKey
 import io.github.loopholetv.ui.guide.moveStepFor
+import io.github.loopholetv.ui.parental.LocalLockMarks
 import io.github.loopholetv.ui.theme.Tokens
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -167,7 +168,10 @@ private fun GroupPage(vm: ManageViewModel, title: String, group: EditorGroupItem
     LaunchedEffect(Unit) { focusSoon(first) }
 
     val sort = group?.sort ?: GroupSort.PLAYLIST
-    val groupOptions = groupEditOptions(hidden = group?.hidden == true, sort = sort) { edit ->
+    val lockAvailable = LocalLockMarks.current.lockAvailable
+    val groupOptions = groupEditOptions(
+        hidden = group?.hidden == true, sort = sort, locked = group?.locked == true, lockAvailable = lockAvailable,
+    ) { edit ->
         if (edit == GroupEdit.Move) onMoveGroup() else groupEdit = edit
     }
     val optionCount = groupOptions.size
@@ -225,7 +229,10 @@ private fun GroupPage(vm: ManageViewModel, title: String, group: EditorGroupItem
         val c = row.channel
         ChannelOptionsDialog(
             title = channelOptionsTitle(c),
-            options = channelEditOptions(c, hidden = row.hidden, canMove = true, playback = rememberChannelPlayback(c) ?: ChannelPlaybackPrefs.NONE) { edit ->
+            options = channelEditOptions(
+                c, hidden = row.hidden, canMove = true, playback = rememberChannelPlayback(c) ?: ChannelPlaybackPrefs.NONE,
+                locked = row.locked, lockAvailable = lockAvailable,
+            ) { edit ->
                 options = null
                 if (edit == ChannelEdit.Move) moving = c else channelEdit = edit to c
             },

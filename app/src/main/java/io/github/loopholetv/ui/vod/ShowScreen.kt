@@ -49,6 +49,8 @@ import io.github.loopholetv.ui.common.RequestFocusOnOpen
 import io.github.loopholetv.ui.common.StopPlaybackOnResume
 import io.github.loopholetv.ui.common.okPress
 import io.github.loopholetv.ui.onboarding.PillButton
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.LocalPinPrompter
 import io.github.loopholetv.ui.theme.Tokens
 
 /** The back-stack entry state where the player leaves the key of the episode it played last. */
@@ -86,6 +88,8 @@ fun ShowScreen(
     val starter = rememberVodStarter(rememberCast()) { ref, ms -> onPlay(ref, ms) }
     val loaded by vm.loaded.collectAsStateWithLifecycle()
     CloseWhenGone(present = ui != null, loaded = loaded, onBack = onBack)
+    val marks = LocalLockMarks.current
+    val prompter = LocalPinPrompter.current
     ui?.let { show ->
         ShowContent(
             show,
@@ -93,6 +97,9 @@ fun ShowScreen(
             onToggleMyList = vm::toggleMyList,
             onWrongDetails = vm::rejectDetails,
             onRetryEpisodes = vm::retryEpisodes,
+            offerLock = marks.unlocked,
+            locked = marks.show(playlistId, key),
+            onToggleLock = { vm.setLocked(!marks.show(playlistId, key), prompter::ensurePinThen) },
             restoreEpisodeKey = lastEpisode,
             onEpisodeUsed = { used ->
                 lastEpisode = used
@@ -110,6 +117,10 @@ internal fun ShowContent(
     onToggleMyList: () -> Unit = {},
     onWrongDetails: () -> Unit = {},
     onRetryEpisodes: () -> Unit = {},
+    /** The lock pill is offered (a PIN exists and is entered); [locked] says which way it reads. */
+    offerLock: Boolean = false,
+    locked: Boolean = false,
+    onToggleLock: () -> Unit = {},
     restoreEpisodeKey: String? = null,
     onEpisodeUsed: (episodeKey: String?) -> Unit = {},
     onPlay: (episodeKey: String, startMs: Long) -> Unit,
@@ -203,6 +214,7 @@ internal fun ShowContent(
                             modifier = Modifier.focusRequester(myListButton),
                             onClick = onToggleMyList,
                         )
+                        if (offerLock) PillButton(label = showLockLabel(locked), selected = false, onClick = onToggleLock)
                         if (ui.details?.fromTmdb == true) {
                             // The button goes away with the details, so focus moves first to Continue, else the
                             // season tab, else the first episode, else My list.

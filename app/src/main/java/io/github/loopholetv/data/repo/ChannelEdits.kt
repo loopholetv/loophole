@@ -9,6 +9,7 @@ import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.GroupOrderRow
 import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.GroupSort
+import io.github.loopholetv.data.db.ShowPrefsEntity
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.util.MAX_NAME_LENGTH
@@ -30,6 +31,9 @@ class ChannelEdits(private val db: AppDatabase, private val overlay: ChannelOver
     private val overlayDao = db.overlayDao()
 
     suspend fun setHidden(ref: ChannelRef, hidden: Boolean) = editChannel(ref) { it.copy(hidden = hidden) }
+
+    /** Locks or unlocks a channel; a film is locked through its film key the same way. */
+    suspend fun setLocked(ref: ChannelRef, locked: Boolean) = editChannel(ref) { it.copy(locked = locked) }
 
     /** A blank name, or the source name, restores the original; a name keeps its first [MAX_NAME_LENGTH] code points. */
     suspend fun rename(ref: ChannelRef, name: String?) = db.withTransaction {
@@ -137,6 +141,27 @@ class ChannelEdits(private val db: AppDatabase, private val overlay: ChannelOver
     suspend fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean) = db.withTransaction {
         writeGroupPrefs(playlistId, title) { it.copy(hidden = hidden) }
         overlay.applyPlaylist(playlistId)
+    }
+
+    /** Locks or unlocks every channel of a group (re-derives the playlist). */
+    suspend fun setGroupLocked(playlistId: Long, title: String, locked: Boolean) = db.withTransaction {
+        writeGroupPrefs(playlistId, title) { it.copy(locked = locked) }
+        overlay.applyPlaylist(playlistId)
+    }
+
+    /** Locks or unlocks a show; shows are not derived into `channels`, so nothing is re-derived. */
+    suspend fun setShowLocked(playlistId: Long, showKey: String, locked: Boolean) = db.withTransaction {
+        val lockDao = db.lockDao()
+        val next = (lockDao.showPrefs(playlistId, showKey) ?: ShowPrefsEntity(playlistId, showKey)).copy(locked = locked)
+        if (next.locked) lockDao.upsertShowPrefs(next) else lockDao.deleteShowPrefs(playlistId, showKey)
+    }
+
+    /** Removes every lock, keeping other edits, and re-derives every playlist. */
+    suspend fun clearAllLocks() {
+        db.withTransaction {
+            db.lockDao().clearAllLocks()
+            overlay.refreshAll()
+        }
     }
 
     /**

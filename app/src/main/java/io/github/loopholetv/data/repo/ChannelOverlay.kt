@@ -34,9 +34,10 @@ internal val BY_POSITION: Comparator<ChannelRankRow> =
  *
  * Except [refreshAll], callers hold the transaction.
  */
-class ChannelOverlay(private val db: AppDatabase) {
+open class ChannelOverlay(private val db: AppDatabase) {
     private val dao = db.overlayDao()
     private val groupPrefs = db.groupPrefsDao()
+    private val lockDao = db.lockDao()
 
     /**
      * Re-derives every channel of [playlistId]: visibility (playlist on, neither channel nor group
@@ -51,6 +52,18 @@ class ChannelOverlay(private val db: AppDatabase) {
 
     /** Re-derives one channel's visibility and edit columns (not its rank; see [rankGroup]). */
     suspend fun applyChannel(playlistId: Long, key: String) = dao.applyChannel(playlistId, key)
+
+    /**
+     * Re-derives the visibility of the locked channels after the PIN was entered or the lock
+     * state otherwise changed. No renumber: hidden channels keep their numbers.
+     */
+    suspend fun applyLockState() = db.withTransaction { lockDao.rederiveLocked() }
+
+    /** Records whether the PIN is entered and re-derives channel visibility, in one transaction. */
+    open suspend fun setLockState(unlocked: Boolean) = db.withTransaction {
+        lockDao.setUnlocked(unlocked)
+        lockDao.rederiveLocked()
+    }
 
     /** `guideNumber = number + offset` for every enabled playlist; turned-off ones keep `number`. */
     suspend fun renumber() {

@@ -10,6 +10,9 @@ import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.data.catchup.catchup
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.RecordingEntity
+import io.github.loopholetv.data.db.failClosed
+import io.github.loopholetv.data.db.isChannelLocked
+import io.github.loopholetv.data.parental.LockState
 import io.github.loopholetv.data.db.RecordingState
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.record.RecordingRunner
@@ -37,6 +40,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -106,8 +110,11 @@ class RecordingsViewModel(
     private val zone: ZoneId = ZoneId.systemDefault(),
     /** Waits out how long a notice stays up. */
     private val noticeTime: suspend () -> Unit = { delay(MESSAGE_MS) },
+    /** True while the PIN is not entered: recordings of locked channels stay out of every list. */
+    private val lockedNow: Flow<Boolean> = flowOf(false),
 ) : ViewModel() {
     private val dao = db.recordDao()
+    private val locks = db.lockDao()
     private val local = MutableStateFlow(Local())
     private val eventChannel = Channel<RecordingsEvent>(Channel.BUFFERED)
 
@@ -119,9 +126,12 @@ class RecordingsViewModel(
     }.onStart { emit(FreeSpace(false, null, null)) }
 
     private val computed: Flow<Computed> = combine(
-        dao.observeRecordings(), schedule.upcomingReminders(), dao.observeSeries(), db.playlistDao().all(), free,
-    ) { rows, reminders, series, playlists, free ->
+        dao.observeRecordings(), schedule.upcomingReminders(), dao.observeSeries(), db.playlistDao().all(), combine(free, lockedNow, ::Pair),
+    ) { allRows, allReminders, series, playlists, freeAndLock ->
+        val (free, locked) = freeAndLock
         val now = clock()
+        val rows = if (locked) allRows.filterNot { channelLocked(it.playlistId, it.channelKey) } else allRows
+        val reminders = if (locked) allReminders.filterNot { channelLocked(it.playlistId, it.channelKey) } else allReminders
         val missing = missingFromGuide(rows, now)
         val perName = playlists.associate { it.id to it.name }
         val clashes = rows.filter { it.state == RecordingState.SCHEDULED }.associate { it.id to clashOf(it, rows, playlists) }
@@ -140,12 +150,20 @@ class RecordingsViewModel(
     private val otherTvs: Flow<List<OtherTv>> = peers
         .map { list -> list.filter { it.rec != null } }
         .distinctUntilChanged { a, b -> a.map(::peerKey) == b.map(::peerKey) }
+        .combine(lockedNow.distinctUntilChanged()) { list, _ -> list }
         .transformLatest { list ->
             emit(list.map { OtherTv(it, null) })
             if (list.isNotEmpty()) {
                 emit(coroutineScope { list.map { p -> async { OtherTv(p, countOf(p)) } }.awaitAll() })
             }
         }
+
+    init {
+        // A list of another TV's recordings opened while unlocked must not stay up once locked again.
+        viewModelScope.launch {
+            lockedNow.collect { locked -> if (locked) local.value = local.value.copy(peerListing = null) }
+        }
+    }
 
     val ui: StateFlow<RecordingsUi> = combine(computed, settings, otherTvs, local) { c, s, tvs, l ->
         RecordingsUi(
@@ -306,11 +324,24 @@ class RecordingsViewModel(
     private fun peerKey(p: CastPeer) = listOf(p.id, p.name, p.host, p.port, p.rec)
 
     private suspend fun remoteList(peer: CastPeer): List<RemoteRecording>? = try {
-        listRemote(peer)
+        withLockHidden(listRemote(peer))
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
         null
+    }
+
+    /** Whether this TV's flags lock the channel; a failed lookup counts as locked. */
+    private suspend fun channelLocked(playlistId: Long, channelKey: String): Boolean =
+        failClosed { locks.isChannelLocked(playlistId, channelKey) }
+
+    /**
+     * Drops the recordings the serving TV marked locked while this TV is locked, and any whose channel name
+     * matches one of this TV's own locked channels (which also covers an older TV's list, with no mark).
+     */
+    private suspend fun withLockHidden(items: List<RemoteRecording>): List<RemoteRecording> {
+        if (!lockedNow.first()) return items
+        return items.filterNot { it.locked || failClosed { locks.channelNameLocked(it.channel) } }
     }
 
     private suspend fun countOf(peer: CastPeer): Int? = remoteList(peer)?.size
@@ -350,6 +381,7 @@ class RecordingsViewModel(
                 return RecordingsViewModel(
                     c.db, c.scheduleRepository, c.recordingRunner, c.storageFactory, c.settingsStore.settings,
                     c.castController.peers, c.recordingsClient::list, Instant::now,
+                    lockedNow = c.parentalLock.state.map { it !is LockState.Unlocked },
                 ) as T
             }
         }

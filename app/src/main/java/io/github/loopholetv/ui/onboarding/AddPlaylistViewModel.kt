@@ -128,6 +128,9 @@ class AddPlaylistViewModel(
      */
     private val appScope: CoroutineScope? = null,
 ) : ViewModel() {
+    /** The playlist being edited, as saved; null for an add, or until it has loaded. */
+    private var saved: PlaylistEntity? = null
+
     private val _state = MutableStateFlow(AddPlaylistUi(editing = editId != null, loaded = editId == null))
     val state: StateFlow<AddPlaylistUi> = _state.asStateFlow()
 
@@ -184,6 +187,7 @@ class AddPlaylistViewModel(
             _state.update { it.copy(phase = Phase.Failed(errorCopy(ImportError.Unexpected))) }
             return
         }
+        saved = p
         _state.update { prefill(it, p).copy(loaded = true) }
         if (p.type == PlaylistType.M3U_FILE) showFileName(p.url.orEmpty())
     }
@@ -214,6 +218,22 @@ class AddPlaylistViewModel(
             filled.copy(moreOptions = extras.any { it.isNotBlank() })
         }
     }
+
+    /**
+     * True when saving would change where the playlist comes from or how it signs in (its kind,
+     * address, file, Xtream login or portal fields), compared with the saved playlist. False for an add.
+     */
+    fun changesSource(): Boolean {
+        if (editId == null) return false
+        // Not loaded: unknown, so counted as a change.
+        val p = saved ?: return true
+        return sourceFields(_state.value) != sourceFields(prefill(AddPlaylistUi(), p))
+    }
+
+    private fun sourceFields(u: AddPlaylistUi) = listOf(
+        u.mode, u.url.trim(), u.fileLocation, u.server.trim(), u.user.trim(), u.pass, u.portalUrl.trim(), u.mac.trim(),
+        u.portalLogin, u.portalPass, u.serial, u.deviceId, u.deviceId2, u.signature,
+    )
 
     fun submit() {
         val s = _state.value

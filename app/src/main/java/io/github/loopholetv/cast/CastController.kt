@@ -59,6 +59,10 @@ import kotlinx.coroutines.launch
  *   fails here is asked for again after 2 s, then 4, 8… up to 30 s.
  *   Playing or stopping anything locally leaves the cast silently.
  *
+ * A cast of something locked on the casting TV ([CastAnnounce.locked], [CastEvent.Playing.locked])
+ * is kept from this TV while [lockedNow] says it is locked: it isn't joined or offered on its own,
+ * and a followed cast that switches to such a stream ends with [CAST_ENDED_MESSAGE].
+ *
  * [tvName] is the device's own name, announced while no TV name is set. [clock] is the wall clock;
  * it seeds the announce counter so it keeps growing across restarts. [castPosition] is the
  * follower's position when its stream is seekable (null otherwise) and [seekCast] moves it; both are
@@ -79,6 +83,13 @@ class CastController(
     clock: () -> Long,
     /** False keeps this TV from joining or being invited on its own (for example, a locked TV). */
     private val canAutoJoin: () -> Boolean = { true },
+    /**
+     * Whether this TV's locked things are hidden now (a PIN is set and not entered). May wait for the
+     * start-up lock to finish; a failure counts as locked.
+     */
+    private val lockedNow: suspend () -> Boolean = { false },
+    /** Whether what plays on this TV now is locked on it, whatever its unlock state; a failure counts as locked. */
+    private val playingLocked: suspend () -> Boolean = { false },
     private val castPosition: () -> Long? = {
         playback.player.takeIf { it.isCurrentMediaItemSeekable }?.currentPosition
     },
@@ -98,6 +109,15 @@ class CastController(
     /** The secret that opens this TV's recordings to other TVs, while it has any; announced as [CastAnnounce.rec]. */
     private val recToken: StateFlow<String?> = MutableStateFlow(null),
 ) : CastView {
+    /** [lockedNow], with a failure counted as locked. */
+    private suspend fun isLockedNow(): Boolean = try {
+        lockedNow()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        true
+    }
+
     /** One followed cast; replaced, never reused. */
     private class Follow(val peer: CastPeer, val selfId: String) {
         val castId: String = peer.castId.orEmpty()
@@ -160,8 +180,11 @@ class CastController(
     private var wifiHold: AutoCloseable? = null
     private var networkWatch: AutoCloseable? = null
 
-    /** Goes up on every start, stop or join, so a stop's late re-open can tell it is out of date. */
-    private var castGeneration = 0
+    /**
+     * Goes up on every start, stop or join, so a stop's late re-open can tell it is out of date. Written
+     * under [announceLock], with [markPending].
+     */
+    @Volatile private var castGeneration = 0
 
     /** Casts already reacted to since this TV last came to the foreground. */
     private val seen = HashSet<String>()
@@ -178,6 +201,12 @@ class CastController(
     private val announceLock = Any()
     private var seq = clock()
     private var announced: CastAnnounce? = null
+
+    /**
+     * True from the start of a cast until the lock mark of what plays is known: it isn't announced as
+     * casting yet. Written under [announceLock].
+     */
+    @Volatile private var markPending = false
 
     init {
         // A read error keeps the last good settings.
@@ -252,8 +281,8 @@ class CastController(
             launch {
                 combine(table.peers, latestSettings.filterNotNull(), ::Pair).collect { (list, s) -> onPeers(list, s) }
             }
-            combine(_state, playback.state, latestSettings.filterNotNull(), recToken) { _, _, s, rec ->
-                listOf(selfStatus(host.active.value), s.castAllowJoin, s.castTvName, rec)
+            combine(_state, playback.state, host.active, latestSettings.filterNotNull(), recToken) { _, _, _, s, rec ->
+                listOf(selfStatus(host.active.value), host.active.value?.locked, s.castAllowJoin, s.castTvName, rec)
             }.distinctUntilChanged().collect { discovery.refresh() }
         }
     }
@@ -321,7 +350,13 @@ class CastController(
         }
         follow?.let { end(it, message = null, notifyHost = true, decline = true, stopPlayback = true) }
         clearInvite(decline = true)
-        castGeneration++
+        // The first announce of the cast waits for the lock mark of what plays, so a locked TV never sees
+        // a locked stream as unmarked. Set before the relay starts: an announce can be read on another
+        // thread at any moment from here on.
+        val started = synchronized(announceLock) {
+            markPending = true
+            ++castGeneration
+        }
         host.start()
         wifiHold = try {
             holdWifi()
@@ -330,7 +365,25 @@ class CastController(
         }
         playback.reopen()
         _state.value = CastState.Casting(host.followers.value)
-        discovery.refresh()
+        scope.launch {
+            val locked = try {
+                playingLocked()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                true
+            }
+            // Checked and written under the announce lock, so a stop and a new start in between are seen.
+            val current = synchronized(announceLock) {
+                (started == castGeneration).also {
+                    if (it) {
+                        host.markUntilOpened(locked)
+                        markPending = false
+                    }
+                }
+            }
+            if (current) discovery.refresh()
+        }
         castJob = scope.launch {
             launch {
                 host.followers.collect { n -> if (_state.value is CastState.Casting) _state.value = CastState.Casting(n) }
@@ -353,12 +406,14 @@ class CastController(
     /** The job that stops [host] and then re-opens playback when [reopen]; null when not casting. */
     private fun endCasting(reason: StopReason, reopen: Boolean): Job? {
         if (_state.value !is CastState.Casting) return null
+        // A pending mark stays pending: the relay is still up for a moment, and must not be announced
+        // unmarked. With no cast running it hides nothing; the next start sets it again.
+        val generation = synchronized(announceLock) { ++castGeneration }
         castJob?.cancel()
         castJob = null
         wifiHold?.let { runCatching { it.close() } }
         wifiHold = null
         _state.value = CastState.Off
-        val generation = ++castGeneration
         val playingThen = playKey()
         // Undispatched: the relay is no longer active by the time this returns.
         val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -399,8 +454,20 @@ class CastController(
         val latest = fresh.filter { it.castId !in declined }
             .maxWithOrNull(compareBy<CastPeer> { it.castStartedAtMs ?: Long.MIN_VALUE }.thenBy { it.id })
             ?: return
-        if (_state.value != CastState.Off || !s.castAllowJoin) return
-        if (playback.state.value is PlaybackState.Idle) follow(latest) else offer(latest)
+        if (!latest.locked) {
+            autoJoin(latest, s)
+            return
+        }
+        // This TV may only hide locked things after the start-up lock and the PIN state are known.
+        scope.launch {
+            val now = table.peers.value.firstOrNull { it.id == latest.id && it.castId == latest.castId } ?: return@launch
+            if (!now.locked || !isLockedNow()) autoJoin(now, s)
+        }
+    }
+
+    private fun autoJoin(peer: CastPeer, s: AppSettings) {
+        if (!foreground || !canAutoJoin() || _state.value != CastState.Off || !s.castAllowJoin) return
+        if (playback.state.value is PlaybackState.Idle) follow(peer) else offer(peer)
     }
 
     /**
@@ -449,7 +516,7 @@ class CastController(
             end(current, message = null, notifyHost = true, decline = true, stopPlayback = false)
         }
         endCasting(StopReason.STOPPED, reopen = false)
-        castGeneration++
+        synchronized(announceLock) { castGeneration++ }
         clearInvite(decline = _invite.value?.peer?.castId != castId)
         seen += castId
         playback.stop()
@@ -479,10 +546,15 @@ class CastController(
         end(f, message, notifyHost = false, decline = false, stopPlayback = true)
     }
 
-    private fun onEvent(f: Follow, e: CastEvent) {
+    private suspend fun onEvent(f: Follow, e: CastEvent) {
         if (follow !== f || e.cast != f.castId) return
         when (e) {
             is CastEvent.Playing -> {
+                if (e.locked && isLockedNow()) {
+                    end(f, CAST_ENDED_MESSAGE, notifyHost = true, decline = true, stopPlayback = true)
+                    return
+                }
+                if (follow !== f) return
                 if (resumes(f, e)) {
                     f.idle = false
                     playback.resume()
@@ -600,7 +672,8 @@ class CastController(
 
     /** What this TV tells the others now; [CastAnnounce.seq] goes up whenever anything else changes. Any thread. */
     fun selfAnnounce(): CastAnnounce = synchronized(announceLock) {
-        val session = host.active.value
+        // While the mark is pending the cast is not announced at all (the flag is read first).
+        val session = if (markPending) null else host.active.value
         val s = latestSettings.value
         val now = CastAnnounce(
             id = me.orEmpty(),
@@ -612,6 +685,7 @@ class CastController(
             castId = session?.castId,
             token = session?.token,
             castStartedAtMs = session?.startedAtMs,
+            locked = session?.locked ?: false,
             seq = 0,
             setup = CastAnnounce.SETUP_VERSION,
             rec = recToken.value?.takeIf { s?.castAllowJoin == true },
@@ -636,6 +710,8 @@ class CastController(
         const val UNSUPPORTED_MESSAGE = "This programme can't be shown on other TVs."
         /** The same words the player uses for a cast stream it can't play. */
         const val CANT_PLAY_MESSAGE = "Can't play this stream."
+        /** Shown when a followed cast switches to something locked on this TV. */
+        const val CAST_ENDED_MESSAGE = "Cast ended"
         const val NO_NETWORK_MESSAGE = "Connect this TV to your home network to cast."
 
         fun stoppedMessage(name: String, reason: StopReason): String = when (reason) {

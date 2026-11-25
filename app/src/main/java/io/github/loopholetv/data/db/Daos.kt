@@ -149,6 +149,15 @@ abstract class ChannelDao {
     abstract fun observeVisible(id: Long): Flow<Boolean?>
 
     /**
+     * Whether channel [id] would be shown were it not for a lock: its playlist is enabled and
+     * neither it nor its group is hidden. Null once it is gone.
+     */
+    @Query(
+        """SELECT $CHANNEL_SHOWN FROM channels WHERE id = :id""",
+    )
+    abstract fun shownIgnoringLock(id: Long): Flow<Boolean?>
+
+    /**
      * The visible channel after (direction >= 0) or before (direction < 0) [current] within [group]
      * (null = all channels), wrapping around at either end, in that scope's order. [current] need
      * not belong to [group] or be visible; null only when the scope is empty. [group] must be
@@ -261,26 +270,38 @@ abstract class ChannelDao {
 
     // --- Settings editor (hidden channels and groups included) ---
 
-    /** Every group of [playlistId], hidden ones too, in the guide's group order; [EditorGroupRow.count] counts all. */
+    /**
+     * Every group of [playlistId], hidden ones too, in the guide's group order; [EditorGroupRow.count]
+     * counts all. Locked groups and locked channels are left out while the PIN is not entered.
+     */
     @Query(
         """SELECT c.groupTitle AS title, COALESCE(gp.customName, c.groupTitle) AS label,
                   COALESCE(gp.hidden, 0) AS hidden, (gp.customName IS NOT NULL) AS renamed,
                   COUNT(*) AS count, COALESCE(gp.position, MIN(c.groupOrder)) AS `order`,
-                  COALESCE(gp.sortMode, 'PLAYLIST') AS sortMode
+                  COALESCE(gp.sortMode, 'PLAYLIST') AS sortMode, COALESCE(gp.locked, 0) AS locked
            FROM channels c
            LEFT JOIN group_prefs gp ON gp.playlistId = c.playlistId AND gp.groupTitle = c.groupTitle
            WHERE c.playlistId = :playlistId
+             AND (NOT COALESCE(gp.locked, 0) OR $LOCK_OPEN)
+             AND (NOT COALESCE((SELECT locked FROM channel_prefs
+                  WHERE playlistId = c.playlistId AND channelKey = c.`key`), 0) OR $LOCK_OPEN)
            GROUP BY c.groupTitle
            ORDER BY gp.position IS NULL, gp.position, MIN(c.groupOrder), title""",
     )
     abstract fun editorGroups(playlistId: Long): Flow<List<EditorGroupRow>>
 
-    /** Every channel of one group of [playlistId], hidden ones too, in the group order. */
+    /**
+     * Every channel of one group of [playlistId], hidden ones too, in the group order. Locked
+     * channels, and every channel of a locked group, are left out while the PIN is not entered.
+     */
     @Query(
-        """SELECT c.*, COALESCE(cp.hidden, 0) AS hidden
+        """SELECT c.*, COALESCE(cp.hidden, 0) AS hidden, COALESCE(cp.locked, 0) AS locked
            FROM channels c
            LEFT JOIN channel_prefs cp ON cp.playlistId = c.playlistId AND cp.channelKey = c.`key`
            WHERE c.playlistId = :playlistId AND c.groupTitle = :title
+             AND (NOT COALESCE(cp.locked, 0) OR $LOCK_OPEN)
+             AND (NOT COALESCE((SELECT locked FROM group_prefs
+                  WHERE playlistId = c.playlistId AND groupTitle = c.groupTitle), 0) OR $LOCK_OPEN)
            ORDER BY c.groupRank, c.number, c.id""",
     )
     abstract fun editorChannels(playlistId: Long, title: String): PagingSource<Int, EditorChannelRow>
@@ -289,7 +310,8 @@ abstract class ChannelDao {
      * One page of [playlistId]'s channels for the phone page, hidden ones too. One [group]: the order
      * of [editorChannels]; none: group by group in the order of [editorGroups], then as in a group.
      * A non-null [query] keeps channels whose shown name contains it, ignoring case; `%`, `_` and
-     * `\` in it match themselves.
+     * `\` in it match themselves. Locked channels and channels of locked groups are always left out,
+     * whether or not the PIN is entered on the TV.
      */
     suspend fun phoneChannels(playlistId: Long, group: String?, query: String?, limit: Int, offset: Int): List<PhoneChannelRow> =
         phoneChannelPage(playlistId, group, query?.let { "%" + likeEscaped(it) + "%" }, limit, offset)
@@ -302,6 +324,7 @@ abstract class ChannelDao {
            LEFT JOIN group_prefs gp ON gp.playlistId = c.playlistId AND gp.groupTitle = c.groupTitle
            WHERE c.playlistId = :playlistId
              AND (:group IS NULL OR c.groupTitle = :group)
+             AND NOT COALESCE(cp.locked, 0) AND NOT COALESCE(gp.locked, 0)
              AND (:pattern IS NULL OR COALESCE(cp.customName, c.name) LIKE :pattern ESCAPE '\')
            ORDER BY gp.position IS NULL, gp.position, c.groupOrder, c.groupTitle, c.groupRank, c.number, c.id
            LIMIT :limit OFFSET :offset""",
@@ -309,6 +332,26 @@ abstract class ChannelDao {
     protected abstract suspend fun phoneChannelPage(
         playlistId: Long, group: String?, pattern: String?, limit: Int, offset: Int,
     ): List<PhoneChannelRow>
+
+    /**
+     * The groups of [playlistId] for the phone page: as [editorGroups], but locked groups and locked
+     * channels are always left out, whether or not the PIN is entered on the TV.
+     */
+    @Query(
+        """SELECT c.groupTitle AS title, COALESCE(gp.customName, c.groupTitle) AS label,
+                  COALESCE(gp.hidden, 0) AS hidden, (gp.customName IS NOT NULL) AS renamed,
+                  COUNT(*) AS count, COALESCE(gp.position, MIN(c.groupOrder)) AS `order`,
+                  COALESCE(gp.sortMode, 'PLAYLIST') AS sortMode, 0 AS locked
+           FROM channels c
+           LEFT JOIN group_prefs gp ON gp.playlistId = c.playlistId AND gp.groupTitle = c.groupTitle
+           WHERE c.playlistId = :playlistId
+             AND NOT COALESCE(gp.locked, 0)
+             AND NOT COALESCE((SELECT locked FROM channel_prefs
+                  WHERE playlistId = c.playlistId AND channelKey = c.`key`), 0)
+           GROUP BY c.groupTitle
+           ORDER BY gp.position IS NULL, gp.position, MIN(c.groupOrder), title""",
+    )
+    abstract suspend fun phoneGroups(playlistId: Long): List<EditorGroupRow>
 
     @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY sortOrder")
     abstract suspend fun channelsOf(playlistId: Long): List<ChannelEntity>
@@ -491,6 +534,10 @@ abstract class SetupDao {
     @Query("SELECT * FROM group_prefs ORDER BY playlistId, groupTitle")
     abstract suspend fun groupPrefs(): List<GroupPrefsEntity>
 
+    /** Only the locked shows: a row holding no lock has nothing to copy. */
+    @Query("SELECT * FROM show_prefs WHERE locked = 1 ORDER BY playlistId, showKey")
+    abstract suspend fun lockedShowPrefs(): List<ShowPrefsEntity>
+
     /** In the user's order. */
     @Query("SELECT * FROM favourites ORDER BY position")
     abstract suspend fun favourites(): List<FavouriteEntity>
@@ -516,6 +563,9 @@ abstract class SetupDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertGroupPrefs(rows: List<GroupPrefsEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun insertShowPrefs(rows: List<ShowPrefsEntity>)
 
     /** A repeated channel keeps its first place. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)

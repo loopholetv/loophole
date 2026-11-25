@@ -214,6 +214,7 @@ class PlayerViewModelTest {
         elapsedMs: () -> Long = { 0L },
         cast: CastControls = NoCast,
         beforePlay: suspend (ChannelEntity, Boolean) -> Boolean = { _, _ -> true },
+        isLocked: suspend (ChannelEntity) -> Boolean = { false },
         schedule: ScheduleActions = NoSchedule,
         recordingChannels: Flow<Set<Long>> = flowOf(emptySet()),
     ): PlayerViewModel {
@@ -258,6 +259,7 @@ class PlayerViewModelTest {
             format = GuideFormat(true, ZoneOffset.UTC),
             cast = cast,
             beforePlay = beforePlay,
+            isLocked = isLocked,
             schedule = schedule,
             recordingChannels = recordingChannels,
         )
@@ -338,6 +340,34 @@ class PlayerViewModelTest {
         answers.last().complete(true)
         runCurrent()
         assertEquals("the recording was stopped: the channel opens", listOf(3L), playback.played)
+    }
+
+    @Test fun returningFromHomeToALockedChannelLeavesForTheGuide() = runTest {
+        val playback = FakePlayback()
+        var locked = false
+        val vm = vm(playback, start = 3, isLocked = { locked })
+        runCurrent()
+        assertEquals(listOf(3L), playback.played)
+        // Home: playback stops and the PIN is asked for again.
+        playback.stop()
+        locked = true
+
+        vm.onScreenStarted()
+        runCurrent()
+
+        assertTrue("back to the guide", vm.exitToGuide.value)
+        assertEquals("nothing replays", listOf(3L), playback.played)
+    }
+
+    @Test fun returningFromHomeToAnUnlockedChannelResumes() = runTest {
+        val playback = FakePlayback()
+        val vm = vm(playback, start = 3, isLocked = { false })
+        runCurrent()
+        playback.stop()
+        vm.onScreenStarted()
+        runCurrent()
+        assertFalse(vm.exitToGuide.value)
+        assertEquals(listOf(3L, 3L), playback.played)
     }
 
     @Test fun channelKeysMoveWithinScopeAndWrap() = runTest {

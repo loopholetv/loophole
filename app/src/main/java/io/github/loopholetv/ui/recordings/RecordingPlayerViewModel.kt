@@ -6,6 +6,7 @@ import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.RecordingEntity
 import io.github.loopholetv.data.db.RecordingState
+import io.github.loopholetv.data.db.failClosed
 import io.github.loopholetv.data.vod.SAVE_INTERVAL_MS
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodPlayable
@@ -22,6 +23,7 @@ import io.github.loopholetv.ui.vod.VodBarUi
 import io.github.loopholetv.ui.vod.vodBarUi
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,6 +75,12 @@ class RecordingPlayerViewModel(
     private val localUrl: (Long) -> String?,
     /** The recordings another TV lists; a seam for tests. */
     private val listRemote: suspend (CastPeer) -> List<RemoteRecording> = client::list,
+    /**
+     * Whether a recording of this channel is locked while the PIN is not entered: by playlist and channel key
+     * when the recording stores them (null: by name, for another TV's recording).
+     */
+    private val channelLocked: suspend (playlistId: Long?, channelKey: String?, channelName: String) -> Boolean =
+        { _, _, _ -> false },
 ) : ViewModel() {
     private val _bar = MutableStateFlow<VodBarUi?>(null)
     val bar: StateFlow<VodBarUi?> = _bar.asStateFlow()
@@ -142,10 +150,13 @@ class RecordingPlayerViewModel(
     private suspend fun load(now: Long): Boolean {
         if (peer == null) {
             val row = db.recordDao().recording(id) ?: return false
+            // A locked channel's recording behaves as if it did not exist.
+            if (channelLocked(row.playlistId, row.channelKey, row.channelName)) return false
             local = row
             title = row.title
         } else {
             val r = listRemote(peer).firstOrNull { it.id == id } ?: return false
+            if (channelLocked(null, null, r.channel)) return false
             remote = r
             remoteAt = now
             title = r.title
@@ -375,14 +386,34 @@ class RecordingPlayerViewModel(
         val playable = item ?: return
         _error.value = null
         replays = 0
-        playback.playVod(playable, lastPositionMs)
+        resumeUnlessLocked(playable, lastPositionMs)
     }
 
     /** Coming back from the background (the stream was stopped meanwhile): continue where it was. */
     fun onScreenStarted() {
         screenStopped = false
         if (finished || !opened || playback.state.value !is PlaybackState.Idle) return
-        item?.let { playback.playVod(it, lastPositionMs) }
+        item?.let { resumeUnlessLocked(it, lastPositionMs) }
+    }
+
+    /**
+     * Opens [playable] again, unless its channel has been locked meanwhile (the app was left, which locks
+     * again): then the player stops and leaves, as for a recording that is gone.
+     */
+    private fun resumeUnlessLocked(playable: VodPlayable, from: Long) {
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val locked = failClosed {
+                local?.let { channelLocked(it.playlistId, it.channelKey, it.channelName) }
+                    ?: remote?.let { channelLocked(null, null, it.channel) }
+                    ?: false
+            }
+            if (locked) {
+                playback.stop()
+                exit()
+            } else if (!finished) {
+                playback.playVod(playable, from)
+            }
+        }
     }
 
     /** The screen is going away (the stream stops after this): note where it was. */

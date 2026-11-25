@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.data.db.ChannelRef
 import io.github.loopholetv.data.db.FilmEntity
 import io.github.loopholetv.data.db.ProviderDetailsEntity
 import io.github.loopholetv.data.repo.XtreamFilmDetails
@@ -55,6 +56,9 @@ fun resumeLabel(positionMs: Long): String {
     return "Resume from " + if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
+/** The lock pill's label. */
+fun filmLockLabel(locked: Boolean): String = if (locked) "Unlock film" else "Lock film"
+
 /** The My list pill's label. */
 fun myListLabel(inList: Boolean): String = if (inList) "✓ In My list" else "+ My list"
 
@@ -70,6 +74,8 @@ class FilmViewModel(
     progress: VodProgressRepository,
     private val library: VodLibraryRepository,
     filmDetails: XtreamFilmDetails? = null,
+    /** Writes the film's own lock. */
+    private val writeLocked: suspend (locked: Boolean) -> Unit = {},
 ) : ViewModel() {
     private val _ui = MutableStateFlow<FilmUi?>(null)
     private val _loaded = MutableStateFlow(false)
@@ -122,6 +128,14 @@ class FilmViewModel(
         viewModelScope.launch { library.setInMyList(TitleKind.FILM, playlistId, key, !inList) }
     }
 
+    /**
+     * Locks or unlocks the film. Both first run [ensurePin] (sets a PIN when there is none, or asks for
+     * it; at once while unlocked); nothing changes when that is not completed.
+     */
+    fun setLocked(locked: Boolean, ensurePin: suspend () -> Boolean) {
+        viewModelScope.launch { if (ensurePin()) writeLocked(locked) }
+    }
+
     /** Drops the film's TMDB match as wrong; the page goes back to the playlist's details. */
     fun rejectDetails() {
         viewModelScope.launch { repo.rejectDetails(TitleKind.FILM, playlistId, key) }
@@ -142,6 +156,9 @@ private fun providerDetailsOf(film: FilmEntity, d: ProviderDetailsEntity?): Titl
 fun filmViewModelFactory(playlistId: Long, key: String): ViewModelProvider.Factory = viewModelFactory {
     initializer {
         val c = (this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
-        FilmViewModel(playlistId, key, c.vod, c.vodProgress, c.vodLibrary, c.xtreamFilmDetails)
+        FilmViewModel(
+            playlistId, key, c.vod, c.vodProgress, c.vodLibrary, c.xtreamFilmDetails,
+            writeLocked = { locked -> c.channelEdits.setLocked(ChannelRef(playlistId, key), locked) },
+        )
     }
 }

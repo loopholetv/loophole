@@ -57,6 +57,38 @@ class VodDetailContentTest {
         continueLabel = "Play S1 E1", continueKey = "a", continueStartMs = 0,
     )
 
+    @Test fun filmLockPillOnlyWhenOffered() {
+        var offer by mutableStateOf(false)
+        var locked by mutableStateOf(false)
+        compose.setContent { FilmContent(film, offerLock = offer, locked = locked, onPlay = {}) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Lock film").assertDoesNotExist()
+        compose.onNodeWithText("Unlock film").assertDoesNotExist()
+
+        offer = true
+        compose.waitForIdle()
+        compose.onNodeWithText("Lock film").assertExists()
+        locked = true
+        compose.waitForIdle()
+        compose.onNodeWithText("Unlock film").assertExists()
+    }
+
+    @Test fun showLockPillOnlyWhenOffered() {
+        var offer by mutableStateOf(false)
+        var locked by mutableStateOf(false)
+        compose.setContent { ShowContent(show, onSelectTab = {}, offerLock = offer, locked = locked, onPlay = { _, _ -> }) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Lock show").assertDoesNotExist()
+        compose.onNodeWithText("Unlock show").assertDoesNotExist()
+
+        offer = true
+        compose.waitForIdle()
+        compose.onNodeWithText("Lock show").assertExists()
+        locked = true
+        compose.waitForIdle()
+        compose.onNodeWithText("Unlock show").assertExists()
+    }
+
     @Test fun filmPageFocusesPlay() {
         compose.setContent { FilmContent(film, onPlay = {}) }
         compose.waitForIdle()

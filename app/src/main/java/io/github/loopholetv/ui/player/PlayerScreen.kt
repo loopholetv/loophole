@@ -77,6 +77,7 @@ import io.github.loopholetv.ui.guide.rememberGuideFormat
 import io.github.loopholetv.ui.guide.tryFocus
 import io.github.loopholetv.ui.manage.ChannelEditHost
 import io.github.loopholetv.ui.manage.channelEditOptions
+import io.github.loopholetv.ui.parental.LocalLockMarks
 import io.github.loopholetv.ui.manage.rememberChannelPlayback
 import io.github.loopholetv.ui.theme.Tokens
 import kotlinx.coroutines.delay
@@ -316,6 +317,7 @@ fun PlayerScreen(
             )
         }
         optionsFor?.let { c ->
+            val lockMarks = LocalLockMarks.current
             val favourite = c.ref in favourites
             ChannelOptionsDialog(
                 title = channelOptionsTitle(c),
@@ -327,6 +329,7 @@ fun PlayerScreen(
                 // The player shows only visible channels, and has no move mode.
                 ) + channelEditOptions(
                     c, hidden = false, canMove = false, playback = rememberChannelPlayback(c) ?: ChannelPlaybackPrefs.NONE,
+                    locked = lockMarks.channel(c.playlistId, c.key), lockAvailable = lockMarks.lockAvailable,
                 ) { edit -> vm.pickEdit(c, edit) },
                 onDismiss = vm::dismissOptions,
             )

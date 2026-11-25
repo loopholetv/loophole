@@ -8,6 +8,11 @@ import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.RecordingEntity
 import io.github.loopholetv.data.db.RecordingReason
 import io.github.loopholetv.data.db.RecordingState
+import io.github.loopholetv.data.db.LockDao
+import io.github.loopholetv.data.db.failClosed
+import io.github.loopholetv.data.db.isChannelLockedNow
+import io.github.loopholetv.data.db.isChannelLocked
+import io.github.loopholetv.data.db.isVodLocked
 import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.player.Playback
 import io.github.loopholetv.player.PreviewHold
@@ -35,11 +40,18 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** What the coordinator asks the viewer. */
 sealed interface RecordPrompt {
-    /** A recording is about to take the stream from the player or the cast ([stops]). */
+    /** A recording is about to take the stream from the player or the cast ([stops]). [channel] is empty when the channel is locked and hidden. */
     data class Warning(val id: Long, val channel: String, val title: String, val stops: Use, val secondsLeft: Int) : RecordPrompt
 
     /** A recording holds the stream that playing [pending] (null: a film or episode) would need. */
-    data class HoldsStream(val id: Long, val title: String, val until: Instant, val pending: ChannelEntity?) : RecordPrompt
+    data class HoldsStream(
+        val id: Long,
+        val title: String,
+        val until: Instant,
+        val pending: ChannelEntity?,
+        /** The recording's channel is locked: [title] is empty and the question names nothing. */
+        val hidden: Boolean = false,
+    ) : RecordPrompt
 }
 
 /** The viewer should now watch recording [recordingId] at its live edge. */
@@ -55,6 +67,13 @@ enum class PromptChoice { KEEP_WATCHING, SWITCH_NOW, STOP_RECORDING, CANCEL }
 
 /** How long a run that reached its deadline gets to end on its own before the STOP alarm stops it. */
 private const val STOP_GRACE_MS = 30_000L
+
+/** What a take-stream warning and the recording notification call a programme whose channel is locked. */
+internal const val LOCKED_TITLE = "A recording"
+
+/** The title a notification may show for [r]: [LOCKED_TITLE] when its channel has a lock, whatever the PIN state. */
+internal suspend fun LockDao.notificationTitle(r: RecordingEntity): String =
+    if (failClosed { isChannelLocked(r.playlistId, r.channelKey) }) LOCKED_TITLE else r.title
 private const val TICK_MS = 1_000L
 
 /** How long a START alarm keeps the TV awake for the run to reach the recorder (the service then holds it). */
@@ -113,10 +132,15 @@ class RecordingCoordinator(
     /** Started from a START alarm, so the foreground service starts while the alarm allows it. */
     private val service: RecordingServiceControl = RecordingServiceControl.NONE,
     private val startLock: StartWakeLock = StartWakeLock.NONE,
+    /** Whether the PIN is entered, so locked things play. */
+    private val isUnlocked: () -> Boolean = { false },
+    /** No PIN is set, so nothing is locked: a user play looks up no lock and goes ahead as without locks. */
+    private val noPin: () -> Boolean = { false },
 ) : AlarmHandler {
     private val dao = db.recordDao()
     private val channels = db.channelDao()
     private val playlists = db.playlistDao()
+    private val locks = db.lockDao()
 
     /** True while any recording is running. */
     val isRecording: Boolean get() = runner.active.value.isNotEmpty()
@@ -238,6 +262,8 @@ class RecordingCoordinator(
      * over to the recording instead, and returns false.
      */
     suspend fun beforeUserPlay(channel: ChannelEntity, live: Boolean = true): Boolean {
+        // A locked channel is refused without asking anything. The row is read fresh: the passed entity may be stale.
+        if (lookUpLocks() && locks.isChannelLocked(channel.playlistId, channel.key)) return false
         // A newer play makes any question still open stale: its caller goes on with false.
         cancelQuestion()
         // Without a recording nothing is looked up, so the play goes ahead without suspending.
@@ -249,8 +275,10 @@ class RecordingCoordinator(
         return allowed
     }
 
-    /** As [beforeUserPlay], for a film or episode of [ref]'s playlist. */
+    /** As [beforeUserPlay], for a film or episode of [ref]'s playlist; a locked film, episode, category or group is refused too. */
     suspend fun beforeUserPlayVod(ref: VodRef): Boolean {
+        // Every film and episode start passes here, so this is the one place a locked one is refused.
+        if (lookUpLocks() && locks.isVodLocked(ref.kind, ref.playlistId, ref.key)) return false
         cancelQuestion()
         val allowed = nothingRecording() || run {
             val playlist = playlists.byId(ref.playlistId) ?: return@run true
@@ -261,6 +289,9 @@ class RecordingCoordinator(
     }
 
     // User plays
+
+    /** A lock can refuse a play: there is a PIN and it isn't entered. */
+    private fun lookUpLocks() = !noPin() && !isUnlocked()
 
     private fun nothingRecording() = runner.active.value.isEmpty() && reserved.isEmpty()
 
@@ -291,7 +322,8 @@ class RecordingCoordinator(
         val wait = HoldWait(id, CompletableDeferred())
         // A newer play replaces one still asking.
         holding.getAndSet(wait)?.answer?.complete(PromptChoice.CANCEL)
-        val shown = RecordPrompt.HoldsStream(id, r?.title.orEmpty(), r?.window()?.until ?: clock(), pending)
+        val hidden = r != null && locks.isChannelLockedNow(isUnlocked(), r.playlistId, r.channelKey)
+        val shown = RecordPrompt.HoldsStream(id, if (hidden) "" else r?.title.orEmpty(), r?.window()?.until ?: clock(), pending, hidden)
         _prompt.value = shown
         val choice = try {
             wait.answer.await()
@@ -364,6 +396,7 @@ class RecordingCoordinator(
     private suspend fun startAtAlarm(id: Long) {
         val r = dao.recording(id) ?: return
         if (r.state != RecordingState.SCHEDULED || runner.active.value.containsKey(id)) return
+        val noteTitle = locks.notificationTitle(r)
         var warning: CompletableDeferred<PromptChoice>? = null
         var clash = false
         var decide = false
@@ -375,7 +408,7 @@ class RecordingCoordinator(
             // Whoever handles the start ends this hold when the start settles (see unclaim).
             if (startHolds.add(id)) {
                 startLock.hold(id, START_LOCK_MS)
-                service.started(id, r.title)
+                service.started(id, noteTitle)
             }
         }
         when {
@@ -528,7 +561,8 @@ class RecordingCoordinator(
                 evictIdle()
                 beginRun(r, t, fromArchive)
                 previewTakenBy = r.id
-                _previewTaken.value = r.channelName
+                // An empty name means the channel is locked: the notice names nothing.
+                _previewTaken.value = if (locks.isChannelLockedNow(isUnlocked(), r.playlistId, r.channelKey)) "" else r.channelName
             }
             is StartDecision.TakeWatched, is StartDecision.Warn -> {
                 // What the viewer loses, to open again should the recording fail: not a cast or the preview.
@@ -558,7 +592,13 @@ class RecordingCoordinator(
     ): Boolean {
         // The warning takes the prompt's place: a question it hides could never be answered, so it counts as Cancel.
         holding.get()?.answer?.complete(PromptChoice.CANCEL)
-        _prompt.value = RecordPrompt.Warning(r.id, r.channelName, r.title, stops, secondsUntil(deadline))
+        val hidden = locks.isChannelLockedNow(isUnlocked(), r.playlistId, r.channelKey)
+        // A locked channel is named by nothing: no channel name and no programme title, only "A recording".
+        _prompt.value = if (hidden) {
+            RecordPrompt.Warning(r.id, "", LOCKED_TITLE, stops, secondsUntil(deadline))
+        } else {
+            RecordPrompt.Warning(r.id, r.channelName, r.title, stops, secondsUntil(deadline))
+        }
         val ticker = scope.launch {
             while (true) {
                 val left = deadline.toEpochMilli() - clock().toEpochMilli()

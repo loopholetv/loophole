@@ -9,6 +9,8 @@ import android.content.ContextWrapper
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -80,8 +82,17 @@ import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodRef
 import io.github.loopholetv.ui.search.SearchScreen
 import io.github.loopholetv.ui.settings.SettingsPage
+import io.github.loopholetv.ui.settings.SettingsLockGate
+import io.github.loopholetv.ui.settings.askWhenPinSet
+import io.github.loopholetv.ui.settings.rememberSettingsPage
 import io.github.loopholetv.ui.settings.SettingsPanel
 import io.github.loopholetv.setup.SetupState
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.LocalPinPrompter
+import io.github.loopholetv.ui.parental.LockMarks
+import io.github.loopholetv.ui.parental.lockMarksFlow
+import io.github.loopholetv.ui.parental.PinPromptHost
+import io.github.loopholetv.ui.parental.PinPrompter
 import io.github.loopholetv.ui.setup.SetupOverlay
 import io.github.loopholetv.ui.theme.Tokens
 import io.github.loopholetv.ui.vod.FilmScreen
@@ -371,6 +382,24 @@ fun AppNav(
     /** A channel a reminder asked to open; [onPlayChannelHandled] clears it once taken. */
     playChannel: ChannelRef? = null,
     onPlayChannelHandled: () -> Unit = {},
+) {
+    val container = (LocalContext.current.applicationContext as LoopholeApp).container
+    val pinPrompter = remember(container) { PinPrompter(container.parentalLock) }
+    val lockMarks by remember(container) { lockMarksFlow(container.parentalLock.state, container.db.lockDao()) }
+        .collectAsState(LockMarks.NONE)
+    CompositionLocalProvider(LocalPinPrompter provides pinPrompter, LocalLockMarks provides lockMarks) {
+        AppNavContent(navController, startDestination, startPlayback, confirmExit, playChannel, onPlayChannelHandled)
+    }
+}
+
+@Composable
+private fun AppNavContent(
+    navController: NavHostController,
+    startDestination: String,
+    startPlayback: StartSlot,
+    confirmExit: Boolean,
+    playChannel: ChannelRef?,
+    onPlayChannelHandled: () -> Unit,
 ) {
     val container = (LocalContext.current.applicationContext as LoopholeApp).container
     LaunchedEffect(navController, container) {
@@ -713,14 +742,23 @@ fun AppNav(
                 arguments = Routes.settingsArguments,
                 dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
             ) { entry ->
-                SettingsPanelHost {
-                    // The same full-screen form as first start; Done and Back return to Settings.
-                    SettingsPanel(
-                        onAddPlaylist = { navController.navigate(Routes.playlistForm()) { launchSingleTop = true } },
-                        onEditPlaylist = { navController.navigate(Routes.playlistForm(it)) { launchSingleTop = true } },
-                        onShowPhoneQr = { navController.navigate(Routes.PHONE_SETUP) { launchSingleTop = true } },
-                        startPage = entry.arguments?.getString(Routes.ARG_PAGE),
-                    )
+                val startPage = entry.arguments?.getString(Routes.ARG_PAGE)
+                // Held here so the lock checks the page that will show, including one restored after recreation.
+                val pageState = rememberSettingsPage(startPage)
+                // Under the Settings lock the panel waits for the PIN; Cancel closes Settings again.
+                SettingsLockGate(
+                    page = pageState.value,
+                    onDenied = { if (navController.currentDestination?.route == Routes.SETTINGS) navController.popBackStack() },
+                ) {
+                    SettingsPanelHost {
+                        // The same full-screen form as first start; Done and Back return to Settings.
+                        SettingsPanel(
+                            onAddPlaylist = { navController.navigate(Routes.playlistForm()) { launchSingleTop = true } },
+                            onEditPlaylist = { navController.navigate(Routes.playlistForm(it)) { launchSingleTop = true } },
+                            onShowPhoneQr = { navController.navigate(Routes.PHONE_SETUP) { launchSingleTop = true } },
+                            pageState = pageState,
+                        )
+                    }
                 }
             }
             dialog(
@@ -728,7 +766,11 @@ fun AppNav(
                 dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
             ) {
                 SettingsPanelHost {
-                    TvsPanel(onClose = dropUnlessResumed { navController.popBackStack() })
+                    val prompter = LocalPinPrompter.current
+                    TvsPanel(
+                        onClose = dropUnlessResumed { navController.popBackStack() },
+                        askPin = { prompter.ask() },
+                    )
                 }
             }
             // Over Settings like the playlist form, so Done and Back return to the Phone page.
@@ -747,10 +789,14 @@ fun AppNav(
             ) { entry ->
                 val editId = playlistFormEditId(entry.arguments?.getLong(Routes.ARG_EDIT, NO_EDIT))
                 Box(Modifier.fillMaxSize().background(Tokens.Background)) {
+                    val prompter = LocalPinPrompter.current
+                    val lock = container.parentalLock
                     AddPlaylistScreen(
                         editId = editId,
                         onDone = dropUnlessResumed { navController.popBackStack() },
                         onBack = dropUnlessResumed { navController.popBackStack() },
+                        // A new address or login for a playlist is not changed without the PIN.
+                        askBeforeSourceChange = { askWhenPinSet(lock::hasPin) { prompter.ask() } },
                     )
                 }
             }
@@ -798,6 +844,8 @@ fun AppNav(
         onReturnToGuide = { navController.returnToGuide() },
         screenHasFocus = { screenFocused.value },
     )
+    // The PIN screen: above every route and panel, and the setup screens.
+    PinPromptHost(screenHasFocus = { screenFocused.value })
 }
 
 private const val TAKE_FAILED_MESSAGE = "Couldn't start the recording"

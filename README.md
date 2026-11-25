@@ -76,6 +76,7 @@ Loophole plays live channels and a programme guide from the playlists you give i
 - **Guides per playlist:** Settings → EPG lists each playlist's own guide (which you can turn off) and any extra guide links you add. You choose how many past days to keep (*Automatic* keeps as many as your channels' catch-up goes back, up to a week), and can clear the guide.
 - **Scheduled updates:** playlists and guides update on a schedule and at app start, and the guide can also update after each playlist update.
 - **Search:** find channels and programmes from the side menu, with the on-screen keyboard or voice where the TV offers it.
+- **Parental controls:** set a 4-digit PIN in Settings → *Parental controls*, then lock groups, channels, films and shows from their options menus. Locked ones are hidden everywhere until the PIN is entered, and stay open for a time you choose.
 
 <details>
 <summary><strong>Local playlist files</strong></summary>

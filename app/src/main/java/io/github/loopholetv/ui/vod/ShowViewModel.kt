@@ -84,6 +84,8 @@ class ShowViewModel(
     progress: VodProgressRepository,
     private val library: VodLibraryRepository,
     private val episodes: XtreamEpisodes? = null,
+    /** Writes the show's own lock. */
+    private val writeLocked: suspend (locked: Boolean) -> Unit = {},
 ) : ViewModel() {
     private val fetchesEpisodes = episodes != null && XtreamEpisodes.isXtreamShow(key)
 
@@ -160,6 +162,14 @@ class ShowViewModel(
     fun toggleMyList() {
         val inList = _ui.value?.inMyList ?: return
         viewModelScope.launch { library.setInMyList(TitleKind.SHOW, playlistId, key, !inList) }
+    }
+
+    /**
+     * Locks or unlocks the show. Both first run [ensurePin] (sets a PIN when there is none, or asks for
+     * it; at once while unlocked); nothing changes when that is not completed.
+     */
+    fun setLocked(locked: Boolean, ensurePin: suspend () -> Boolean) {
+        viewModelScope.launch { if (ensurePin()) writeLocked(locked) }
     }
 
     /** Drops the show's TMDB match as wrong; the page goes back to the playlist's details. */
@@ -260,6 +270,9 @@ private fun showUi(
     )
 }
 
+/** The lock pill's label. */
+fun showLockLabel(locked: Boolean): String = if (locked) "Unlock show" else "Lock show"
+
 /** "3 seasons · 24 episodes"; the seasons part is left out when no episode has a season. */
 private fun summaryOf(seasons: Int, episodes: Int): String {
     val eps = "$episodes ${if (episodes == 1) "episode" else "episodes"}"
@@ -274,6 +287,9 @@ private fun continueLabel(t: ContinueTarget): String {
 fun showViewModelFactory(playlistId: Long, key: String): ViewModelProvider.Factory = viewModelFactory {
     initializer {
         val c = (this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LoopholeApp).container
-        ShowViewModel(playlistId, key, c.vod, c.vodProgress, c.vodLibrary, c.xtreamEpisodes)
+        ShowViewModel(
+            playlistId, key, c.vod, c.vodProgress, c.vodLibrary, c.xtreamEpisodes,
+            writeLocked = { locked -> c.channelEdits.setShowLocked(playlistId, key, locked) },
+        )
     }
 }

@@ -5,15 +5,19 @@ import com.squareup.moshi.JsonReader
 import com.squareup.moshi.JsonWriter
 import io.github.loopholetv.data.db.GroupSort
 import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.data.parental.PinHasher
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.AspectMode
 import io.github.loopholetv.data.settings.BufferPreset
+import io.github.loopholetv.data.settings.ParentalSettings
 import io.github.loopholetv.data.settings.RemoteSettings
+import io.github.loopholetv.data.settings.SettingsLock
 import io.github.loopholetv.data.settings.SubtitleBackground
 import io.github.loopholetv.data.settings.SubtitleColour
 import io.github.loopholetv.data.settings.SubtitleEdge
 import io.github.loopholetv.data.settings.SubtitleSize
 import io.github.loopholetv.data.settings.SubtitleStyle
+import io.github.loopholetv.data.settings.UNLOCK_CHOICES
 import io.github.loopholetv.data.settings.decodeBindings
 import io.github.loopholetv.data.settings.encodeBindings
 import io.github.loopholetv.record.REMINDER_LEAD_CHOICES
@@ -63,7 +67,7 @@ data class SetupBundle(
         "SetupBundle(version=$version, playlists=${playlists.size}, favourites=${favourites.size}, skippedFiles=$skippedFiles)"
 
     companion object {
-        const val VERSION = 1
+        const val VERSION = 2
     }
 }
 
@@ -103,10 +107,12 @@ data class SetupPlaylist(
     val guideLinks: List<String> = emptyList(),
     val channelEdits: List<SetupChannelEdit> = emptyList(),
     val groupEdits: List<SetupGroupEdit> = emptyList(),
+    /** The locked shows (a show with no lock has no row). */
+    val showLocks: List<SetupShowLock> = emptyList(),
 ) {
     override fun toString() =
         "SetupPlaylist(type=$type, file=${file != null}, guideLinks=${guideLinks.size}, " +
-            "channelEdits=${channelEdits.size}, groupEdits=${groupEdits.size})"
+            "channelEdits=${channelEdits.size}, groupEdits=${groupEdits.size}, showLocks=${showLocks.size})"
 }
 
 /**
@@ -143,8 +149,10 @@ data class SetupChannelEdit(
     val epgShiftMinutes: Int = 0,
     val position: Int? = null,
     val aspectMode: AspectMode? = null,
+    /** Behind the PIN; a film's lock is an edit under its film key. */
+    val locked: Boolean = false,
 ) {
-    override fun toString() = "SetupChannelEdit(hidden=$hidden, renamed=${customName != null}, shift=$epgShiftMinutes)"
+    override fun toString() = "SetupChannelEdit(hidden=$hidden, renamed=${customName != null}, shift=$epgShiftMinutes, locked=$locked)"
 }
 
 /** A group's edits, keyed by its original title. */
@@ -154,8 +162,15 @@ data class SetupGroupEdit(
     val customName: String? = null,
     val position: Int? = null,
     val sortMode: GroupSort = GroupSort.PLAYLIST,
+    /** Behind the PIN. */
+    val locked: Boolean = false,
 ) {
-    override fun toString() = "SetupGroupEdit(hidden=$hidden, renamed=${customName != null}, sort=$sortMode)"
+    override fun toString() = "SetupGroupEdit(hidden=$hidden, renamed=${customName != null}, sort=$sortMode, locked=$locked)"
+}
+
+/** A show behind the PIN, by its show key (the playlist is the one it sits under in [SetupPlaylist.showLocks]). */
+data class SetupShowLock(val showKey: String) {
+    override fun toString() = "SetupShowLock(<hidden>)"
 }
 
 /** A favourite: [playlist] is a position in [SetupBundle.playlists]. */
@@ -204,6 +219,8 @@ data class SetupSettings(
     val padAfterMin: Int,
     /** Blank when the other TV has none (or the bundle is older): this TV then keeps its own. */
     val tmdbKey: String = "",
+    /** The PIN's hash and salt, the unlock period and the Settings lock; [ParentalSettings.toString] leaves the hash and salt out. */
+    val parental: ParentalSettings = ParentalSettings(),
 ) {
     fun applyTo(s: AppSettings): AppSettings = s.copy(
         playlistUpdateHours = playlistUpdateHours,
@@ -232,6 +249,7 @@ data class SetupSettings(
         padBeforeMin = padBeforeMin,
         padAfterMin = padAfterMin,
         tmdbKey = tmdbKey.trim().ifEmpty { s.tmdbKey },
+        parental = parental,
     ).let(::applyStorageTo)
 
     /**
@@ -292,6 +310,7 @@ data class SetupSettings(
             padBeforeMin = s.padBeforeMin,
             padAfterMin = s.padAfterMin,
             tmdbKey = s.tmdbKey,
+            parental = s.parental,
         )
 
         private fun String.ifSmb(s: AppSettings) = if (s.recordStorage == StorageKind.SMB) this else ""
@@ -328,6 +347,8 @@ internal object SetupFields {
         "nfsHost", "nfsExport", "nfsFolder", "reminderLeadMin", "reminderAutoSwitch", "padBeforeMin", "padAfterMin",
         // A blank key leaves the receiving TV's own in place.
         "tmdbKey",
+        // The PIN's hash and salt, unlock period and Settings lock (split field by field below).
+        "parental",
         // Split field by field below.
         "playback",
     )
@@ -368,13 +389,18 @@ internal object SetupFields {
 
     val CHANNEL_EDIT_COPIED = setOf(
         "playlistId", "channelKey", "hidden", "customName", "customLogo", "epgOverride", "epgShiftMinutes",
-        "position", "aspectMode",
+        "position", "aspectMode", "locked",
     )
 
     /** Hardware-specific decoders, and the per-channel external player. */
     val CHANNEL_EDIT_NOT_COPIED = setOf("videoDecoder", "audioDecoder", "externalPlayer")
 
-    val GROUP_EDIT_COPIED = setOf("playlistId", "groupTitle", "hidden", "customName", "position", "sortMode")
+    val GROUP_EDIT_COPIED = setOf("playlistId", "groupTitle", "hidden", "customName", "position", "sortMode", "locked")
+
+    /** Only a locked show has a row on the wire. */
+    val SHOW_PREFS_COPIED = setOf("playlistId", "showKey", "locked")
+
+    val PARENTAL_COPIED = setOf("pinHash", "pinSalt", "unlockMinutes", "settingsLock")
 }
 
 /**
@@ -573,6 +599,10 @@ object SetupJson {
         w.name("padBeforeMin").value(s.padBeforeMin.toLong())
         w.name("padAfterMin").value(s.padAfterMin.toLong())
         w.name("tmdbKey").value(s.tmdbKey)
+        w.name("parentalPinHash").value(s.parental.pinHash)
+        w.name("parentalPinSalt").value(s.parental.pinSalt)
+        w.name("parentalUnlockMinutes").value(s.parental.unlockMinutes.toLong())
+        w.name("parentalSettingsLock").value(s.parental.settingsLock.name)
         w.endObject()
     }
 
@@ -624,6 +654,7 @@ object SetupJson {
             w.name("epgShiftMinutes").value(e.epgShiftMinutes.toLong())
             w.name("position").value(e.position?.toLong())
             w.name("aspectMode").value(e.aspectMode?.name)
+            w.name("locked").value(e.locked)
             w.endObject()
         }
         w.endArray()
@@ -635,6 +666,14 @@ object SetupJson {
             w.name("customName").value(g.customName)
             w.name("position").value(g.position?.toLong())
             w.name("sortMode").value(g.sortMode.name)
+            w.name("locked").value(g.locked)
+            w.endObject()
+        }
+        w.endArray()
+        w.name("showLocks").beginArray()
+        p.showLocks.forEach { l ->
+            w.beginObject()
+            w.name("showKey").value(l.showKey)
             w.endObject()
         }
         w.endArray()
@@ -744,7 +783,26 @@ object SetupJson {
             padBeforeMin = v.int("padBeforeMin")?.takeIf { it in AppSettings.PAD_CHOICES } ?: d.padBeforeMin,
             padAfterMin = v.int("padAfterMin")?.takeIf { it in AppSettings.PAD_CHOICES } ?: d.padAfterMin,
             tmdbKey = v.string("tmdbKey") ?: d.tmdbKey,
+            parental = readParental(v),
         )
+    }
+
+    /**
+     * Strict: a bundle that doesn't carry every parental field is no bundle, so a copy can't quietly
+     * leave this TV without the sender's PIN or with a PIN that opens nothing.
+     */
+    private fun readParental(v: Fields): ParentalSettings {
+        val hash = v.requireKey("parentalPinHash").string("parentalPinHash")
+        val salt = v.requireKey("parentalPinSalt").string("parentalPinSalt")
+        // The two go together, and what is there must be Base64 of a PIN hash (32 bytes) and its salt (16).
+        if ((hash == null) != (salt == null)) throw JsonDataException("PIN hash and salt")
+        if (hash != null && hash.decodeBase64()?.size != PinHasher.HASH_BYTES) throw JsonDataException("PIN hash")
+        if (salt != null && salt.decodeBase64()?.size != PinHasher.SALT_BYTES) throw JsonDataException("PIN salt")
+        val minutes = v.requireKey("parentalUnlockMinutes").int("parentalUnlockMinutes")
+            ?.takeIf { it in UNLOCK_CHOICES } ?: throw JsonDataException("unlock minutes")
+        val lock = v.requireKey("parentalSettingsLock").string("parentalSettingsLock")
+            ?.let { name -> SettingsLock.entries.firstOrNull { it.name == name } } ?: throw JsonDataException("settings lock")
+        return ParentalSettings(pinHash = hash, pinSalt = salt, unlockMinutes = minutes, settingsLock = lock)
     }
 
     private fun readPlaylist(r: JsonReader, d: Decoding): SetupPlaylist {
@@ -753,6 +811,7 @@ object SetupJson {
         var links: List<String> = emptyList()
         var channelEdits: List<SetupChannelEdit> = emptyList()
         var groupEdits: List<SetupGroupEdit> = emptyList()
+        var showLocks: List<SetupShowLock>? = null
         r.beginObject()
         while (r.hasNext()) {
             when (val name = r.nextName()) {
@@ -760,6 +819,7 @@ object SetupJson {
                 "guideLinks" -> links = r.list { it.string() ?: throw JsonDataException("null link") }
                 "channelEdits" -> channelEdits = r.list { readChannelEdit(it) }
                 "groupEdits" -> groupEdits = r.list { readGroupEdit(it) }
+                "showLocks" -> showLocks = r.list { readShowLock(it) }
                 else -> fields[name] = r.scalar()
             }
         }
@@ -792,6 +852,7 @@ object SetupJson {
             guideLinks = links,
             channelEdits = channelEdits,
             groupEdits = groupEdits,
+            showLocks = showLocks ?: throw JsonDataException("no showLocks"),
         )
     }
 
@@ -874,6 +935,7 @@ object SetupJson {
             epgShiftMinutes = v.int("epgShiftMinutes") ?: 0,
             position = v.int("position"),
             aspectMode = v.string("aspectMode")?.let { s -> AspectMode.entries.firstOrNull { it.name == s } },
+            locked = v.requireKey("locked").bool("locked") ?: throw JsonDataException("locked"),
         )
     }
 
@@ -885,7 +947,13 @@ object SetupJson {
             customName = v.string("customName"),
             position = v.int("position"),
             sortMode = v.enum("sortMode", GroupSort.PLAYLIST),
+            locked = v.requireKey("locked").bool("locked") ?: throw JsonDataException("locked"),
         )
+    }
+
+    private fun readShowLock(r: JsonReader): SetupShowLock {
+        val v = r.fields()
+        return SetupShowLock(v.string("showKey") ?: throw JsonDataException("no showKey"))
     }
 
     private fun readFavourite(r: JsonReader): SetupFavourite {
@@ -936,6 +1004,9 @@ object SetupJson {
             is T -> v
             else -> throw JsonDataException("wrong type")
         }
+
+        /** [this] when the object has [key] (even as null); a bundle that lacks it is malformed. */
+        fun requireKey(key: String): Fields = also { if (key !in values) throw JsonDataException("missing $key") }
 
         fun string(key: String): String? = typed(key)
         fun bool(key: String): Boolean? = typed(key)

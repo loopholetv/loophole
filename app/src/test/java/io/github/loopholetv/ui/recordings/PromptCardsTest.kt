@@ -15,12 +15,25 @@ class PromptCardsTest {
         assertEquals("Recording starts in 30 s", warningHeadline(30))
         assertEquals("Recording starts in 7 s", warningHeadline(7))
         assertEquals("Channel One · News", warningDetail(warning))
+        assertEquals("A recording", warningDetail(warning.copy(channel = "", title = "A recording")))
     }
 
     @Test fun warningSaysWhatSwitchingStops() {
         assertEquals("This will stop what you're watching.", warningStops(Use.PLAYER))
         assertEquals("This will stop casting.", warningStops(Use.CAST))
         assertNull(warningStops(Use.PREVIEW))
+    }
+
+    @Test fun hiddenHoldsStreamQuestionNamesNothing() {
+        assertEquals(
+            "A recording is running until 21:30. Stop it and watch?",
+            holdsStreamText("", Instant.parse("2026-11-22T21:30:00Z"), ZoneOffset.UTC, hidden = true),
+        )
+    }
+
+    @Test fun lockedNotificationIsJustARecording() {
+        assertEquals("A recording", io.github.loopholetv.record.notificationText(listOf("A recording")))
+        assertEquals("Recording News", io.github.loopholetv.record.notificationText(listOf("News")))
     }
 
     @Test fun holdsStreamQuestion() {

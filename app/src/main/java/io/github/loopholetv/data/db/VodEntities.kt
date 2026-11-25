@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
+import androidx.room.PrimaryKey
 import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
 import java.time.Instant
@@ -155,4 +156,26 @@ data class ContinueDismissalEntity(
     val playlistId: Long,
     val key: String,
     val dismissedAt: Instant,
+)
+
+/** A user's edits to one show, keyed by its show key. Rows follow their playlist. */
+@Entity(
+    tableName = "show_prefs",
+    primaryKeys = ["playlistId", "showKey"],
+    foreignKeys = [
+        ForeignKey(PlaylistEntity::class, parentColumns = ["id"], childColumns = ["playlistId"], onDelete = ForeignKey.CASCADE),
+    ],
+)
+data class ShowPrefsEntity(
+    val playlistId: Long,
+    val showKey: String,
+    /** Hidden behind the PIN until unlocked. */
+    val locked: Boolean = false,
+)
+
+/** The single row (id 1) saying whether locked items are currently unlocked. */
+@Entity(tableName = "lock_state")
+data class LockStateEntity(
+    @PrimaryKey val id: Int = 1,
+    val unlocked: Boolean = false,
 )

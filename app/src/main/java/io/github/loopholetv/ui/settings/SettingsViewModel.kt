@@ -17,6 +17,7 @@ import io.github.loopholetv.data.repo.ImportResult
 import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
 import io.github.loopholetv.data.repo.errorCopy
 import io.github.loopholetv.data.settings.AUTO_PAST_DAYS
+import io.github.loopholetv.data.db.LockCounts
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.GuideAction
 import io.github.loopholetv.data.settings.KeyBindings
@@ -113,6 +114,10 @@ data class SettingsUi(
     val confirmDelete: PlaylistRowUi? = null,
     val options: AppSettings = AppSettings(),
     val confirmClearEpg: Boolean = false,
+    /** "Turn off PIN" awaiting its confirmation. */
+    val confirmTurnOff: Boolean = false,
+    /** What is locked now, for "Locked" and the confirmation. */
+    val lockCounts: LockCounts = LockCounts(0, 0, 0, 0),
     /** True after a confirmed "Clear EPG" has finished. */
     val epgCleared: Boolean = false,
     val updatingAll: Boolean = false,
@@ -181,6 +186,7 @@ private data class Ops(
     val epgUpdating: Set<Long> = emptySet(),
     val confirmDelete: Long? = null,
     val confirmClearEpg: Boolean = false,
+    val confirmTurnOff: Boolean = false,
     val epgCleared: Boolean = false,
     val updateAll: UpdateAll? = null,
     val udpProxyError: String? = null,
@@ -261,6 +267,9 @@ class SettingsViewModel(
     private val saveTmdbKey: suspend (String) -> Unit = {},
     private val removeTmdbKey: suspend () -> Unit = {},
     private val recheckTmdbKey: suspend () -> Unit = {},
+    lockCounts: Flow<LockCounts> = flowOf(LockCounts(0, 0, 0, 0)),
+    /** ParentalLock.removeAll: the PIN and every lock. */
+    private val removeAllLocks: suspend () -> Unit = {},
 ) : ViewModel() {
     private val settingsFlow = settings
     private val work: CoroutineScope get() = workScope ?: viewModelScope
@@ -286,9 +295,9 @@ class SettingsViewModel(
 
     private val phone = combine(phoneJob, pairedPhones) { job, paired -> PhoneState(job, paired) }
 
-    private val opsAndPhone = combine(ops, phone) { o, p -> o to p }
+    private val opsAndPhone = combine(ops, phone, lockCounts) { o, p, locks -> Triple(o, p, locks) }
 
-    val state: StateFlow<SettingsUi> = combine(playlists, counts, perPlaylist, opsAndPhone, settings) { list, (channels, vod), epg, (o, phoneNow), opts ->
+    val state: StateFlow<SettingsUi> = combine(playlists, counts, perPlaylist, opsAndPhone, settings) { list, (channels, vod), epg, (o, phoneNow, locks), opts ->
         val names = list.associate { it.id to it.name }
         val rows = list.map {
             val v = vod[it.id] ?: VodCounts()
@@ -302,6 +311,8 @@ class SettingsViewModel(
             confirmDelete = rows.firstOrNull { it.id == o.confirmDelete },
             options = opts,
             confirmClearEpg = o.confirmClearEpg,
+            confirmTurnOff = o.confirmTurnOff,
+            lockCounts = locks,
             epgCleared = o.epgCleared,
             updatingAll = o.updateAll != null,
             updateAllText = o.updateAll?.playlistId?.let { "Updating ${names[it].orEmpty()}… ${contentCounts(o.updateAll.count, vod[it]?.films ?: 0, vod[it]?.shows ?: 0, locale)}" },
@@ -752,6 +763,16 @@ class SettingsViewModel(
     /** A step of the update offered by the last check (Update, Install, ...). */
     fun performUpdate(action: UpdateAction) = performUpdateAction(action)
 
+    fun requestTurnOff() = ops.update { it.copy(confirmTurnOff = true) }
+
+    fun cancelTurnOff() = ops.update { it.copy(confirmTurnOff = false) }
+
+    /** Removes the PIN and every lock. */
+    fun confirmTurnOff() {
+        ops.update { it.copy(confirmTurnOff = false) }
+        work.launch { removeAllLocks() }
+    }
+
     fun requestClearEpg() = ops.update { it.copy(confirmClearEpg = true, epgCleared = false) }
 
     fun cancelClearEpg() = ops.update { it.copy(confirmClearEpg = false) }
@@ -832,6 +853,8 @@ class SettingsViewModel(
                     saveTmdbKey = { k -> c.tmdbKeyService.save(k) },
                     removeTmdbKey = { c.tmdbKeyService.remove() },
                     recheckTmdbKey = { c.tmdbKeyService.recheck() },
+                    lockCounts = c.db.lockDao().counts(),
+                    removeAllLocks = { c.parentalLock.removeAll() },
                 ) as T
             }
         }

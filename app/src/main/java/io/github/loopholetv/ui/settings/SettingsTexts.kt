@@ -1,6 +1,8 @@
 package io.github.loopholetv.ui.settings
 
+import io.github.loopholetv.data.db.LockCounts
 import io.github.loopholetv.data.net.UserAgents
+import io.github.loopholetv.data.settings.SettingsLock
 import io.github.loopholetv.data.tmdb.KeyStatus
 import io.github.loopholetv.data.repo.COPY_NOTICE_PREFIX
 import io.github.loopholetv.data.repo.PORTAL_ERROR_COPY
@@ -308,3 +310,30 @@ internal fun freeSpaceText(bytes: Long?): String = bytes?.let(::formatSize) ?: R
 internal fun connectionsText(allowed: Int?, auto: Int): String = allowed?.toString() ?: "Auto ($auto)"
 
 internal fun allowedText(granted: Boolean): String = if (granted) RC_ALLOWED else RC_NOT_ALLOWED
+
+// --- Parental controls ---
+
+/** What is locked, e.g. "2 groups, 5 channels, 1 film, 1 show"; kinds with none are left out. */
+fun lockSummary(c: LockCounts): String {
+    fun part(n: Int, one: String, many: String) = if (n == 0) null else if (n == 1) "1 $one" else "$n $many"
+    return listOfNotNull(
+        part(c.groups, "group", "groups"),
+        part(c.channels, "channel", "channels"),
+        part(c.films, "film", "films"),
+        part(c.shows, "show", "shows"),
+    ).joinToString(", ").ifEmpty { "Nothing locked" }
+}
+
+/** One of `UNLOCK_CHOICES`: minutes, with 0 for "until you leave Loophole". */
+fun unlockText(minutes: Int): String = when (minutes) {
+    0 -> "Until I leave Loophole"
+    60 -> "1 hour"
+    1 -> "1 minute"
+    else -> "$minutes minutes"
+}
+
+fun settingsLockText(l: SettingsLock): String = when (l) {
+    SettingsLock.OFF -> "Off"
+    SettingsLock.ALL -> "All of Settings"
+    SettingsLock.PLAYLISTS_EPG -> "Playlists and EPG"
+}

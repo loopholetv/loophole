@@ -3,6 +3,7 @@ package io.github.loopholetv.data.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
@@ -13,9 +14,9 @@ import androidx.room.TypeConverters
         MyListEntity::class, ContinueDismissalEntity::class,
         ReminderEntity::class, SeriesRuleEntity::class, RecordingEntity::class,
         TmdbTitleEntity::class, TmdbTitleGenreEntity::class, TmdbGenreEntity::class, TmdbEpisodeEntity::class,
-        VodMatchEntity::class, ProviderDetailsEntity::class,
+        VodMatchEntity::class, ProviderDetailsEntity::class, ShowPrefsEntity::class, LockStateEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -42,4 +43,12 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun tmdbDao(): TmdbDao
     abstract fun vodFilterDao(): VodFilterDao
     abstract fun xtreamVodDao(): XtreamVodDao
+    abstract fun lockDao(): LockDao
+}
+
+/** Seeds the single `lock_state` row (locked) when the database file is first created. */
+val LOCK_STATE_SEED: RoomDatabase.Callback = object : RoomDatabase.Callback() {
+    override fun onCreate(db: SupportSQLiteDatabase) {
+        db.execSQL("INSERT OR IGNORE INTO `lock_state` (`id`, `unlocked`) VALUES (1, 0)")
+    }
 }

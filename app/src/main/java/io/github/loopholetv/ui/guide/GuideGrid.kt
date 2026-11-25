@@ -56,6 +56,8 @@ import io.github.loopholetv.data.db.displayLogo
 import io.github.loopholetv.data.db.displayName
 import io.github.loopholetv.data.repo.GuideKey
 import io.github.loopholetv.data.repo.guideKey
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.Padlock
 import io.github.loopholetv.ui.theme.Tokens
 import io.github.loopholetv.record.Mark
 import java.time.Instant
@@ -336,6 +338,9 @@ private fun ChannelCell(channel: ChannelEntity, favourite: Boolean, catchup: Boo
             modifier = Modifier.weight(1f, fill = false),
         )
         if (catchup) RewindMark(Modifier.padding(start = 6.dp))
+        if (LocalLockMarks.current.channelOrGroup(channel.playlistId, channel.key, channel.groupTitle)) {
+            Padlock(Modifier.padding(start = 6.dp))
+        }
         if (favourite) {
             Text(
                 text = FAVOURITE_MARK,

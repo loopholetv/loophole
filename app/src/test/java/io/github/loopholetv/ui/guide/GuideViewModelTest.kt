@@ -1942,6 +1942,14 @@ class GuideViewModelTest {
         assertNull(vm.previewNotice.value)
     }
 
+    @Test fun previewNoticeNamesNothingForALockedChannel() = runTest {
+        val vm = vm()
+        runCurrent()
+        previewTaken.value = ""
+        runCurrent()
+        assertEquals("A recording is using the stream", vm.previewNotice.value)
+    }
+
     @Test fun clashShownAfterBooking() = runTest {
         val vm = vm()
         runCurrent()

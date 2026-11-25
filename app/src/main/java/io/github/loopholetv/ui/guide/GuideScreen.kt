@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -61,7 +62,14 @@ import io.github.loopholetv.data.db.ChannelEntity
 import io.github.loopholetv.data.db.ChannelScope
 import io.github.loopholetv.data.db.toArg
 import io.github.loopholetv.data.db.ProgrammeEntity
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.LocalPinPrompter
+import io.github.loopholetv.ui.parental.lockRailAction
+import io.github.loopholetv.ui.parental.lockRailLabel
+import io.github.loopholetv.ui.settings.allSettingsGuardsOutside
+import io.github.loopholetv.ui.settings.focusSoon
 import io.github.loopholetv.ui.theme.Tokens
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.ui.common.ChannelOption
@@ -191,6 +199,18 @@ fun GuideScreen(
     val selectedGroupFocus = remember { FocusRequester() }
     // The "Copy from another TV" button under the no-playlist hint.
     val copyFromFocus = remember { FocusRequester() }
+    // Under the "All of Settings" lock, copying another TV's setup asks for the PIN first.
+    val pinPrompter = LocalPinPrompter.current
+    val lockMarks = LocalLockMarks.current
+    val lockState by container.parentalLock.state.collectAsStateWithLifecycle()
+    val pinScope = rememberCoroutineScope()
+    val copyFromAnotherTv: () -> Unit = {
+        pinScope.launch {
+            val parental = runCatching { container.settingsStore.current().parental }.getOrNull()
+            if ((parental != null && !allSettingsGuardsOutside(parental)) || pinPrompter.ask()) onCopyFromAnotherTv()
+            else focusSoon(copyFromFocus)
+        }
+    }
     val previewFocus = remember { FocusRequester() }
     // Where a grid focus request lands: this channel's row strip if it is on screen, else the first
     // visible row's (see GuideGrid). Channel cells are not focus stops: every grid focus path lands
@@ -742,7 +762,7 @@ fun GuideScreen(
                             pastWindow = pastWindow,
                             emptyHint = emptyHintFor(allPlaylistsOff, selectedScope, listEmpty, noPlaylists),
                             emptyButtonFocus = copyFromFocus,
-                            onCopyFromAnotherTv = onCopyFromAnotherTv,
+                            onCopyFromAnotherTv = copyFromAnotherTv,
                             modifier = Modifier.fillMaxSize()
                                 .onFocusChanged { if (it.hasFocus) focusMovedTo(GuideArea.Grid) }
                                 // Move mode: Up/Down move the row, OK finishes; nothing else leaves the row.
@@ -757,6 +777,7 @@ fun GuideScreen(
         }
         SideRail(
             items = railItems,
+            lockLabel = lockRailLabel(lockState),
             onFocused = vm::commitPendingGroup,
             // Right from any rail item enters the grid like TV does (never focus search to the preview).
             onRight = { if (channels.itemCount > 0) focusGrid() else focusEmptyList() },
@@ -771,6 +792,9 @@ fun GuideScreen(
                     RailItem.MOVIES -> onMovies()
                     RailItem.SERIES -> onSeries()
                     RailItem.RECORDINGS -> onRecordings()
+                    RailItem.LOCK -> pinScope.launch {
+                        lockRailAction(lockState, ask = { pinPrompter.ask() }, relock = { container.parentalLock.relock() })
+                    }
                 }
             },
             entryFocus = railFocus,
@@ -833,7 +857,10 @@ fun GuideScreen(
             // Then the channel's edits. "Move" within a group's list, from its rows.
             val canMove = !target.fromPreview && vm.canMoveInGroup(channel)
             addAll(
-                channelEditOptions(channel, hidden = false, canMove = canMove, playback = rememberChannelPlayback(channel) ?: ChannelPlaybackPrefs.NONE) { edit ->
+                channelEditOptions(
+                    channel, hidden = false, canMove = canMove, playback = rememberChannelPlayback(channel) ?: ChannelPlaybackPrefs.NONE,
+                    locked = lockMarks.channel(channel.playlistId, channel.key), lockAvailable = lockMarks.lockAvailable,
+                ) { edit ->
                     when (edit) {
                         ChannelEdit.Move -> {
                             vm.startMove(channel)
@@ -882,7 +909,12 @@ fun GuideScreen(
 
     // The guide lists only shown groups, so the options offer "Hide group" (never "Show group").
     groupOptions?.let { group ->
-        val list = groupEditOptions(hidden = false, sort = group.sortMode) { edit ->
+        val groupScope = group.scope as? ChannelScope.Group
+        val list = groupEditOptions(
+            hidden = false, sort = group.sortMode,
+            locked = groupScope != null && lockMarks.group(groupScope.playlistId, groupScope.title),
+            lockAvailable = lockMarks.lockAvailable,
+        ) { edit ->
             groupOptions = null
             when (edit) {
                 GroupEdit.Move -> {

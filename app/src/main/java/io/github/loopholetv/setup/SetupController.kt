@@ -1,8 +1,10 @@
 package io.github.loopholetv.setup
 
+import io.github.loopholetv.cast.CastAnnounce
 import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.cast.PeerTable
 import io.github.loopholetv.cast.net.LocalHttpServer
+import io.github.loopholetv.data.parental.PinCheck
 import java.io.File
 import java.io.OutputStream
 import kotlin.coroutines.AbstractCoroutineContextElement
@@ -42,6 +44,20 @@ sealed interface SetupState {
      */
     data class EnterCode(val peerName: String, val asked: Boolean, val triesLeft: Int?, val error: String?) : SetupState
 
+    /**
+     * This TV has a PIN and the right code arrived from [fromName]: its PIN confirms that its setup is
+     * replaced. After a wrong PIN, [error] says so (with [waitSeconds] left of a "too many tries" wait);
+     * [rejected] counts those, so two wrong PINs in a row are two different states.
+     */
+    data class AskPin(
+        val fromName: String,
+        val error: String? = null,
+        val waitSeconds: Int = 0,
+        val rejected: Int = 0,
+        /** This TV's setup is being asked for by [fromName]: the PIN is needed before it is sent. */
+        val sending: Boolean = false,
+    ) : SetupState
+
     data class Working(val text: String) : SetupState
 
     /**
@@ -64,7 +80,9 @@ sealed interface SetupState {
  * [export], [import] and [stageFile] are the setup exporter's `export`, the importer's `import`
  * and the playlist file opener's `newTemp`. [onImported] runs after this TV's setup was replaced
  * and the sending TV has its answer (refresh, sessions, back to the guide). [clock] must be
- * monotonic. [selfId] is this TV's cast id and [selfName] its announced name. [hasPlaylists]
+ * monotonic. [hasPin] and [checkPin] are this TV's PIN: with one, a received setup waits for it
+ * ([SetupState.AskPin]) before it replaces anything, and one asked for its own setup waits for the PIN
+ * before it asks for the code (unless [isUnlocked]). [selfId] is this TV's cast id and [selfName] its announced name. [hasPlaylists]
  * says whether this TV has a playlist: a TV without one never sends its setup, which would only
  * clear the other TV's playlists, and refuses to be asked for it.
  *
@@ -84,6 +102,9 @@ class SetupController internal constructor(
     private val selfName: () -> String,
     private val onImported: suspend (SetupImportResult.Ok) -> Unit,
     private val hasPlaylists: suspend () -> Boolean,
+    hasPin: suspend () -> Boolean,
+    isUnlocked: () -> Boolean,
+    private val checkPin: suspend (String) -> PinCheck,
     private val lifetimeMs: Long,
     availableMemory: () -> Long,
     newBuffer: (Int) -> ByteArray,
@@ -103,9 +124,13 @@ class SetupController internal constructor(
         selfName: () -> String,
         onImported: suspend (SetupImportResult.Ok) -> Unit,
         hasPlaylists: suspend () -> Boolean,
+        hasPin: suspend () -> Boolean,
+        isUnlocked: () -> Boolean,
+        checkPin: suspend (String) -> PinCheck,
         lifetimeMs: Long = SetupRequest.LIFETIME_MS,
     ) : this(
-        scope, server, table, http, export, import, stageFile, clock, selfId, selfName, onImported, hasPlaylists, lifetimeMs,
+        scope, server, table, http, export, import, stageFile, clock, selfId, selfName, onImported, hasPlaylists, hasPin, isUnlocked, checkPin,
+        lifetimeMs,
         SetupHost::availableHeap, ::ByteArray, { System.gc() }, NOTICE_MS,
     )
 
@@ -119,6 +144,8 @@ class SetupController internal constructor(
         import = import,
         listener = listener,
         hasPlaylists = hasPlaylists,
+        hasPin = hasPin,
+        isUnlocked = isUnlocked,
         lifetimeMs = lifetimeMs,
         availableMemory = availableMemory,
         newBuffer = newBuffer,
@@ -147,6 +174,7 @@ class SetupController internal constructor(
 
     /** The setup being sent; cancelled by [cancel]. Offers and asks are left to finish instead. */
     private var sendJob: Job? = null
+    private var pinJob: Job? = null
     private var timer: Job? = null
     private var registered = false
 
@@ -242,6 +270,7 @@ class SetupController internal constructor(
             is SetupState.ShowingCode -> shown.fromName == name
             is SetupState.EnterCode -> shown.peerName == name
             is SetupState.Working -> shown.text == connecting(name)
+            is SetupState.AskPin -> shown.fromName == name
             else -> false
         }
         if (sameTv || shown is SetupState.Done) return true
@@ -261,15 +290,19 @@ class SetupController internal constructor(
             _state.value = SetupState.Done(GONE, copied = false)
             return null
         }
-        if (peer.setup < 1) {
+        if (peer.setup < CastAnnounce.SETUP_VERSION) {
             _state.value = SetupState.Done(olderVersion(peer.name), copied = false)
             return null
         }
         return peer
     }
 
-    /** The code the peer shows, while this TV is asking for it. Anything but four digits is ignored. */
+    /**
+     * The code the peer shows, while this TV is asking for it; or this TV's PIN, while it is asked
+     * for. Anything but four digits is ignored.
+     */
     override fun enterCode(code: String): Unit = synchronized(lock) {
+        if (_state.value is SetupState.AskPin) return enterPin(code)
         val asking = _state.value as? SetupState.EnterCode ?: return
         val s = host.current() as? SetupHost.Slot.Sending ?: return
         val id = s.id ?: return
@@ -280,6 +313,31 @@ class SetupController internal constructor(
         sendJob = work.launch(Owner(s)) {
             val sent = send(peer, id, code)
             synchronized(lock) { settle(s, asking, sent) }
+        }
+    }
+
+    /** Checks this TV's PIN for the received setup; only a right one lets the import go on. */
+    private fun enterPin(pin: String) {
+        val asking = _state.value as? SetupState.AskPin ?: return
+        val s = host.current() ?: return
+        if (pin.length != CODE_LENGTH || pin.any { it !in '0'..'9' }) return
+        if (pinJob?.isActive == true) return
+        pinJob = work.launch(Owner(s)) {
+            val checked = checkPin(pin)
+            synchronized(lock) {
+                if (host.current() !== s) return@launch
+                when (checked) {
+                    PinCheck.Ok -> when (s) {
+                        is SetupHost.Slot.Receiving -> host.approvePin(s)
+                        // The PIN was right: now the other TV's code is asked for, and only then is anything sent.
+                        is SetupHost.Slot.Sending -> _state.value =
+                            SetupState.EnterCode(s.peer.name, asked = true, triesLeft = null, error = null)
+                    }
+                    PinCheck.Wrong -> _state.value = asking.copy(error = WRONG_PIN, waitSeconds = 0, rejected = asking.rejected + 1)
+                    is PinCheck.Wait -> _state.value =
+                        asking.copy(error = waitPin(checked.seconds), waitSeconds = checked.seconds, rejected = asking.rejected + 1)
+                }
+            }
         }
     }
 
@@ -374,6 +432,8 @@ class SetupController internal constructor(
         if (s is SetupHost.Slot.Receiving && s.accepted) return
         sendJob?.cancel()
         sendJob = null
+        pinJob?.cancel()
+        pinJob = null
         stopTimer()
         if (s != null) {
             val showing = _state.value is SetupState.ShowingCode
@@ -417,6 +477,7 @@ class SetupController internal constructor(
         // A received setup being imported finishes or fails on its own.
         if (s is SetupHost.Slot.Receiving && s.accepted) return
         sendJob = null
+        pinJob = null
         stopTimer()
         if (host.abandon(s, notify = false)) s.id?.let { tell(s.peer, it, SetupHost.End.CANCELLED) }
         _state.value = SetupState.Done(FAILED, copied = false)
@@ -429,9 +490,20 @@ class SetupController internal constructor(
             expireAfter(slot, lifetimeMs)
         }
 
+        override fun askedPin(slot: SetupHost.Slot.Sending) {
+            _state.value = SetupState.AskPin(slot.peer.name, sending = true)
+            expireAfter(slot, lifetimeMs + SENDER_GRACE_MS)
+        }
+
         override fun asked(slot: SetupHost.Slot.Sending) {
             _state.value = SetupState.EnterCode(slot.peer.name, asked = true, triesLeft = null, error = null)
             expireAfter(slot, lifetimeMs + SENDER_GRACE_MS)
+        }
+
+        override fun askPin(slot: SetupHost.Slot.Receiving) {
+            _state.value = SetupState.AskPin(slot.peer.name)
+            // The sending TV waits for its answer meanwhile, so this is shorter than its own wait.
+            expireAfter(slot, minOf(lifetimeMs, PIN_WAIT_MS))
         }
 
         override fun copying(slot: SetupHost.Slot.Receiving) {
@@ -447,6 +519,8 @@ class SetupController internal constructor(
         override fun ended(slot: SetupHost.Slot, reason: SetupHost.End) {
             sendJob?.cancel()
             sendJob = null
+            pinJob?.cancel()
+            pinJob = null
             stopTimer()
             val message = when (reason) {
                 SetupHost.End.CANCELLED -> CANCELLED
@@ -467,6 +541,12 @@ class SetupController internal constructor(
 
         /** How long [FINISH_FIRST] shows before the copy's own state comes back. */
         const val NOTICE_MS = 2_500L
+
+        /** How long this TV waits for its PIN: less than the sending TV waits for the answer. */
+        const val PIN_WAIT_MS = 60_000L
+
+        const val WRONG_PIN = "Wrong PIN"
+        fun waitPin(seconds: Int) = "Too many tries. Try again in $seconds s"
 
         const val CANCELLED = "Copy cancelled."
         const val TIMED_OUT = "The request timed out."

@@ -49,7 +49,10 @@ class SearchViewModelTest {
         saveMyList = { kind, p, k, inList -> saved.add(listOf(kind, p, k, inList)) },
         clock = { now },
         io = dispatcher,
+        unlocked = unlocked,
     ))
+
+    private val unlocked = MutableStateFlow(false)
 
     private val myListFlows = mapOf(
         TitleKind.FILM to MutableStateFlow(emptySet<KeyRef>()),
@@ -268,5 +271,32 @@ class SearchViewModelTest {
 
         assertEquals(OPTION_ADD_MY_LIST, myListOption(inList = false) {}.label)
         assertEquals(OPTION_REMOVE_MY_LIST, myListOption(inList = true) {}.label)
+    }
+
+    @Test fun relockRunsTheSearchAgain() = runTest(dispatcher) {
+        val open = channel(1, "News 24")
+        val locked = channel(2, "News Late")
+        val film = FilmCard(1, "f1", "News: The Movie", null)
+        // The searches read the stored lock state, as the real queries do.
+        channelRows = { if (unlocked.value) listOf(open, locked) else listOf(open) }
+        filmRows = { if (unlocked.value) listOf(film) else emptyList() }
+        unlocked.value = true
+        val vm = vm()
+        vm.setQuery("news")
+        settle()
+        assertEquals(SearchUi.Results(listOf(open, locked), emptyList(), films = listOf(film)), vm.results.value)
+
+        unlocked.value = false
+        runCurrent()
+        val relocked = vm.results.value as SearchUi.Results
+        assertEquals(listOf(open), relocked.channels)
+        assertTrue(relocked.films.isEmpty())
+        advanceUntilIdle()
+        assertEquals(SearchUi.Results(listOf(open), emptyList()), vm.results.value)
+
+        unlocked.value = true
+        settle()
+        assertEquals(SearchUi.Results(listOf(open, locked), emptyList(), films = listOf(film)), vm.results.value)
+        assertEquals(listOf("%news%", "%news%", "%news%"), channelCalls)
     }
 }

@@ -9,8 +9,10 @@ import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.data.tmdb.TmdbKind
 import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodKind
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -606,6 +608,47 @@ class MigrationTest {
             assertTrue(db.channelPrefsDao().get(7, "k")!!.hidden)
             db.channelPrefsDao().upsert(ChannelPrefsEntity(7, "k", aspectMode = AspectMode.ZOOM))
             assertEquals(AspectMode.ZOOM, db.channelPrefsDao().get(7, "k")!!.aspectMode)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun migrate12To13KeepsEditsAndAddsLockTables() = runTest {
+        helper.createDatabase(DB, 12).use { v12 ->
+            v12.execSQL("""INSERT INTO playlists (id, name, type, epgUrlsFromSource) VALUES (7, 'Old', 'M3U', '')""")
+            v12.execSQL(
+                """INSERT INTO channel_prefs (playlistId, channelKey, hidden, epgShiftMinutes)
+                   VALUES (7, 'k', 1, 0)""",
+            )
+            v12.execSQL(
+                """INSERT INTO group_prefs (playlistId, groupTitle, hidden, sortMode)
+                   VALUES (7, 'G', 1, 'PLAYLIST')""",
+            )
+        }
+
+        // Validates the migrated schema against the exported schema 13.json.
+        helper.runMigrationsAndValidate(DB, 13, true, MIGRATION_12_13).close()
+
+        val db = Room.databaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java, DB)
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
+        try {
+            val channel = db.channelPrefsDao().get(7, "k")!!
+            assertTrue(channel.hidden)
+            assertFalse(channel.locked)
+            val group = db.groupPrefsDao().forPlaylist(7).single()
+            assertTrue(group.hidden)
+            assertFalse(group.locked)
+            assertEquals(0, db.rowCount("show_prefs"))
+            assertEquals(1, db.rowCount("lock_state"))
+            assertFalse(db.lockDao().unlocked().first())
+            withContext(Dispatchers.IO) {
+                db.query("SELECT id, unlocked FROM lock_state", null).use {
+                    assertTrue(it.moveToFirst())
+                    assertEquals(1, it.getInt(0))
+                    assertEquals(0, it.getInt(1))
+                }
+            }
         } finally {
             db.close()
         }

@@ -345,6 +345,7 @@ class CastDiscovery(
             put("seq", seq.toString())
             put("setup", setup.toString())
             rec?.let { put("rec", it) }
+            if (locked) put("locked", "true")
             castId?.let { put("castId", it) }
             token?.let { put("token", it) }
             castStartedAtMs?.let { put("startedAt", it.toString()) }
@@ -365,6 +366,7 @@ class CastDiscovery(
                 seq = txt["seq"]?.toLongOrNull()?.takeIf { it >= 0 } ?: return null,
                 setup = txt["setup"]?.toIntOrNull()?.takeIf { it >= 0 } ?: 0,
                 rec = txt["rec"]?.takeIf { it.isNotEmpty() },
+                locked = txt["locked"]?.toBooleanStrictOrNull() ?: false,
             )
             val castComplete = a.castId != null && a.token != null && a.castStartedAtMs != null
             return if (a.status == CastStatus.CASTING && !castComplete) null else a

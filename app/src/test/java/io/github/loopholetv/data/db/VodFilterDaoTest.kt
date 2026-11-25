@@ -1,5 +1,7 @@
 package io.github.loopholetv.data.db
 
+import androidx.paging.PagingSource
+import app.cash.turbine.test
 import io.github.loopholetv.data.tmdb.Genre
 import io.github.loopholetv.data.tmdb.TmdbKind
 import io.github.loopholetv.data.vod.RatingMin
@@ -8,15 +10,19 @@ import io.github.loopholetv.data.vod.TitleKind
 import io.github.loopholetv.data.vod.VodFilter
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodSort
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.time.Instant
+import kotlin.time.Duration.Companion.seconds
 
 @RunWith(RobolectricTestRunner::class)
 class VodFilterDaoTest {
@@ -227,5 +233,72 @@ class VodFilterDaoTest {
         db.groupPrefsDao().upsert(GroupPrefsEntity(a, "Hidden", hidden = true))
         assertEquals(listOf(Genre(28, "Action"), Genre(18, "Drama")), dao.genresPresent(TitleKind.FILM).first())
         assertEquals(emptyList<Genre>(), dao.genresPresent(TitleKind.SHOW).first())
+    }
+
+    /** Waits for [source] to be invalidated by a write it observes. */
+    private suspend fun awaitInvalid(source: PagingSource<*, *>) {
+        withContext(Dispatchers.IO) { db.invalidationTracker.refreshVersionsSync() }
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!source.invalid && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        assertTrue("the grid was not invalidated", source.invalid)
+    }
+
+    @Test fun filteredFilmGridFollowsTheLock() = runTest(timeout = 60.seconds) {
+        film(a, "open"); film(a, "kept")
+        details(a, TitleKind.FILM, "open", 1, "Open", genres = listOf(28))
+        details(a, TitleKind.FILM, "kept", 2, "Kept", genres = listOf(28))
+        db.channelPrefsDao().upsert(ChannelPrefsEntity(a, "kept", locked = true))
+        db.lockDao().setUnlocked(true)
+        val f = VodFilter(genres = setOf(28), sort = VodSort.TITLE)
+
+        dao.count(filterQuery(TitleKind.FILM, f, countOnly = true)).test {
+            assertEquals(2, awaitItem())
+            val grid = db.filmGrid(f)
+            assertEquals(listOf("kept", "open"), grid.loadAll().map { it.key })
+
+            db.lockDao().setUnlocked(false)
+            assertEquals(1, awaitItem())
+            awaitInvalid(grid)
+            val relocked = db.filmGrid(f)
+            assertEquals(listOf("open"), relocked.loadAll().map { it.key })
+
+            db.lockDao().setUnlocked(true)
+            assertEquals(2, awaitItem())
+            awaitInvalid(relocked)
+            assertEquals(listOf("kept", "open"), films(f))
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test fun filteredShowGridFollowsTheLock() = runTest(timeout = 60.seconds) {
+        show(a, "open"); show(a, "kept")
+        details(a, TitleKind.SHOW, "open", 1, "Open", genres = listOf(18))
+        details(a, TitleKind.SHOW, "kept", 2, "Kept", genres = listOf(18))
+        val f = VodFilter(genres = setOf(18), sort = VodSort.TITLE)
+
+        dao.count(filterQuery(TitleKind.SHOW, f, countOnly = true)).test {
+            assertEquals(2, awaitItem())
+            val grid = db.showGrid(f)
+            assertEquals(listOf("kept", "open"), grid.loadAll().map { it.key })
+
+            // Locking the show while the PIN is not entered hides it at once.
+            db.lockDao().upsertShowPrefs(ShowPrefsEntity(a, "kept", locked = true))
+            assertEquals(1, awaitItem())
+            awaitInvalid(grid)
+            val locked = db.showGrid(f)
+            assertEquals(listOf("open"), locked.loadAll().map { it.key })
+
+            db.lockDao().setUnlocked(true)
+            assertEquals(2, awaitItem())
+            awaitInvalid(locked)
+            val unlocked = db.showGrid(f)
+            assertEquals(listOf("kept", "open"), unlocked.loadAll().map { it.key })
+
+            db.lockDao().setUnlocked(false)
+            assertEquals(1, awaitItem())
+            awaitInvalid(unlocked)
+            assertEquals(listOf("open"), shows(f))
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 }

@@ -66,6 +66,8 @@ open class LoopholeApp : Application(), RefreshRunnerProvider, TmdbSyncProvider 
     override fun onCreate() {
         super.onCreate()
         io.github.loopholetv.record.Notifications.ensureChannels(this)
+        // Locked channels hide again before anything reads them; MainActivity waits for this.
+        container.parentalReady
         // WorkManager is initialised by its default App Startup provider, which runs before onCreate.
         container.refreshScheduler.observe(
             container.settingsStore.settings,
@@ -94,7 +96,8 @@ open class LoopholeApp : Application(), RefreshRunnerProvider, TmdbSyncProvider 
         // Hiding the playing channel (or its group) anywhere, e.g. in Settings over the guide preview.
         stopPlaybackWhenChannelHidden(
             state = container.playback.state,
-            visibleOf = { id -> container.db.channelDao().observeVisible(id) },
+            // A relock hides the channel from lists but must not stop what is playing, so locks are ignored here.
+            visibleOf = { id -> container.db.channelDao().shownIgnoringLock(id) },
             stop = { container.playback.stop() },
             scope = applicationScope,
         )

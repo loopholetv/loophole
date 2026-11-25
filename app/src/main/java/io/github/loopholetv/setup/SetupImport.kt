@@ -9,10 +9,12 @@ import io.github.loopholetv.data.db.GroupPrefsEntity
 import io.github.loopholetv.data.db.HistoryEntity
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
+import io.github.loopholetv.data.db.ShowPrefsEntity
 import io.github.loopholetv.data.repo.ChannelOverlay
 import io.github.loopholetv.data.repo.LocalM3uOpener
 import io.github.loopholetv.data.settings.AppSettings
 import io.github.loopholetv.data.settings.SettingsStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
@@ -43,7 +45,7 @@ data class RemovedPlaylist(val id: Long, val type: PlaylistType, val url: String
 
 /**
  * Makes this TV a mirror of a [SetupBundle] for the copied parts: playlists (new ids), guide links,
- * channel and group edits, favourites and the copied settings replace what was here. Everything
+ * channel, group and show edits (locks included), favourites and the copied settings (the PIN included) replace what was here. Everything
  * else stays: this TV's name and cast settings, its hardware playback choices, settings this
  * class doesn't know, and - for a playlist this TV already had (same type and address or login) -
  * its watch history and per-channel decoder and external player choices. Channels and the guide
@@ -76,6 +78,16 @@ internal class SetupImporter(
     private val afterSettingsWritten: suspend () -> Unit = {},
     /** Runs after a committed import (the booking alarms are set again for what is left). */
     private val onReplaced: suspend () -> Unit = {},
+    /**
+     * Runs right after a committed import, before it reports success: the PIN and locks are the sender's
+     * now, so everything starts locked again whatever was unlocked here.
+     */
+    private val startLocked: suspend () -> Unit = {},
+    /**
+     * Runs right before the import's transaction: no play may treat this TV as having no PIN while the
+     * sender's PIN and locks commit. [startLocked] runs afterwards either way, settling the state again.
+     */
+    private val lockForImport: suspend () -> Unit = {},
 ) {
     /**
      * Once started, an import finishes (or fails cleanly) even if the caller goes away. Imports
@@ -117,6 +129,14 @@ internal class SetupImporter(
             return SetupImportResult.Failed
         }
         var before: AppSettings? = null
+        try {
+            lockForImport()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            discard(staged, moved)
+            return SetupImportResult.Failed
+        }
         val replaced = try {
             db.withTransaction {
                 val ids = replaceRows(b)
@@ -129,14 +149,21 @@ internal class SetupImporter(
                     before = current
                     b.settings.applyTo(current)
                 }
+                // The same commit as the copied locks: whatever was unlocked here, they never show open.
+                db.lockDao().setUnlocked(false)
                 afterSettingsWritten()
                 ids.old
             }
         } catch (_: Exception) {
             before?.let { restore(it) }
             discard(staged, moved)
+            // Back to what the settings (restored) say: locked with a PIN, no PIN otherwise.
+            settleLockState()
             return SetupImportResult.Failed
         }
+        // Before the caller sees the result: the in-memory state and the unlock timer. The stored state is
+        // already closed by the commit, and startLocked sets the in-memory one first, so a failure here stays shut.
+        settleLockState()
         runCatching { onReplaced() }
         withContext(Dispatchers.IO) {
             for (p in replaced) {
@@ -149,6 +176,17 @@ internal class SetupImporter(
             skippedFiles = b.skippedFiles + dropped,
             removed = replaced.map { RemovedPlaylist(it.id, it.type, it.url) },
         )
+    }
+
+    /** Runs [startLocked]; a failure leaves the state as [lockForImport] or the commit left it, shut. */
+    private suspend fun settleLockState() {
+        try {
+            startLocked()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Locked in memory, and the stored state is closed by the commit or still as it was.
+        }
     }
 
     /** Leaves out file playlists past the per-file or total cap (a bundle this TV didn't make). */
@@ -208,6 +246,7 @@ internal class SetupImporter(
         val links = ArrayList<EpgSourceEntity>()
         val channelEdits = ArrayList<ChannelPrefsEntity>()
         val groupEdits = ArrayList<GroupPrefsEntity>()
+        val showLocks = ArrayList<ShowPrefsEntity>()
         val history = ArrayList<HistoryEntity>()
         b.playlists.forEachIndexed { i, p ->
             val entity = p.toEntity()
@@ -217,11 +256,13 @@ internal class SetupImporter(
             val same = entity.identity()?.let { unmatched[it]?.removeFirstOrNull() }
             p.guideLinks.forEachIndexed { position, url -> links += EpgSourceEntity(playlistId = id, url = url, position = position) }
             groupEdits += p.groupEdits.map { it.toEntity(id) }.filterNot { it.isDefault() }
+            showLocks += p.showLocks.map { ShowPrefsEntity(id, it.showKey, locked = true) }
             channelEdits += mergeChannelEdits(id, p.channelEdits, same?.let { oldPrefs[it.id] }.orEmpty())
             same?.let { s -> oldHistory[s.id].orEmpty().mapTo(history) { it.copy(playlistId = id) } }
         }
         dao.insertEpgSources(links)
         dao.insertGroupPrefs(groupEdits)
+        dao.insertShowPrefs(showLocks)
         dao.insertChannelPrefs(channelEdits)
         dao.insertFavourites(
             b.favourites.mapIndexed { i, f ->
@@ -255,6 +296,7 @@ internal class SetupImporter(
                 audioDecoder = k?.audioDecoder,
                 externalPlayer = k?.externalPlayer,
                 aspectMode = e?.aspectMode,
+                locked = e?.locked ?: false,
             ).takeUnless { it.isDefault() }
         }
     }
@@ -295,6 +337,7 @@ internal class SetupImporter(
         customName = customName,
         position = position,
         sortMode = sortMode,
+        locked = locked,
     )
 
     /**

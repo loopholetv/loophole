@@ -478,4 +478,26 @@ class SettingsStoreTest {
         store.setVodFilter(io.github.loopholetv.data.vod.TitleKind.FILM, io.github.loopholetv.data.vod.VodFilter())
         assertEquals(null, ds.data.first()[stringPreferencesKey("vodFilterMovies")])
     }
+
+    @Test
+    fun parentalRoundTripsAndMasks() = runTest {
+        val ds = dataStore(backgroundScope)
+        val store = SettingsStore(ds)
+        assertEquals(ParentalSettings(), store.current().parental)
+        val written = ParentalSettings(
+            pinHash = "HASHVALUE0123456789abcdefghijklmnopqrstuv=", pinSalt = "SALTVALUE0123456789abcd==",
+            unlockMinutes = 60, settingsLock = SettingsLock.PLAYLISTS_EPG,
+        )
+        store.update { it.copy(parental = written) }
+        assertEquals(written, store.current().parental)
+
+        val text = store.current().toString() + written.toString()
+        assertFalse(text.contains("HASHVALUE"))
+        assertFalse(text.contains("SALTVALUE"))
+
+        ds.edit { it[intPreferencesKey("parental_unlock_minutes")] = 7 }
+        assertEquals(15, store.current().parental.unlockMinutes)
+        ds.edit { it[stringPreferencesKey("parental_settings_lock")] = "NOPE" }
+        assertEquals(SettingsLock.OFF, store.current().parental.settingsLock)
+    }
 }

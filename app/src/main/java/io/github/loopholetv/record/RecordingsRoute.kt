@@ -24,7 +24,8 @@ import okio.Buffer
  * This TV's recordings, served over HTTP under `/r/<token>/` to this TV's own player and to other
  * Loophole TVs on the local network.
  *
- * - `GET list`: a JSON array, one object per recording that has a file (see [RemoteRecording]).
+ * - `GET list`: a JSON array, one object per recording that has a file (see [RemoteRecording]); `locked`
+ *   marks those whose channel is locked on this TV, whether or not the PIN is entered here.
  * - `GET file/<id>`: the file, whole or as one `Range` (`bytes=N-` or `bytes=N-M`). The size is
  *   read from the storage once per request, so a file still being written is served up to the
  *   length it has at that moment; a player that reaches it asks again.
@@ -41,6 +42,8 @@ class RecordingsRoute(
     /** Whether other TVs may be shown recordings (the "allow joining" setting); this TV's own player is always served. */
     private val allowShare: () -> Boolean = { true },
     val token: String = newToken(),
+    /** Whether this TV's own flags lock the recording's channel, whatever the PIN state; marks it in the list. */
+    private val channelLocked: suspend (RecordingEntity) -> Boolean = { false },
 ) {
     fun install(server: LocalHttpServer) {
         server.route("GET", PREFIX) { req, res -> handle(req, res) }
@@ -73,6 +76,7 @@ class RecordingsRoute(
         JsonWriter.of(body).use { w ->
             w.beginArray()
             recordings().filter(::servable).forEach { r ->
+                val locked = channelLocked(r)
                 w.beginObject()
                 w.name("id").value(r.id)
                 w.name("title").value(r.title)
@@ -84,6 +88,7 @@ class RecordingsRoute(
                 w.name("bytes").value(r.bytes)
                 w.name("recording").value(r.state == RecordingState.RECORDING)
                 w.name("durationMs").value(durationMs(r))
+                w.name("locked").value(locked)
                 w.endObject()
             }
             w.endArray()

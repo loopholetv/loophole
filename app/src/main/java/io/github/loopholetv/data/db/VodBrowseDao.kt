@@ -17,19 +17,39 @@ data class FilmWithPlaylist(@Embedded val film: FilmEntity, val playlistName: St
 /** A hidden group title of one playlist that holds films or shows. */
 data class HiddenGroupRow(val playlistId: Long, val groupTitle: String)
 
-/** The playlist is enabled, and neither the film's category nor the film itself is hidden. */
+/** Neither the film's category nor the film is locked, or the PIN is entered. */
+internal const val FILM_NOT_LOCKED =
+    """(NOT EXISTS (SELECT 1 FROM group_prefs g WHERE g.playlistId = f.playlistId AND g.groupTitle = f.category AND g.locked = 1)
+            OR $LOCK_OPEN)
+       AND (NOT EXISTS (SELECT 1 FROM channel_prefs c WHERE c.playlistId = f.playlistId AND c.channelKey = f.`key` AND c.locked = 1)
+            OR $LOCK_OPEN)"""
+
+/**
+ * The playlist is enabled, and neither the film's category nor the film itself is hidden, nor
+ * locked while the PIN is not entered.
+ */
 internal const val FILM_VISIBLE =
     """EXISTS (SELECT 1 FROM playlists p WHERE p.id = f.playlistId AND p.enabled = 1)
        AND NOT EXISTS (SELECT 1 FROM group_prefs g WHERE g.playlistId = f.playlistId AND g.groupTitle = f.category AND g.hidden = 1)
-       AND NOT EXISTS (SELECT 1 FROM channel_prefs c WHERE c.playlistId = f.playlistId AND c.channelKey = f.`key` AND c.hidden = 1)"""
+       AND NOT EXISTS (SELECT 1 FROM channel_prefs c WHERE c.playlistId = f.playlistId AND c.channelKey = f.`key` AND c.hidden = 1)
+       AND $FILM_NOT_LOCKED"""
+
+/** Neither the show's group nor the show is locked, or the PIN is entered. */
+internal const val SHOW_NOT_LOCKED =
+    """(NOT EXISTS (SELECT 1 FROM group_prefs g WHERE g.playlistId = s.playlistId AND g.groupTitle = s.groupTitle AND g.locked = 1)
+            OR $LOCK_OPEN)
+       AND (NOT EXISTS (SELECT 1 FROM show_prefs sp WHERE sp.playlistId = s.playlistId AND sp.showKey = s.`key` AND sp.locked = 1)
+            OR $LOCK_OPEN)"""
 
 /**
- * The playlist is enabled and the show's group is not hidden. Hidden single episodes (a channel
+ * The playlist is enabled and the show's group is not hidden, nor are the group or the show locked
+ * while the PIN is not entered. Hidden single episodes (a channel
  * hidden before it became an episode) are left out of the show's episode list instead.
  */
 internal const val SHOW_VISIBLE =
     """EXISTS (SELECT 1 FROM playlists p WHERE p.id = s.playlistId AND p.enabled = 1)
-       AND NOT EXISTS (SELECT 1 FROM group_prefs g WHERE g.playlistId = s.playlistId AND g.groupTitle = s.groupTitle AND g.hidden = 1)"""
+       AND NOT EXISTS (SELECT 1 FROM group_prefs g WHERE g.playlistId = s.playlistId AND g.groupTitle = s.groupTitle AND g.hidden = 1)
+       AND $SHOW_NOT_LOCKED"""
 
 /**
  * Joins a film's match (`m`) and its TMDB title (`t`). Only a MATCHED row joins, so an unmatched,
@@ -91,19 +111,24 @@ interface VodBrowseDao {
     /**
      * Whether Movies has anything to offer: a film of an enabled playlist, counting films whose
      * category is hidden (the screen then offers to show the hidden categories again). Films
-     * hidden one by one do not count.
+     * hidden one by one do not count, nor do films locked while the PIN is not entered.
      */
     @Query(
         """SELECT EXISTS (SELECT 1 FROM vod_films f
            WHERE EXISTS (SELECT 1 FROM playlists p WHERE p.id = f.playlistId AND p.enabled = 1)
-           AND NOT EXISTS (SELECT 1 FROM channel_prefs c WHERE c.playlistId = f.playlistId AND c.channelKey = f.`key` AND c.hidden = 1))""",
+           AND NOT EXISTS (SELECT 1 FROM channel_prefs c WHERE c.playlistId = f.playlistId AND c.channelKey = f.`key` AND c.hidden = 1)
+           AND $FILM_NOT_LOCKED)""",
     )
     fun hasFilms(): Flow<Boolean>
 
-    /** Whether Series has anything to offer: a show of an enabled playlist, hidden categories included. */
+    /**
+     * Whether Series has anything to offer: a show of an enabled playlist, hidden categories
+     * included, locked ones not while the PIN is not entered.
+     */
     @Query(
         """SELECT EXISTS (SELECT 1 FROM vod_shows s
-           WHERE EXISTS (SELECT 1 FROM playlists p WHERE p.id = s.playlistId AND p.enabled = 1))""",
+           WHERE EXISTS (SELECT 1 FROM playlists p WHERE p.id = s.playlistId AND p.enabled = 1)
+           AND $SHOW_NOT_LOCKED)""",
     )
     fun hasShows(): Flow<Boolean>
 
@@ -193,7 +218,7 @@ interface VodBrowseDao {
     @Query(
         """SELECT g.playlistId AS playlistId, g.groupTitle AS groupTitle FROM group_prefs g
            JOIN playlists p ON p.id = g.playlistId AND p.enabled = 1
-           WHERE g.hidden = 1 AND (
+           WHERE g.hidden = 1 AND (g.locked = 0 OR $LOCK_OPEN) AND (
                EXISTS (SELECT 1 FROM vod_films f WHERE f.playlistId = g.playlistId AND f.category = g.groupTitle)
                OR EXISTS (SELECT 1 FROM vod_shows s WHERE s.playlistId = g.playlistId AND s.groupTitle = g.groupTitle))
            ORDER BY g.playlistId, g.groupTitle""",

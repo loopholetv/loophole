@@ -13,6 +13,9 @@ import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.db.inMemoryDb
+import io.github.loopholetv.data.parental.ParentalLock
+import io.github.loopholetv.data.repo.ChannelEdits
+import io.github.loopholetv.data.repo.ChannelOverlay
 import io.github.loopholetv.data.repo.LocalM3uOpener
 import io.github.loopholetv.data.settings.SettingsStore
 import java.io.File
@@ -72,6 +75,11 @@ internal class SetupTestTv(
     /** Replaces the buffer a sealed setup is read into when set. */
     @Volatile var bufferOverride: ((Int) -> ByteArray)? = null
 
+    /** This TV's PIN and lock state, over its own database and settings. */
+    private val overlay = ChannelOverlay(db)
+    val edits = ChannelEdits(db, overlay)
+    val lock = ParentalLock(settings, edits, overlay, scope, clock)
+
     val controller = SetupController(
         scope = scope,
         server = server,
@@ -80,7 +88,7 @@ internal class SetupTestTv(
         export = { name -> exportOverride?.invoke(name) ?: SetupExporter(db, settings, files).export(name) },
         import = { bundle ->
             importCalls.incrementAndGet()
-            importOverride?.invoke(bundle) ?: SetupImporter(db, settings, files).import(bundle)
+            importOverride?.invoke(bundle) ?: SetupImporter(db, settings, files, startLocked = lock::startLocked, lockForImport = lock::lockForImport).import(bundle)
         },
         stageFile = { stageOverride?.invoke() ?: files.newTemp() },
         clock = clock,
@@ -88,6 +96,9 @@ internal class SetupTestTv(
         selfName = { name },
         onImported = { imported += it },
         hasPlaylists = { db.setupDao().hasPlaylists() },
+        hasPin = { lock.hasPin() },
+        isUnlocked = { lock.isUnlocked },
+        checkPin = lock::check,
         lifetimeMs = lifetimeMs,
         availableMemory = { availableMemory },
         newBuffer = { size -> bufferOverride?.invoke(size) ?: ByteArray(size) },
@@ -108,9 +119,9 @@ internal class SetupTestTv(
     val state: SetupState get() = controller.state.value
 
     /** Lists [other] as a peer seen at [host]. */
-    fun sees(other: SetupTestTv, setup: Int = 1, host: String = "127.0.0.1") = seesPeer(other.id, other.name, other.port, setup, host)
+    fun sees(other: SetupTestTv, setup: Int = CastAnnounce.SETUP_VERSION, host: String = "127.0.0.1") = seesPeer(other.id, other.name, other.port, setup, host)
 
-    fun seesPeer(id: String, name: String, port: Int, setup: Int = 1, host: String = "127.0.0.1") =
+    fun seesPeer(id: String, name: String, port: Int, setup: Int = CastAnnounce.SETUP_VERSION, host: String = "127.0.0.1") =
         table.seen(CastAnnounce(id, name, port, CastStatus.IDLE, true, null, null, null, seq = 1, setup = setup), host)
 
     fun await(timeoutMs: Long = 30_000, what: (SetupState) -> Boolean): SetupState = runBlocking {

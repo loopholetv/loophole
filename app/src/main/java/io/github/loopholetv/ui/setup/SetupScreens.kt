@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -50,6 +51,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import io.github.loopholetv.setup.SetupController
 import io.github.loopholetv.setup.SetupState
 import io.github.loopholetv.setup.SetupView
 import io.github.loopholetv.ui.settings.focusSoon
@@ -66,6 +68,11 @@ internal fun padKeyTag(index: Int) = "pad-key-$index"
 internal const val REPLACES_WARNING = "This replaces this TV's playlists, guide, favourites and settings."
 internal fun enterCodeText(name: String) = "Enter the code shown on $name"
 internal fun askedCodeText(name: String) = "$name wants to copy your setup. Enter the code shown on $name."
+internal const val ASK_PIN_TITLE = "Enter PIN"
+internal fun askPinText(name: String) = "Copying $name's setup here replaces this TV's playlists, locks and PIN."
+internal fun askPinSendText(name: String) = "$name wants to copy this TV's setup, with its locks and PIN."
+/** What a PIN entry shows in place of each digit. */
+internal const val PIN_DOT = "•"
 
 /**
  * The setup screens over the whole app, whatever is on: the code to show, the code to type, the
@@ -121,7 +128,7 @@ fun SetupOverlay(
 
 /** Runs [handFocusBack] each time the screens close, on this (the app's) window. */
 @Composable
-private fun FocusBackOnClose(showing: Boolean, screenHasFocus: () -> Boolean) {
+internal fun FocusBackOnClose(showing: Boolean, screenHasFocus: () -> Boolean) {
     val view = LocalView.current
     val window = LocalWindowInfo.current
     val focusManager = LocalFocusManager.current
@@ -175,6 +182,7 @@ fun SetupContent(state: SetupState, pad: CodePad, now: () -> Long) {
         when (state) {
             is SetupState.ShowingCode -> ShowCode(state, now)
             is SetupState.EnterCode -> EnterCode(state, pad)
+            is SetupState.AskPin -> AskPin(state, pad)
             is SetupState.Working -> Working(state.text)
             is SetupState.Done -> Done(state.message)
             SetupState.Idle -> Unit
@@ -232,14 +240,53 @@ private fun ShowCode(state: SetupState.ShowingCode, now: () -> Long) {
 
 @Composable
 private fun EnterCode(state: SetupState.EnterCode, pad: CodePad) {
-    // The title and boxes sit level with the digit keys (Cancel hangs below them). The weight has
-    // the pad measured first, so a long title wraps sooner rather than squeezing the last column.
+    CodeEntry(
+        title = if (state.asked) askedCodeText(state.peerName) else enterCodeText(state.peerName),
+        pad = pad,
+        error = state.error,
+    )
+}
+
+/**
+ * This TV's PIN, before a received setup replaces its own: the same pad and boxes as a code, with dots
+ * for the digits. One pad serves both, so only one is ever on screen and it keeps the setup screens'
+ * keys and focus.
+ */
+@Composable
+private fun AskPin(state: SetupState.AskPin, pad: CodePad) {
+    var left by remember(state) { mutableIntStateOf(state.waitSeconds) }
+    LaunchedEffect(state) {
+        while (left > 0) {
+            delay(WAIT_TICK_MS)
+            left--
+        }
+    }
+    CodeEntry(
+        title = ASK_PIN_TITLE,
+        body = if (state.sending) askPinSendText(state.fromName) else askPinText(state.fromName),
+        pad = pad,
+        error = if (state.waitSeconds > 0) (if (left > 0) SetupController.waitPin(left) else null) else state.error,
+        mask = true,
+    )
+}
+
+/**
+ * Four boxes for typing with the pad beside them. The title and boxes sit level with the digit keys
+ * (Cancel hangs below them). The weight has the pad measured first, so a long title wraps sooner
+ * rather than squeezing the last column.
+ */
+@Composable
+private fun CodeEntry(title: String, pad: CodePad, error: String?, body: String? = null, mask: Boolean = false) {
     Row(horizontalArrangement = Arrangement.spacedBy(64.dp), verticalAlignment = Alignment.Top) {
         Column(
             Modifier.weight(1f, fill = false).widthIn(max = 520.dp).height(PAD_GRID_HEIGHT),
             verticalArrangement = Arrangement.Center,
         ) {
-            Title(if (state.asked) askedCodeText(state.peerName) else enterCodeText(state.peerName), TextAlign.Start)
+            Title(title, TextAlign.Start)
+            if (body != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(body, style = MaterialTheme.typography.titleMedium, color = Tokens.Muted)
+            }
             Spacer(Modifier.height(24.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 for (i in 0 until CODE_LENGTH) {
@@ -253,7 +300,12 @@ private fun EnterCode(state: SetupState.EnterCode, pad: CodePad) {
                         contentAlignment = Alignment.Center,
                     ) {
                         if (digit != null) {
-                            Text(digit.toString(), style = MaterialTheme.typography.displaySmall, color = Tokens.OnBackground)
+                            // A PIN is never drawn, only a dot.
+                            Text(
+                                if (mask) PIN_DOT else digit.toString(),
+                                style = MaterialTheme.typography.displaySmall,
+                                color = Tokens.OnBackground,
+                            )
                         }
                     }
                 }
@@ -261,23 +313,40 @@ private fun EnterCode(state: SetupState.EnterCode, pad: CodePad) {
             // Right under the boxes; the space is kept so nothing moves when it shows.
             Spacer(Modifier.height(12.dp))
             Text(
-                state.error.orEmpty(),
+                error.orEmpty(),
                 style = MaterialTheme.typography.titleMedium,
                 color = Tokens.Error,
                 modifier = Modifier.heightIn(min = 28.dp),
             )
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(PAD_GAP)) {
-            for (row in 0 until PAD_KEY_ROWS) {
-                Row(horizontalArrangement = Arrangement.spacedBy(PAD_GAP)) {
-                    for (col in 0 until PAD_COLUMNS) {
-                        val index = row * PAD_COLUMNS + col
-                        PadButton(padLabel(index), highlighted = pad.focused == index, width = PAD_KEY_WIDTH, tag = padKeyTag(index))
-                    }
+        PadKeys(pad)
+    }
+}
+
+/**
+ * The on-screen pad: the digit keys and Cancel, with [extra] below. The keys are measured by
+ * their fixed size, so a screen next to the pad can line up with them. [cancelHighlighted] is
+ * false while the highlight is on something in [extra].
+ */
+@Composable
+internal fun PadKeys(pad: CodePad, cancelHighlighted: Boolean = true, extra: @Composable () -> Unit = {}) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(PAD_GAP)) {
+        for (row in 0 until PAD_KEY_ROWS) {
+            Row(horizontalArrangement = Arrangement.spacedBy(PAD_GAP)) {
+                for (col in 0 until PAD_COLUMNS) {
+                    val index = row * PAD_COLUMNS + col
+                    val on = cancelHighlighted && pad.focused == index
+                    PadButton(padLabel(index), highlighted = on, width = PAD_KEY_WIDTH, tag = padKeyTag(index))
                 }
             }
-            PadButton(CANCEL_LABEL, highlighted = pad.focused == PAD_CANCEL, width = PAD_KEY_WIDTH, tag = padKeyTag(PAD_CANCEL))
         }
+        PadButton(
+            CANCEL_LABEL,
+            highlighted = cancelHighlighted && pad.focused == PAD_CANCEL,
+            width = PAD_KEY_WIDTH,
+            tag = padKeyTag(PAD_CANCEL),
+        )
+        extra()
     }
 }
 
@@ -302,7 +371,7 @@ private fun Done(message: String) {
 }
 
 @Composable
-private fun Title(text: String, align: TextAlign = TextAlign.Center) {
+internal fun Title(text: String, align: TextAlign = TextAlign.Center) {
     Text(
         text,
         style = MaterialTheme.typography.headlineSmall,
@@ -315,7 +384,7 @@ private fun Title(text: String, align: TextAlign = TextAlign.Center) {
 
 /** Drawn like a focused or unfocused pill button; the screens move the highlight themselves. */
 @Composable
-private fun PadButton(label: String, highlighted: Boolean, width: androidx.compose.ui.unit.Dp? = null, tag: String? = null) {
+internal fun PadButton(label: String, highlighted: Boolean, width: androidx.compose.ui.unit.Dp? = null, tag: String? = null) {
     Box(
         Modifier
             .then(if (tag != null) Modifier.testTag(tag) else Modifier)
@@ -336,10 +405,13 @@ private fun PadButton(label: String, highlighted: Boolean, width: androidx.compo
 }
 
 private const val TICK_MS = 250L
+private const val WAIT_TICK_MS = 1_000L
 
 /** The pad's digit keys: [PAD_KEY_ROWS] rows of fixed-size keys, so the screen can line up with them. */
 private const val PAD_KEY_ROWS = 4
-private val PAD_KEY_WIDTH = 104.dp
-private val PAD_KEY_HEIGHT = 56.dp
-private val PAD_GAP = 10.dp
-private val PAD_GRID_HEIGHT = PAD_KEY_HEIGHT * PAD_KEY_ROWS + PAD_GAP * (PAD_KEY_ROWS - 1)
+internal val PAD_KEY_WIDTH = 104.dp
+internal val PAD_KEY_HEIGHT = 56.dp
+internal val PAD_GAP = 10.dp
+/** The digit keys' full width: for a key that sits under the grid and needs more room than one column. */
+internal val PAD_GRID_WIDTH = PAD_KEY_WIDTH * PAD_COLUMNS + PAD_GAP * (PAD_COLUMNS - 1)
+internal val PAD_GRID_HEIGHT = PAD_KEY_HEIGHT * PAD_KEY_ROWS + PAD_GAP * (PAD_KEY_ROWS - 1)

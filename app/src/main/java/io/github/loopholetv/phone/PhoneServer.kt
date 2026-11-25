@@ -1,6 +1,7 @@
 package io.github.loopholetv.phone
 
 import com.squareup.moshi.JsonDataException
+import com.squareup.moshi.JsonReader
 import io.github.loopholetv.cast.net.HttpHandler
 import io.github.loopholetv.cast.net.HttpRequest
 import io.github.loopholetv.cast.net.HttpResponse
@@ -44,7 +45,10 @@ class PhoneServer(
     private val watchNetwork: (() -> Unit) -> AutoCloseable,
     private val asset: (String) -> InputStream?,
     private val tvName: suspend () -> String,
+    private val parental: PhoneParental = PhoneParental(),
 ) {
+    private val sessions = PhoneSessions(parental)
+
     private val _address = MutableStateFlow<PhoneAddress?>(null)
 
     /** Null while stopped or without a LAN address. */
@@ -64,7 +68,14 @@ class PhoneServer(
         server.route("GET", "/api/status", 0, BODY_TIMEOUT_MS, guarded("/api/status", auth = false, exact = true, ::status))
         server.route("POST", "/api/pair", PAIR_MAX_BODY, BODY_TIMEOUT_MS, guarded("/api/pair", auth = false, exact = true, ::pair))
         api("POST", "/api/forget", handler = ::forget)
+        api("POST", PIN_PATH, PIN_MAX_BODY, ::pin)
     }
+
+    /**
+     * Whether this request's phone must enter the PIN before a protected action: a PIN exists and
+     * the phone hasn't entered it. Independent of the Settings lock.
+     */
+    internal suspend fun pinNeeded(req: HttpRequest): Boolean = sessions.locked(token(req))
 
     /** True: starts serving, and follows network changes. False: stops. */
     fun onForeground(foreground: Boolean) {
@@ -135,7 +146,11 @@ class PhoneServer(
             exact && req.path != path -> res.sendEmpty(404)
             req.method != "GET" && !postAllowed(req.headers) -> res.sendError(403, "forbidden")
             auth && !pairing.isPaired(token(req)) -> res.sendError(401, "not_paired")
-            else -> handler(req, res)
+            else -> {
+                // The start-up relock may still be running: nothing answers before it is done.
+                if (path.startsWith("/api/")) parental.ready()
+                if (auth && path != PIN_PATH && sessions.settingsLocked(token(req))) res.sendPinRequired() else handler(req, res)
+            }
         }
     }
 
@@ -195,12 +210,58 @@ class PhoneServer(
     }
 
     private suspend fun forget(req: HttpRequest, res: HttpResponse) {
-        token(req)?.let { pairing.forget(it) }
+        token(req)?.let {
+            sessions.forget(it)
+            pairing.forget(it)
+        }
         res.sendJson(200, mapOf("Set-Cookie" to cookie("", 0))) {
             beginObject()
             name("paired").value(false)
             endObject()
         }
+    }
+
+    /** `{"pin":"1234"}`: 200 `{"ok":true}`, 403 `{"ok":false}` or 429 `{"wait":N}`. */
+    private suspend fun pin(req: HttpRequest, res: HttpResponse) {
+        if (req.path != PIN_PATH) return res.sendError(404, "not_found")
+        val token = token(req) ?: return res.sendError(401, "not_paired")
+        val pin = try {
+            readPin(req)
+        } catch (_: IOException) {
+            return res.sendError(400, "bad_request")
+        } catch (_: JsonDataException) {
+            return res.sendError(400, "bad_request")
+        }
+        when (val result = sessions.enter(token, pin)) {
+            PhonePin.Ok -> res.sendJson(200) {
+                beginObject()
+                name("ok").value(true)
+                endObject()
+            }
+            PhonePin.Wrong -> res.sendJson(403) {
+                beginObject()
+                name("ok").value(false)
+                endObject()
+            }
+            is PhonePin.Wait -> res.sendJson(429) {
+                beginObject()
+                name("wait").value(result.seconds)
+                endObject()
+            }
+        }
+    }
+
+    /** The string `pin` of the body, or null when it is missing or not a string. */
+    private fun readPin(req: HttpRequest): String? {
+        var pin: String? = null
+        req.jsonBody().use { r ->
+            r.beginObject()
+            while (r.hasNext()) {
+                if (r.nextName() == "pin" && r.peek() == JsonReader.Token.STRING) pin = r.nextString() else r.skipValue()
+            }
+            r.endObject()
+        }
+        return pin
     }
 
     private fun cookie(value: String, maxAge: Int) =
@@ -210,6 +271,8 @@ class PhoneServer(
         val LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         const val PAGE_ASSET = "phone/index.html"
         const val PAIR_MAX_BODY = 256L
+        const val PIN_PATH = "/api/pin"
+        const val PIN_MAX_BODY = 256L
         const val BODY_TIMEOUT_MS = 10_000L
         const val COOKIE_MAX_AGE = 31_536_000
         val PAGE_HEADERS = mapOf(

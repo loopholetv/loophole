@@ -18,6 +18,7 @@ import io.github.loopholetv.data.settings.DecoderChoice
 import io.github.loopholetv.player.ExternalPlayers
 import io.github.loopholetv.ui.common.ChannelOption
 import io.github.loopholetv.ui.common.OPTION_MOVE
+import io.github.loopholetv.ui.parental.LocalPinPrompter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +49,8 @@ fun sortText(sort: GroupSort): String = when (sort) {
 sealed interface ChannelEdit {
     data object Hide : ChannelEdit
     data object Show : ChannelEdit
+    data object Lock : ChannelEdit
+    data object Unlock : ChannelEdit
     data object Rename : ChannelEdit
     data object RestoreName : ChannelEdit
     data object Logo : ChannelEdit
@@ -65,16 +68,21 @@ sealed interface ChannelEdit {
  * (`EditorChannelRow.hidden`), not `visible`: a channel hidden only through its group still
  * offers "Hide channel". The guide and player pass false. "Move" only when [canMove]. [playback]
  * is the channel's observed playback overrides, shown in the decoder and external player rows.
+ * The lock row follows the hide row: "Unlock channel" when [locked], else "Lock channel", and only
+ * when [lockAvailable] (no PIN, or the PIN is entered).
  */
 fun channelEditOptions(
     channel: ChannelEntity,
     hidden: Boolean,
     canMove: Boolean,
     playback: ChannelPlaybackPrefs = ChannelPlaybackPrefs.NONE,
+    locked: Boolean = false,
+    lockAvailable: Boolean = false,
     onPick: (ChannelEdit) -> Unit,
 ): List<ChannelOption> = buildList {
     fun add(label: String, edit: ChannelEdit) = add(ChannelOption(label) { onPick(edit) })
     if (hidden) add("Show channel", ChannelEdit.Show) else add("Hide channel", ChannelEdit.Hide)
+    if (lockAvailable) if (locked) add("Unlock channel", ChannelEdit.Unlock) else add("Lock channel", ChannelEdit.Lock)
     add("Rename", ChannelEdit.Rename)
     if (channel.customName != null) add("Restore original name (${channel.name})", ChannelEdit.RestoreName)
     add("Change logo", ChannelEdit.Logo)
@@ -91,14 +99,24 @@ fun channelEditOptions(
 sealed interface GroupEdit {
     data object Hide : GroupEdit
     data object Show : GroupEdit
+    data object Lock : GroupEdit
+    data object Unlock : GroupEdit
     data object Rename : GroupEdit
     data object Move : GroupEdit
     data object Sort : GroupEdit
 }
 
-fun groupEditOptions(hidden: Boolean, sort: GroupSort, onPick: (GroupEdit) -> Unit): List<ChannelOption> = buildList {
+/** A group's options; the lock row follows the hide row, as in [channelEditOptions]. */
+fun groupEditOptions(
+    hidden: Boolean,
+    sort: GroupSort,
+    locked: Boolean = false,
+    lockAvailable: Boolean = false,
+    onPick: (GroupEdit) -> Unit,
+): List<ChannelOption> = buildList {
     fun add(label: String, edit: GroupEdit) = add(ChannelOption(label) { onPick(edit) })
     if (hidden) add("Show group", GroupEdit.Show) else add("Hide group", GroupEdit.Hide)
+    if (lockAvailable) if (locked) add("Unlock group", GroupEdit.Unlock) else add("Lock group", GroupEdit.Lock)
     add("Rename group", GroupEdit.Rename)
     add("Move group", GroupEdit.Move)
     add("Sort channels (${sortText(sort)})", GroupEdit.Sort)
@@ -133,6 +151,7 @@ val ChannelEntity.currentEpgOverride: String? get() = guideEpgId?.takeIf { it !=
 /** The edits the dialogs make; [ChannelEdits] in the app ([asEditActions]), a fake in tests. */
 interface EditActions {
     suspend fun setHidden(ref: ChannelRef, hidden: Boolean)
+    suspend fun setLocked(ref: ChannelRef, locked: Boolean) = Unit
     suspend fun rename(ref: ChannelRef, name: String?)
     suspend fun setLogo(ref: ChannelRef, url: String?)
     suspend fun setEpgOverride(ref: ChannelRef, epgId: String?)
@@ -142,6 +161,7 @@ interface EditActions {
     suspend fun setExternalPlayer(ref: ChannelRef, choice: String?) = Unit
     suspend fun move(channel: ChannelEntity, direction: Int): Boolean
     suspend fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean)
+    suspend fun setGroupLocked(playlistId: Long, title: String, locked: Boolean) = Unit
     suspend fun renameGroup(playlistId: Long, title: String, name: String?)
     suspend fun moveGroup(playlistId: Long, title: String, direction: Int): Boolean
     suspend fun setGroupSort(playlistId: Long, title: String, sort: GroupSort)
@@ -150,6 +170,7 @@ interface EditActions {
 fun ChannelEdits.asEditActions(): EditActions = object : EditActions {
     private val e = this@asEditActions
     override suspend fun setHidden(ref: ChannelRef, hidden: Boolean) { e.setHidden(ref, hidden) }
+    override suspend fun setLocked(ref: ChannelRef, locked: Boolean) { e.setLocked(ref, locked) }
     override suspend fun rename(ref: ChannelRef, name: String?) { e.rename(ref, name) }
     override suspend fun setLogo(ref: ChannelRef, url: String?) { e.setLogo(ref, url) }
     override suspend fun setEpgOverride(ref: ChannelRef, epgId: String?) { e.setEpgOverride(ref, epgId) }
@@ -160,6 +181,9 @@ fun ChannelEdits.asEditActions(): EditActions = object : EditActions {
     override suspend fun move(channel: ChannelEntity, direction: Int): Boolean = e.move(channel, direction)
     override suspend fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean) {
         e.setGroupHidden(playlistId, title, hidden)
+    }
+    override suspend fun setGroupLocked(playlistId: Long, title: String, locked: Boolean) {
+        e.setGroupLocked(playlistId, title, locked)
     }
     override suspend fun renameGroup(playlistId: Long, title: String, name: String?) { e.renameGroup(playlistId, title, name) }
     override suspend fun moveGroup(playlistId: Long, title: String, direction: Int): Boolean =
@@ -179,6 +203,14 @@ class ChannelEditActions(
 ) {
     fun setHidden(channel: ChannelEntity, hidden: Boolean, onDone: () -> Unit) =
         write(onDone) { edits.setHidden(channel.ref, hidden) }
+
+    /**
+     * Locks or unlocks [channel]. Both first run [ensurePin] (sets a PIN when there is none, or asks for
+     * it; at once while unlocked), so a menu left open across a relock unlocks nothing; when that is not
+     * completed nothing changes.
+     */
+    fun setLocked(channel: ChannelEntity, locked: Boolean, ensurePin: suspend () -> Boolean, onDone: () -> Unit) =
+        write(onDone) { if (ensurePin()) edits.setLocked(channel.ref, locked) }
 
     fun rename(channel: ChannelEntity, text: String, onDone: () -> Unit) =
         write(onDone) { edits.rename(channel.ref, text.cleaned()) }
@@ -217,6 +249,10 @@ class ChannelEditActions(
 
     fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean, onDone: () -> Unit) =
         write(onDone) { edits.setGroupHidden(playlistId, title, hidden) }
+
+    /** Like [setLocked], for a group. */
+    fun setGroupLocked(playlistId: Long, title: String, locked: Boolean, ensurePin: suspend () -> Boolean, onDone: () -> Unit) =
+        write(onDone) { if (ensurePin()) edits.setGroupLocked(playlistId, title, locked) }
 
     fun renameGroup(playlistId: Long, title: String, text: String, onDone: () -> Unit) =
         write(onDone) { edits.renameGroup(playlistId, title, text.cleaned()) }
@@ -282,6 +318,8 @@ internal fun ChannelEditHost(
 ) {
     if (!playbackEditReady(edit, playback)) return
     val saved = playback ?: ChannelPlaybackPrefs.NONE
+    val prompter = if (edit == ChannelEdit.Lock || edit == ChannelEdit.Unlock) LocalPinPrompter.current else null
+    val ensurePin: suspend () -> Boolean = { prompter?.ensurePinThen() ?: false }
     when (edit) {
         null -> Unit
         ChannelEdit.Rename -> TextEntryDialog(
@@ -336,6 +374,8 @@ internal fun ChannelEditHost(
             when (edit) {
                 ChannelEdit.Hide -> actions.setHidden(channel, true, onDone)
                 ChannelEdit.Show -> actions.setHidden(channel, false, onDone)
+                ChannelEdit.Lock -> actions.setLocked(channel, true, ensurePin, onDone)
+                ChannelEdit.Unlock -> actions.setLocked(channel, false, ensurePin, onDone)
                 ChannelEdit.RestoreName -> actions.restoreName(channel, onDone)
                 ChannelEdit.RestoreLogo -> actions.restoreLogo(channel, onDone)
                 else -> onDone() // Move: the caller's move mode
@@ -370,6 +410,8 @@ internal fun GroupEditHost(
     actions: ChannelEditActions,
     onDone: () -> Unit,
 ) {
+    val prompter = if (edit == GroupEdit.Lock || edit == GroupEdit.Unlock) LocalPinPrompter.current else null
+    val ensurePin: suspend () -> Boolean = { prompter?.ensurePinThen() ?: false }
     when (edit) {
         null -> Unit
         GroupEdit.Rename -> TextEntryDialog(
@@ -391,6 +433,8 @@ internal fun GroupEditHost(
             when (edit) {
                 GroupEdit.Hide -> actions.setGroupHidden(playlistId, title, true, onDone)
                 GroupEdit.Show -> actions.setGroupHidden(playlistId, title, false, onDone)
+                GroupEdit.Lock -> actions.setGroupLocked(playlistId, title, true, ensurePin, onDone)
+                GroupEdit.Unlock -> actions.setGroupLocked(playlistId, title, false, ensurePin, onDone)
                 else -> onDone() // Move: the caller's move mode
             }
         }

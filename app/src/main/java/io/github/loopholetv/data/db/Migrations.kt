@@ -247,9 +247,23 @@ val MIGRATION_11_12: Migration = SqlMigration(
     "CREATE TABLE IF NOT EXISTS `vod_provider_details` (`playlistId` INTEGER NOT NULL, `key` TEXT NOT NULL, `plot` TEXT, `cast` TEXT, `genre` TEXT, `rating` REAL, `year` INTEGER, `runtimeMinutes` INTEGER, `backdrop` TEXT, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `key`))",
 )
 
+/**
+ * v12 → v13: the lock flag on channel and group edits, per-show edits (`show_prefs`) and the single
+ * `lock_state` row. SQL matches Room's schema 13 export.
+ */
+val MIGRATION_12_13: Migration = SqlMigration(
+    12,
+    13,
+    "ALTER TABLE `channel_prefs` ADD COLUMN `locked` INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE `group_prefs` ADD COLUMN `locked` INTEGER NOT NULL DEFAULT 0",
+    "CREATE TABLE IF NOT EXISTS `show_prefs` (`playlistId` INTEGER NOT NULL, `showKey` TEXT NOT NULL, `locked` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `showKey`), FOREIGN KEY(`playlistId`) REFERENCES `playlists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+    "CREATE TABLE IF NOT EXISTS `lock_state` (`id` INTEGER NOT NULL, `unlocked` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+    "INSERT INTO `lock_state` (`id`, `unlocked`) VALUES (1, 0)",
+)
+
 val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-    MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
+    MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
 )
 
 /** Runs [statements] in order, via either Room API (support database or driver connection). */

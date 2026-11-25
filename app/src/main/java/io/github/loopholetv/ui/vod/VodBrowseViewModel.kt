@@ -9,6 +9,9 @@ import androidx.paging.cachedIn
 import androidx.paging.map
 import io.github.loopholetv.LoopholeApp
 import io.github.loopholetv.data.db.KeyRef
+import io.github.loopholetv.data.db.failClosed
+import io.github.loopholetv.data.db.isChannelLocked
+import io.github.loopholetv.data.parental.LockState
 import io.github.loopholetv.data.repo.ChannelEdits
 import io.github.loopholetv.data.vod.ALL_SHOWS_GRID_THRESHOLD
 import io.github.loopholetv.data.vod.CategoryRow
@@ -144,15 +147,20 @@ class VodBrowseViewModel(
     /** The remembered Sort & filter choice of this screen, and where a new one is remembered. */
     savedFilter: Flow<VodFilter> = flowOf(VodFilter()),
     private val saveFilter: suspend (VodFilter) -> Unit = {},
+    /** True while the PIN is not entered, so reminders of locked channels stay out of My list. */
+    lockedNow: Flow<Boolean> = flowOf(false),
+    /** Whether a channel has a lock (its own or its group's), whatever the PIN state. */
+    private val channelLocked: suspend (playlistId: Long, channelKey: String) -> Boolean = { _, _ -> false },
 ) : ViewModel() {
     // One pager per category, kept so a row keeps its loaded pages when the category list changes.
     private val titleKind = if (kind == VodKind.MOVIE) TitleKind.FILM else TitleKind.SHOW
 
     private val pagers = HashMap<String?, Flow<PagingData<PosterModel>>>()
 
-    private val reminderCards: Flow<List<PosterModel>> = reminders.map { list ->
+    private val reminderCards: Flow<List<PosterModel>> = combine(reminders, lockedNow) { list, locked ->
         val now = clock()
-        list.filter { it.stop > now }.sortedBy { it.start }.map { it.card(now) }
+        list.filter { it.stop > now && !(locked && channelLocked(it.playlistId, it.channelKey)) }
+            .sortedBy { it.start }.map { it.card(now) }
     }
 
     private val rowSource = (if (kind == VodKind.MOVIE) filmRows() else showRows())
@@ -288,6 +296,17 @@ class VodBrowseViewModel(
         }
     }
 
+    /**
+     * Locks or unlocks [title] in every playlist that has it. Both first run [ensurePin] (sets a PIN when
+     * there is none, or asks for it; at once while unlocked); nothing changes when that is not completed.
+     */
+    fun lockCategory(title: String, locked: Boolean, ensurePin: suspend () -> Boolean) {
+        viewModelScope.launch {
+            if (!ensurePin()) return@launch
+            repo.playlistsWithCategory(title).forEach { edits.setGroupLocked(it, title, locked) }
+        }
+    }
+
     fun showCategory(c: HiddenCategory) {
         viewModelScope.launch { c.playlistIds.forEach { edits.setGroupHidden(it, c.title, false) } }
     }
@@ -359,6 +378,10 @@ class VodBrowseViewModel(
                 hasKey = c.settingsStore.settings.map { c.hasTmdbKey() }.distinctUntilChanged(),
                 savedFilter = c.settingsStore.vodFilter(titleKind),
                 saveFilter = { f -> c.settingsStore.setVodFilter(titleKind, f) },
+                lockedNow = c.parentalLock.state.map { it !is LockState.Unlocked },
+                channelLocked = { playlistId, key ->
+                    failClosed { c.db.lockDao().isChannelLocked(playlistId, key) }
+                },
             ) as T
         }
     }

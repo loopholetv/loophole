@@ -62,7 +62,11 @@ class PlaylistApi(
     /** Keeps on/off writes in the order the phone sent them. */
     private val enabling = Mutex()
 
+    /** Whether a request's phone still has to enter the PIN; set when the routes are registered. */
+    @Volatile private var pinNeeded: suspend (HttpRequest) -> Boolean = { false }
+
     fun register(server: PhoneServer) {
+        pinNeeded = server::pinNeeded
         server.api("GET", PLAYLISTS, handler = ::get)
         server.api("POST", PLAYLISTS, handler = ::post)
         server.api("GET", JOB, handler = ::job)
@@ -86,6 +90,8 @@ class PlaylistApi(
             null -> save(req, res, p)
             "refresh" -> res.sendJob(enqueueRefresh(p))
             else -> {
+                // Deleting a playlist needs the PIN whenever one is set, whatever the Settings lock says.
+                if (action == "delete" && pinNeeded(req)) return res.sendPinRequired()
                 if (jobs.isBusy(p.id)) return res.sendBusy(p)
                 if (action == "delete") deleteAndReply(p, res) else enable(req, res, p)
             }
@@ -136,13 +142,16 @@ class PlaylistApi(
     }
 
     /** An add ([stored] null) or an edit of [stored]. */
-    private fun save(req: HttpRequest, res: HttpResponse, stored: PlaylistEntity?) {
+    private suspend fun save(req: HttpRequest, res: HttpResponse, stored: PlaylistEntity?) {
         val fields = readFields(req) ?: return res.sendError(400, BAD_REQUEST)
         val mode = MODES[fields["mode"]] ?: return res.sendError(400, BAD_REQUEST)
         if (mode == Mode.FILE) return res.sendError(400, TV_ONLY)
         if (stored?.type == PlaylistType.M3U_FILE) return res.sendError(409, TV_ONLY)
+        val input = formInput(mode, fields, stored)
+        // Pointing a playlist somewhere else needs the PIN whenever one is set: the stored login travels with it.
+        if (stored != null && sourceChanged(input, stored) && pinNeeded(req)) return res.sendPinRequired()
         if (stored != null && jobs.isBusy(stored.id)) return res.sendBusy(stored)
-        when (val check = checkPlaylistForm(formInput(mode, fields, stored))) {
+        when (val check = checkPlaylistForm(input)) {
             FormCheck.Incomplete -> res.sendError(400, "incomplete")
             FormCheck.InvalidMac -> res.sendJson(400) {
                 beginObject()
@@ -340,6 +349,20 @@ private fun formInput(mode: Mode, f: Map<String, String?>, stored: PlaylistEntit
         pass = f["pass"] ?: stored.xtreamPass.takeIf { sameXtreamLogin(typed, stored) }.orEmpty(),
         portalPass = f["portalPass"] ?: stored.portalPassword.takeIf { samePortalLogin(typed, stored) }.orEmpty(),
     )
+}
+
+/** Whether [input] points [stored] at a different address, login or portal identity. */
+private fun sourceChanged(input: PlaylistFormInput, stored: PlaylistEntity): Boolean = when {
+    input.mode != modeOf(stored.type) -> true
+    input.mode == Mode.M3U -> input.url.trim() != stored.url.orEmpty().trim()
+    input.mode == Mode.XTREAM -> !sameXtreamLogin(input, stored) || input.pass != stored.xtreamPass.orEmpty()
+    input.mode == Mode.PORTAL ->
+        !samePortalLogin(input, stored) || input.portalPass != stored.portalPassword.orEmpty() ||
+            input.serial.trim() != stored.portalSerial.orEmpty().trim() ||
+            input.deviceId.trim() != stored.portalDeviceId.orEmpty().trim() ||
+            input.deviceId2.trim() != stored.portalDeviceId2.orEmpty().trim() ||
+            input.signature.trim() != stored.portalSignature.orEmpty().trim()
+    else -> true
 }
 
 /** The same Xtream server (as the form normalises it) and user as [stored]'s. */

@@ -5,11 +5,13 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.cast.CastAnnounce
 import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.cast.CastState
 import io.github.loopholetv.cast.CastStatus
 import io.github.loopholetv.cast.CastView
 import io.github.loopholetv.cast.NoCast
+import io.github.loopholetv.data.settings.ParentalSettings
 import io.github.loopholetv.player.PlaybackState
 import io.github.loopholetv.setup.NoSetup
 import io.github.loopholetv.setup.SetupController
@@ -66,7 +68,7 @@ internal fun tvMenu(peer: CastPeer): TvMenu = TvMenu(
     peerId = peer.id,
     name = peer.name,
     actions = listOfNotNull(TvAction.JOIN.takeIf { peer.status == CastStatus.CASTING }, TvAction.COPY_FROM, TvAction.SEND_TO),
-    olderVersion = if (peer.setup < 1) SetupController.olderVersion(peer.name) else null,
+    olderVersion = if (peer.setup < CastAnnounce.SETUP_VERSION) SetupController.olderVersion(peer.name) else null,
 )
 
 fun statusLabel(status: CastStatus): String = when (status) {
@@ -100,7 +102,12 @@ class TvsViewModel(
     private val cast: CastView = NoCast,
     playing: Flow<Boolean> = flowOf(false),
     private val setup: SetupView = NoSetup,
+    /** The PIN: with one, sending a setup asks for it. */
+    parental: Flow<ParentalSettings> = flowOf(ParentalSettings()),
 ) : ViewModel() {
+    // Null until the settings are read: asking then is harmless (nothing to unlock without a PIN).
+    private val guard = parental.stateIn<ParentalSettings?>(viewModelScope, SharingStarted.Eagerly, null)
+
     val ui: StateFlow<TvsUi> = combine(cast.state, playing.distinctUntilChanged(), cast.peers, ::tvsUi)
         .stateIn(viewModelScope, SharingStarted.Eagerly, tvsUi(cast.state.value, false, cast.peers.value))
 
@@ -134,7 +141,7 @@ class TvsViewModel(
         val peer = cast.peers.value.firstOrNull { it.id == id } ?: return false
         val act = when (action) {
             TvAction.JOIN -> peer.status == CastStatus.CASTING
-            TvAction.COPY_FROM, TvAction.SEND_TO -> peer.setup >= 1
+            TvAction.COPY_FROM, TvAction.SEND_TO -> peer.setup >= CastAnnounce.SETUP_VERSION
         }
         if (!act) return false
         when (action) {
@@ -144,6 +151,18 @@ class TvsViewModel(
         }
         menuFor.value = null
         return true
+    }
+
+    /**
+     * True when [action] must be confirmed with the PIN before [onAction]: sending this TV's setup, or joining
+     * a cast of something locked, when it has a PIN (whatever the Settings lock says). The PIN screen answers
+     * at once while the PIN is entered.
+     */
+    fun needsPin(action: TvAction): Boolean = when (action) {
+        TvAction.SEND_TO -> guard.value?.hasPin ?: true
+        TvAction.JOIN -> menuFor.value?.let { id -> cast.peers.value.firstOrNull { it.id == id } }?.locked == true &&
+            (guard.value?.hasPin ?: true)
+        TvAction.COPY_FROM -> false
     }
 
     /** Back to the list. */
@@ -161,6 +180,7 @@ class TvsViewModel(
                     cast = c.castController,
                     playing = c.playback.state.map { it is PlaybackState.Buffering || it is PlaybackState.Playing },
                     setup = c.setup,
+                    parental = c.settingsStore.settings.map { it.parental },
                 ) as T
             }
         }

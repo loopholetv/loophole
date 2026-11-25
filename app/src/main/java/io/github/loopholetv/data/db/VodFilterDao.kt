@@ -131,12 +131,13 @@ fun filterQuery(kind: TitleKind, f: VodFilter, countOnly: Boolean = false): Simp
 /** The tables a grid of films reads (see [VodFilterDao.count], which observes the same ones). */
 internal val FILM_GRID_TABLES = arrayOf(
     "vod_films", "vod_matches", "tmdb_titles", "tmdb_title_genres", "vod_progress", "playlists", "group_prefs", "channel_prefs",
+    "lock_state",
 )
 
 /** Episodes are observed for their progress, which decides which copy of a show is kept. */
 internal val SHOW_GRID_TABLES = arrayOf(
     "vod_shows", "vod_episodes", "vod_matches", "tmdb_titles", "tmdb_title_genres", "vod_progress", "playlists",
-    "group_prefs", "channel_prefs",
+    "group_prefs", "channel_prefs", "show_prefs", "lock_state",
 )
 
 /** The Sort & filter grid: films and shows read with [filterQuery], and the genres to offer. */
@@ -153,7 +154,7 @@ interface VodFilterDao {
         observedEntities = [
             FilmEntity::class, ShowEntity::class, EpisodeEntity::class, VodMatchEntity::class, TmdbTitleEntity::class,
             TmdbTitleGenreEntity::class, VodProgressEntity::class, PlaylistEntity::class, GroupPrefsEntity::class,
-            ChannelPrefsEntity::class,
+            ChannelPrefsEntity::class, ShowPrefsEntity::class, LockStateEntity::class,
         ],
     )
     fun count(q: SupportSQLiteQuery): Flow<Int>

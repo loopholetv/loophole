@@ -165,6 +165,21 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
             padAfterMin = this[PAD_AFTER_MIN].validOr(AppSettings.PAD_CHOICES, d.padAfterMin),
             askedNotifications = this[ASKED_NOTIFICATIONS] ?: d.askedNotifications,
             tmdbKey = this[TMDB_KEY]?.trim() ?: d.tmdbKey,
+            parental = readParental(),
+        )
+    }
+
+    private fun Preferences.readParental(): ParentalSettings {
+        val d = ParentalSettings()
+        val hash = this[PARENTAL_PIN_HASH]?.takeIf { it.isNotBlank() }
+        val salt = this[PARENTAL_PIN_SALT]?.takeIf { it.isNotBlank() }
+        // One without the other can't check anything: no PIN.
+        val both = hash != null && salt != null
+        return ParentalSettings(
+            pinHash = hash.takeIf { both },
+            pinSalt = salt.takeIf { both },
+            unlockMinutes = this[PARENTAL_UNLOCK_MINUTES].validOr(UNLOCK_CHOICES, d.unlockMinutes),
+            settingsLock = this[PARENTAL_SETTINGS_LOCK].validOr(d.settingsLock),
         )
     }
 
@@ -243,6 +258,14 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         this[PAD_AFTER_MIN] = s.padAfterMin
         this[ASKED_NOTIFICATIONS] = s.askedNotifications
         putOrRemove(TMDB_KEY, s.tmdbKey)
+        writeParental(s.parental)
+    }
+
+    private fun MutablePreferences.writeParental(p: ParentalSettings) {
+        putOrRemove(PARENTAL_PIN_HASH, p.pinHash)
+        putOrRemove(PARENTAL_PIN_SALT, p.pinSalt)
+        this[PARENTAL_UNLOCK_MINUTES] = p.unlockMinutes
+        this[PARENTAL_SETTINGS_LOCK] = p.settingsLock.name
     }
 
     private fun MutablePreferences.writeRemote(r: RemoteSettings) {
@@ -359,6 +382,10 @@ class SettingsStore(private val store: DataStore<Preferences>) : VodFillFlags, P
         val PAD_AFTER_MIN = intPreferencesKey("pad_after_min")
         val ASKED_NOTIFICATIONS = booleanPreferencesKey("asked_notifications")
         val TMDB_KEY = stringPreferencesKey("tmdbKey")
+        val PARENTAL_PIN_HASH = stringPreferencesKey("parental_pin_hash")
+        val PARENTAL_PIN_SALT = stringPreferencesKey("parental_pin_salt")
+        val PARENTAL_UNLOCK_MINUTES = intPreferencesKey("parental_unlock_minutes")
+        val PARENTAL_SETTINGS_LOCK = stringPreferencesKey("parental_settings_lock")
         val VOD_FILTER_MOVIES = stringPreferencesKey("vodFilterMovies")
         val VOD_FILTER_SERIES = stringPreferencesKey("vodFilterSeries")
         val EPG_PAST_DAYS_AUTO_APPLIED = booleanPreferencesKey("epg_past_days_auto_applied")

@@ -92,6 +92,15 @@ class RecordingRunnerTest {
         db.close()
     }
 
+    @Test fun notificationNamesNothingForALockedChannel() = runBlocking {
+        val id = book(title = "Secret Show")
+        db.channelPrefsDao().upsert(io.github.loopholetv.data.db.ChannelPrefsEntity(playlistA, "a1", locked = true))
+        recorder.script = { writes(10); RecordOutcome.Finished(10, 0) }
+        runner.begin(id)
+        runner.awaitIdle()
+        assertEquals(listOf("A recording"), service.titles)
+    }
+
     // --- outcomes ---
 
     @Test fun successfulRunIsDone() = runBlocking {
@@ -772,7 +781,8 @@ class RecordingRunnerTest {
 
     private class FakeService : RecordingServiceControl {
         val events = CopyOnWriteArrayList<String>()
-        override fun started(id: Long, title: String) { events += "started $id" }
+        val titles = CopyOnWriteArrayList<String>()
+        override fun started(id: Long, title: String) { events += "started $id"; titles += title }
         override fun ended(id: Long) { events += "ended $id" }
     }
 }

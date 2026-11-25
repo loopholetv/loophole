@@ -147,6 +147,19 @@ class CastingResolverTest {
         assertEquals(1, inner.keepAlives)
     }
 
+    @Test fun theSessionCarriesTheChannelsLockMarkWhateverThisTvsState() = runBlocking {
+        var locked = true
+        resolver = CastingResolver(inner, host, isLocked = { locked })
+        provider.enqueue(live())
+        provider.enqueue(live())
+        host.start()
+        resolver.resolve(channel)
+        assertTrue(host.active.value!!.locked)
+        locked = false
+        resolver.resolve(channel)
+        assertEquals(false, host.active.value!!.locked)
+    }
+
     @Test fun hlsStreamGoesThroughHlsRelay() = runBlocking {
         inner.url = provider.url("/live/7.m3u8").toString()
         // Busy, and busy again when asked once more.

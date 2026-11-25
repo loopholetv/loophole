@@ -3,6 +3,7 @@ package io.github.loopholetv.ui.vod
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.loopholetv.data.settings.AspectMode
+import io.github.loopholetv.data.db.failClosed
 import io.github.loopholetv.data.vod.SAVE_INTERVAL_MS
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.VodPlayable
@@ -64,6 +65,8 @@ class VodPlayerViewModel(
     private val beforePlay: suspend (VodRef) -> Boolean = { true },
     /** Fetches the show's episodes again when an episode has no next one stored, so a new one is found. */
     private val prefetchNext: suspend (VodRef) -> Unit = {},
+    /** Whether an episode is locked while the PIN is not entered; such an episode is never the next one. */
+    private val isLocked: suspend (VodRef) -> Boolean = { false },
     private val nowMs: () -> Long,
 ) : ViewModel() {
     private val _bar = MutableStateFlow<VodBarUi?>(null)
@@ -142,6 +145,8 @@ class VodPlayerViewModel(
             lastPositionMs = startMs
             return
         }
+        // Locked while the PIN is off (e.g. after leaving the app): behaves as if it were gone.
+        if (failClosed { isLocked(r) }) return exit()
         if (!beforePlay(r) || finished || r != current) return
         playback.playVod(item, startMs)
     }
@@ -180,7 +185,7 @@ class VodPlayerViewModel(
     private suspend fun nextOf(r: VodRef): VodRef? = if (nextKnown && r == current) nextRef else nextSafely(r)
 
     private suspend fun nextSafely(r: VodRef): VodRef? = try {
-        next(r)
+        next(r)?.takeUnless { isLocked(it) }
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
@@ -424,6 +429,7 @@ class VodPlayerViewModel(
         val item = playable ?: return
         val r = current
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (failClosed { isLocked(r) }) return@launch exit()
             if (beforePlay(r) && !finished && r == current) playback.playVod(item, lastPositionMs)
         }
     }

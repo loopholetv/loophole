@@ -18,16 +18,45 @@ abstract class MaintenanceDao {
     @Query("SELECT `key`, name, groupTitle AS `group` FROM channels WHERE playlistId = :playlistId")
     abstract suspend fun keyNameGroups(playlistId: Long): List<KeyNameGroup>
 
-    /** Moves [from]'s edits, favourite and history to [to]. A row already present for [to] wins. */
+    /**
+     * Moves [from]'s edits, favourite and history to [to]. A row already present for [to] wins, except that
+     * a lock on [from] is kept on it ([movePrefs]).
+     */
     @Transaction
     open suspend fun rekey(playlistId: Long, from: String, to: String) {
-        rekeyPrefs(playlistId, from, to)
+        movePrefs(playlistId, from, to)
         rekeyFavourites(playlistId, from, to)
         rekeyHistory(playlistId, from, to)
     }
 
+    /**
+     * Moves a film's edits (its lock and hide; a film's key is its channel key) from [from] to [to], as
+     * [movePrefs] does.
+     */
+    @Transaction
+    open suspend fun rekeyFilmPrefs(playlistId: Long, from: String, to: String) = movePrefs(playlistId, from, to)
+
+    /**
+     * Moves [from]'s prefs row to [to]. When [to] already has one, that row wins but is locked if [from]'s
+     * was (fail closed), and [from]'s leftover is removed so it isn't counted as another lock.
+     */
+    private suspend fun movePrefs(playlistId: Long, from: String, to: String) {
+        keepLock(playlistId, from, to)
+        rekeyPrefs(playlistId, from, to)
+        deletePrefs(playlistId, from)
+    }
+
     @Query("UPDATE OR IGNORE channel_prefs SET channelKey = :to WHERE playlistId = :playlistId AND channelKey = :from")
     protected abstract suspend fun rekeyPrefs(playlistId: Long, from: String, to: String)
+
+    @Query("DELETE FROM channel_prefs WHERE playlistId = :playlistId AND channelKey = :key")
+    protected abstract suspend fun deletePrefs(playlistId: Long, key: String)
+
+    @Query(
+        """UPDATE channel_prefs SET locked = 1 WHERE playlistId = :playlistId AND channelKey = :to AND EXISTS
+           (SELECT 1 FROM channel_prefs WHERE playlistId = :playlistId AND channelKey = :from AND locked = 1)""",
+    )
+    protected abstract suspend fun keepLock(playlistId: Long, from: String, to: String)
 
     @Query("UPDATE OR IGNORE favourites SET channelKey = :to WHERE playlistId = :playlistId AND channelKey = :from")
     protected abstract suspend fun rekeyFavourites(playlistId: Long, from: String, to: String)

@@ -10,7 +10,10 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.work.WorkManager
 import io.github.loopholetv.data.db.ALL_MIGRATIONS
+import io.github.loopholetv.data.db.LOCK_STATE_SEED
 import io.github.loopholetv.data.db.AppDatabase
+import io.github.loopholetv.data.db.isChannelLocked
+import io.github.loopholetv.data.db.isChannelLockedNow
 import io.github.loopholetv.data.repo.EpgRepository
 import io.github.loopholetv.data.repo.epgStoreOptions
 import io.github.loopholetv.data.repo.FavouritesRepository
@@ -28,6 +31,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import io.github.loopholetv.data.xtream.XtreamClient
 import io.github.loopholetv.player.HistoryRecorder
 import io.github.loopholetv.player.Playback
@@ -46,6 +50,7 @@ class AppContainer(context: Context) {
             // playlist refresh transaction would then block every read; WAL keeps readers going.
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
             .addMigrations(*ALL_MIGRATIONS)
+            .addCallback(LOCK_STATE_SEED)
             .build()
     }
 
@@ -176,6 +181,8 @@ class AppContainer(context: Context) {
             rearm = { recordAlarms.rearm() },
             service = recordingServiceControl,
             startLock = io.github.loopholetv.record.PowerStartWakeLock(appContext),
+            isUnlocked = { parentalLock.isUnlocked },
+            noPin = { parentalLock.state.value is io.github.loopholetv.data.parental.LockState.NoPin },
         ).also { c -> recordingRunner.runGate = { id, fromArchive -> c.startBudgeted(id, fromArchive) } }
     }
 
@@ -204,6 +211,9 @@ class AppContainer(context: Context) {
             ),
             launch = { ref ->
                 appContext.startActivity(io.github.loopholetv.record.playChannelIntent(appContext, ref))
+            },
+            lockedNow = { ref ->
+                with(db.lockDao()) { isChannelLockedNow(parentalLock.isUnlocked, ref.playlistId, ref.key) }
             },
         )
     }
@@ -295,7 +305,11 @@ class AppContainer(context: Context) {
 
     /** Stream addresses for the player: through this TV's relay while it casts, else straight. */
     internal val playbackResolver: io.github.loopholetv.player.StreamResolver by lazy {
-        io.github.loopholetv.cast.CastingResolver(directResolver, castHost)
+        io.github.loopholetv.cast.CastingResolver(
+            directResolver, castHost,
+            // The host's own lock flags, whether or not this TV is unlocked: it is the receiver's state that counts.
+            isLocked = { ch -> io.github.loopholetv.data.db.failClosed { db.lockDao().isChannelLocked(ch.playlistId, ch.key) } },
+        )
     }
 
     /** The one player for the app lifetime (never released). */
@@ -407,6 +421,23 @@ class AppContainer(context: Context) {
 
     /** The user's channel, group and playlist edits (each one transaction). */
     val channelEdits: io.github.loopholetv.data.repo.ChannelEdits by lazy { io.github.loopholetv.data.repo.ChannelEdits(db, channelOverlay) }
+
+    private val parentalScope: kotlinx.coroutines.CoroutineScope by lazy {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+    }
+
+    /** The PIN and the unlock period. */
+    val parentalLock: io.github.loopholetv.data.parental.ParentalLock by lazy {
+        io.github.loopholetv.data.parental.ParentalLock(
+            settingsStore, channelEdits, channelOverlay, parentalScope, System::currentTimeMillis,
+        )
+    }
+
+    /**
+     * Completes once locked channels are hidden again after the previous run. Started by
+     * [LoopholeApp] at process start; the first screen waits for it before reading channels.
+     */
+    val parentalReady: kotlinx.coroutines.Deferred<Unit> by lazy { parentalScope.async { parentalLock.startLocked() } }
 
     /** Local M3U files; last-good copies in filesDir/sources/<playlistId>.m3u. */
     internal val localM3u: io.github.loopholetv.data.repo.LocalM3uOpener by lazy { io.github.loopholetv.data.repo.LocalM3uOpener(appContext.contentResolver, java.io.File(appContext.filesDir, "sources")) }
@@ -549,6 +580,9 @@ class AppContainer(context: Context) {
             storageFor = { row -> row.storageId?.let { storageFactory.byId(it, settingsStore.current()) } },
             port = { castServer.port },
             allowShare = { castAllowJoin.value },
+            channelLocked = { r ->
+                io.github.loopholetv.data.db.failClosed { db.lockDao().isChannelLocked(r.playlistId, r.channelKey) }
+            },
         ).also { it.install(castServer) }
     }
 
@@ -600,6 +634,21 @@ class AppContainer(context: Context) {
             tvName = { io.github.loopholetv.data.settings.defaultTvName(appContext) },
             clock = System::currentTimeMillis,
             canAutoJoin = { autoJoinHold.allows() },
+            // The controller can start before the start-up relock has finished.
+            playingLocked = {
+                val id = when (val st = playback.state.value) {
+                    is io.github.loopholetv.player.PlaybackState.Buffering -> st.channelId
+                    is io.github.loopholetv.player.PlaybackState.Playing -> st.channelId
+                    is io.github.loopholetv.player.PlaybackState.Error -> st.channelId
+                    io.github.loopholetv.player.PlaybackState.Idle -> null
+                }
+                val ch = id?.let { db.channelDao().byId(it) }
+                ch != null && io.github.loopholetv.data.db.failClosed { db.lockDao().isChannelLocked(ch.playlistId, ch.key) }
+            },
+            lockedNow = {
+                parentalReady.await()
+                parentalLock.hasPin() && !parentalLock.isUnlocked
+            },
             holdWifi = io.github.loopholetv.cast.castWifiHold(appContext),
             watchNetwork = io.github.loopholetv.cast.defaultNetworkChanges(appContext),
             recToken = recordingsRoute.announced(castScope, db.recordDao().observeRecordings()),
@@ -635,6 +684,11 @@ class AppContainer(context: Context) {
                 }
             },
             tvName = { settingsStore.current().castTvName ?: io.github.loopholetv.data.settings.defaultTvName(appContext) },
+            parental = io.github.loopholetv.phone.PhoneParental(
+                ready = { parentalReady.await() },
+                settings = { settingsStore.current().parental },
+                matches = { parentalLock.matches(it) },
+            ),
         ).also {
             playlistApi.register(it)
             channelsApi.register(it)
@@ -712,6 +766,9 @@ class AppContainer(context: Context) {
                 serialize = playlistRepository::exclusive,
                 // The copied playlists' titles are new to this TV: look them up too.
                 onReplaced = { io.github.loopholetv.work.afterSetupReplaced({ recordAlarms.rearm() }) { kickTmdbIfKey() } },
+                // The copied PIN and locks start locked, before the copy is reported done.
+                startLocked = parentalLock::startLocked,
+                lockForImport = parentalLock::lockForImport,
             )::import,
             stageFile = opener::newTemp,
             clock = android.os.SystemClock::elapsedRealtime,
@@ -726,6 +783,9 @@ class AppContainer(context: Context) {
                 )
             },
             hasPlaylists = { db.setupDao().hasPlaylists() },
+            hasPin = parentalLock::hasPin,
+            isUnlocked = { parentalLock.isUnlocked },
+            checkPin = parentalLock::check,
         ).also { it.register() }
     }
 

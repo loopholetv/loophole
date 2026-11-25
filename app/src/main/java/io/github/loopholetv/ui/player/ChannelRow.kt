@@ -36,6 +36,8 @@ import io.github.loopholetv.data.db.displayName
 import io.github.loopholetv.data.db.ref
 import io.github.loopholetv.ui.common.okPress
 import io.github.loopholetv.ui.guide.tryFocus
+import io.github.loopholetv.ui.parental.LocalLockMarks
+import io.github.loopholetv.ui.parental.Padlock
 import io.github.loopholetv.ui.theme.Tokens
 import kotlinx.coroutines.delay
 
@@ -184,6 +186,9 @@ private fun ChannelTile(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 8.dp).weight(1f, fill = false),
             )
+            if (LocalLockMarks.current.channelOrGroup(channel.playlistId, channel.key, channel.groupTitle)) {
+                Padlock(Modifier.padding(start = 4.dp))
+            }
             if (favourite) FavouriteStar(MaterialTheme.typography.labelLarge, Modifier.padding(start = 4.dp))
         }
         Text(

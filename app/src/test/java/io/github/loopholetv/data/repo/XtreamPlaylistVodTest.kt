@@ -488,4 +488,31 @@ class XtreamPlaylistVodTest {
         assertProgressAndListKept(id)
         assertEquals("pass2", playlist(id).xtreamPass)
     }
+
+    @Test fun locksFollowTitlesTheProviderGaveNewIds() = runTest {
+        val id = addXtream()
+        db.channelPrefsDao().upsert(io.github.loopholetv.data.db.ChannelPrefsEntity(id, "xm:1", locked = true))
+        db.lockDao().upsertShowPrefs(io.github.loopholetv.data.db.ShowPrefsEntity(id, "xs:3", locked = true))
+
+        // A new address for the account: the same titles come back under new ids.
+        answer("get_vod_streams", """[{"stream_id":11,"name":"Film 1","category_id":"1"},{"stream_id":2,"name":"Film 2","category_id":"1"}]""")
+        answer("get_series", """[{"series_id":13,"name":"Show 3","category_id":"2"}]""")
+        successOf(repo.updateSource(id, SourceEdit.Xtream(creds(pass = "pass2"))) {})
+
+        assertEquals(setOf("xm:11", "xm:2"), filmKeys(id))
+        assertEquals(setOf("xs:13"), showKeys(id))
+        assertTrue(db.lockDao().filmLocked(id, "xm:11"))
+        assertTrue(db.lockDao().showLocked(id, "xs:13"))
+        // Moved, not copied: each counts once.
+        assertNull(db.channelPrefsDao().get(id, "xm:1"))
+        assertNull(db.lockDao().showPrefs(id, "xs:3"))
+        assertEquals(io.github.loopholetv.data.db.LockCounts(0, 0, 1, 1), db.lockDao().counts().first())
+
+        // And back to the old ids: the locks follow again.
+        vod(films = listOf(1, 2), shows = listOf(3))
+        successOf(repo.updateSource(id, SourceEdit.Xtream(creds(pass = "pass1"))) {})
+        assertTrue(db.lockDao().filmLocked(id, "xm:1"))
+        assertTrue(db.lockDao().showLocked(id, "xs:3"))
+        assertEquals(io.github.loopholetv.data.db.LockCounts(0, 0, 1, 1), db.lockDao().counts().first())
+    }
 }

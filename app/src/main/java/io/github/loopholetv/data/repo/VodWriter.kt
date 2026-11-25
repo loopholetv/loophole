@@ -4,9 +4,12 @@ import io.github.loopholetv.data.db.ChannelPrefsDao
 import io.github.loopholetv.data.db.ChannelPrefsEntity
 import io.github.loopholetv.data.db.EpisodeEntity
 import io.github.loopholetv.data.db.FilmEntity
+import io.github.loopholetv.data.db.LockDao
 import io.github.loopholetv.data.db.ShowEntity
+import io.github.loopholetv.data.db.ShowPrefsEntity
 import io.github.loopholetv.data.db.VodWriteDao
 import io.github.loopholetv.data.vod.EpisodeShowInput
+import io.github.loopholetv.data.vod.ShowAssignment
 import io.github.loopholetv.data.vod.VodKind
 import io.github.loopholetv.data.vod.assignShows
 import io.github.loopholetv.data.vod.parseEpisodeNumber
@@ -27,7 +30,8 @@ import java.time.Instant
  *
  * New episodes get a provisional show key from their group while streaming; existing ones keep
  * their stored key. [finish] assigns the real shows once every episode is known and updates only
- * the episodes whose show changed.
+ * the episodes whose show changed. A show's lock (in [locks]) follows its stored episodes to their new
+ * show key.
  */
 internal class VodWriter(
     private val dao: VodWriteDao,
@@ -35,6 +39,7 @@ internal class VodWriter(
     private val playlistId: Long,
     private val now: Instant,
     private val rekey: Boolean = false,
+    private val locks: LockDao? = null,
 ) {
     private var storedFilms: Map<String, Instant>? = null
     private var storedEpisodes: Map<String, Instant>? = null
@@ -220,6 +225,7 @@ internal class VodWriter(
     private suspend fun rebuildShows() {
         val rows = dao.episodesForShows(playlistId)
         val assigned = assignShows(rows.map { EpisodeShowInput(it.key, it.groupTitle, it.name) })
+        carryShowLocks(rows.map { it.key }, assigned)
         for (r in rows) {
             val show = assigned.getValue(r.key).showKey
             if (show != r.showKey) dao.setShowKey(playlistId, r.key, show)
@@ -240,6 +246,27 @@ internal class VodWriter(
             )
         }
         shows.chunked(BATCH_SIZE).forEach { dao.insertShows(it) }
+    }
+
+    /**
+     * A show key can change on a refresh (a group turning from one show into a category of several, and
+     * back). A new show is locked when any stored episode of it was in a locked show, so no lock is lost.
+     * An old key that no longer names a show has had its lock carried, and its row is removed.
+     */
+    private suspend fun carryShowLocks(episodeKeys: List<String>, assigned: Map<String, ShowAssignment>) {
+        val locks = locks ?: return
+        val locked = locks.lockedShowKeys(playlistId).toHashSet()
+        if (locked.isEmpty()) return
+        val carried = HashSet<String>()
+        for (key in episodeKeys) {
+            val old = storedShowKeys[key] ?: continue
+            val new = assigned.getValue(key).showKey
+            if (old == new || old !in locked) continue
+            if (locked.add(new)) locks.upsertShowPrefs(ShowPrefsEntity(playlistId, new, locked = true))
+            carried += old
+        }
+        val shows = assigned.values.mapTo(HashSet()) { it.showKey }
+        for (old in carried) if (old !in shows) locks.deleteShowPrefs(playlistId, old)
     }
 
     /**

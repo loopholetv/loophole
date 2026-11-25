@@ -33,6 +33,10 @@ data class RemoteRecording(
     val bytes: Long,
     val recording: Boolean,
     val durationMs: Long,
+    /** The serving TV locks this recording's channel. Only meaningful when [lockKnown]. */
+    val locked: Boolean = false,
+    /** The list carried a `locked` field; an older TV's does not, and its recordings are matched by channel name. */
+    val lockKnown: Boolean = false,
 ) {
     companion object {
         /** Null on anything that isn't a list of recordings. Unknown keys are ignored. */
@@ -71,6 +75,8 @@ data class RemoteRecording(
                 stop = long("stop"), state = text("state"), reason = text("reason"), bytes = long("bytes"),
                 recording = m["recording"] as? Boolean ?: throw JsonDataException("recording"),
                 durationMs = long("durationMs"),
+                locked = m["locked"] as? Boolean ?: false,
+                lockKnown = m["locked"] is Boolean,
             )
         }
     }

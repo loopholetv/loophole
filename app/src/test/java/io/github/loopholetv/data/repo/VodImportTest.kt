@@ -6,6 +6,7 @@ import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.ChannelPrefsEntity
 import io.github.loopholetv.data.db.KeyRef
 import io.github.loopholetv.data.db.MyListEntity
+import io.github.loopholetv.data.db.ShowPrefsEntity
 import io.github.loopholetv.data.vod.TitleKind
 import kotlinx.coroutines.flow.first
 import io.github.loopholetv.data.db.channel
@@ -278,6 +279,67 @@ class VodImportTest {
         success(repo.updateSource(id, SourceEdit.M3uUrl(server.url("/list.m3u").toString())) {})
 
         assertEquals(listOf(KeyRef(id, "http://new.test/movie/m1.mp4")), db.vodLibraryDao().observeListKeys(TitleKind.FILM).first())
+    }
+
+    @Test fun filmLockAndHideFollowTheFilmOnAddressChange() = runTest {
+        val id = add(res("vod.m3u"))
+        db.channelPrefsDao().upsert(ChannelPrefsEntity(id, "http://s.test/movie/m1.mp4", locked = true))
+        db.channelPrefsDao().upsert(ChannelPrefsEntity(id, "http://s.test/movie/m2.mp4", hidden = true))
+
+        enqueue(res("vod.m3u").replace("http://s.test/", "http://new.test/"))
+        success(repo.updateSource(id, SourceEdit.M3uUrl(server.url("/list.m3u").toString())) {})
+
+        assertEquals(true, db.channelPrefsDao().get(id, "http://new.test/movie/m1.mp4")?.locked)
+        assertEquals(true, db.channelPrefsDao().get(id, "http://new.test/movie/m2.mp4")?.hidden)
+        assertTrue(db.lockDao().filmLocked(id, "http://new.test/movie/m1.mp4"))
+        assertNull(db.channelPrefsDao().get(id, "http://s.test/movie/m1.mp4"))
+
+        // And back again, the lock still on.
+        enqueue(res("vod.m3u"))
+        success(repo.updateSource(id, SourceEdit.M3uUrl(server.url("/list.m3u").toString())) {})
+        assertTrue(db.lockDao().filmLocked(id, "http://s.test/movie/m1.mp4"))
+        assertNull(db.channelPrefsDao().get(id, "http://new.test/movie/m1.mp4"))
+    }
+
+    @Test fun showLockFollowsItsEpisodesWhenTheShowKeyChanges() = runTest {
+        fun ep(show: String, n: Int) =
+            "#EXTINF:-1 tvg-type=\"series\" group-title=\"Box\",$show S01E0$n\nhttp://s.test/series/$show$n.mp4\n"
+        val id = add("#EXTM3U\n" + ep("Alpha", 1) + ep("Alpha", 2))
+        assertEquals(listOf("g:Box"), db.vodWriteDao().episodesForShows(id).map { it.showKey }.distinct())
+        db.lockDao().upsertShowPrefs(ShowPrefsEntity(id, "g:Box", locked = true))
+
+        // Another show joins the group: the group becomes a category, each show keyed by its name.
+        refresh(id, "#EXTM3U\n" + ep("Alpha", 1) + ep("Alpha", 2) + ep("Beta", 1))
+        val alpha = "n:Box\u001Falpha"
+        val beta = "n:Box\u001Fbeta"
+        assertEquals(setOf(alpha, beta), db.vodWriteDao().episodesForShows(id).map { it.showKey }.toSet())
+        assertTrue(db.lockDao().showLocked(id, alpha))
+        // Beta's episodes are new: they never were in a locked show.
+        assertEquals(false, db.lockDao().showLocked(id, beta))
+        // The old key names no show any more; its lock moved, so it is counted once.
+        assertNull(db.lockDao().showPrefs(id, "g:Box"))
+        assertEquals(1, db.lockDao().counts().first().shows)
+
+        // And back: the lock follows again.
+        refresh(id, "#EXTM3U\n" + ep("Alpha", 1) + ep("Alpha", 2))
+        assertTrue(db.lockDao().showLocked(id, "g:Box"))
+        assertEquals(1, db.lockDao().counts().first().shows)
+    }
+
+    @Test fun showLockSurvivesAnAddressChange() = runTest {
+        val id = add(res("vod.m3u"))
+        db.lockDao().upsertShowPrefs(ShowPrefsEntity(id, "g:Alpha", locked = true))
+
+        enqueue(res("vod.m3u").replace("http://s.test/", "http://new.test/"))
+        success(repo.updateSource(id, SourceEdit.M3uUrl(server.url("/list.m3u").toString())) {})
+        // An M3U show is keyed by its group and name, not its stream addresses: the key and its lock stay.
+        assertEquals(setOf("g:Alpha"), db.vodWriteDao().episodesForShows(id).map { it.showKey }.toSet())
+        assertTrue(db.lockDao().showLocked(id, "g:Alpha"))
+
+        enqueue(res("vod.m3u"))
+        success(repo.updateSource(id, SourceEdit.M3uUrl(server.url("/list.m3u").toString())) {})
+        assertTrue(db.lockDao().showLocked(id, "g:Alpha"))
+        assertEquals(1, db.lockDao().counts().first().shows)
     }
 
     @Test fun addressChangeDoesNotMakeEverythingRecentlyAdded() = runTest {

@@ -19,12 +19,17 @@ import kotlinx.coroutines.CancellationException
  * still connected. [CastHost.open] checks the cast again after [inner] resolves (that can take a
  * while), so a cast that ended meanwhile gets the real stream.
  */
-class CastingResolver(internal val inner: StreamResolver, private val host: CastHost) : StreamResolver {
+class CastingResolver(
+    internal val inner: StreamResolver,
+    private val host: CastHost,
+    /** Whether the channel is locked on this TV, whatever this TV's unlock state; a failed lookup counts as locked. */
+    private val isLocked: suspend (ChannelEntity) -> Boolean = { false },
+) : StreamResolver {
     override suspend fun resolve(channel: ChannelEntity): ResolvedStream {
         if (host.active.value == null) return inner.resolve(channel)
         host.detach()
         val real = idleOnFailure { inner.resolve(channel) }
-        return relay(real, archive = false)
+        return relay(real, archive = false, locked = isLocked(channel))
     }
 
     override suspend fun resolveArchive(channel: ChannelEntity, request: ArchiveRequest, now: Instant): ResolvedStream? {
@@ -35,7 +40,7 @@ class CastingResolver(internal val inner: StreamResolver, private val host: Cast
             host.idle()
             return null
         }
-        return relay(real, archive = true)
+        return relay(real, archive = true, locked = isLocked(channel))
     }
 
     /** Films and episodes are never relayed: other TVs only follow live and archive streams. */
@@ -56,6 +61,6 @@ class CastingResolver(internal val inner: StreamResolver, private val host: Cast
         throw e
     }
 
-    private suspend fun relay(real: ResolvedStream, archive: Boolean): ResolvedStream =
-        host.open(real, hls = isHlsUrl(real.url.toUri()), archive = archive)
+    private suspend fun relay(real: ResolvedStream, archive: Boolean, locked: Boolean): ResolvedStream =
+        host.open(real, hls = isHlsUrl(real.url.toUri()), archive = archive, locked = locked)
 }

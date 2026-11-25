@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -36,6 +37,7 @@ import androidx.tv.material3.Text
 import io.github.loopholetv.cast.CastStatus
 import io.github.loopholetv.ui.theme.Tokens
 import io.github.loopholetv.ui.settings.focusSoon
+import kotlinx.coroutines.launch
 
 /**
  * The TVs panel (right side, opened from the side menu): this TV first, then the other TVs by
@@ -47,10 +49,13 @@ import io.github.loopholetv.ui.settings.focusSoon
 @Composable
 fun TvsPanel(
     onClose: () -> Unit,
+    /** Asked before an action the "All of Settings" lock guards (sending a setup); false cancels it. */
+    askPin: suspend () -> Boolean = { true },
     vm: TvsViewModel = viewModel(factory = TvsViewModel.Factory),
 ) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val menu by vm.menu.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     val selfFocus = remember { FocusRequester() }
     var focusedKey by remember { mutableStateOf<String?>(null) }
     /** The row to focus once the list is back after the menu. */
@@ -86,7 +91,9 @@ fun TvsPanel(
         Spacer(Modifier.height(16.dp))
         val open = menu
         if (open != null) {
-            TvMenuList(open, onAction = { if (vm.onAction(it)) onClose() })
+            TvMenuList(open, onAction = { action ->
+                scope.launch { if (!vm.needsPin(action) || askPin()) { if (vm.onAction(action)) onClose() } }
+            })
             return@Column
         }
         Column(

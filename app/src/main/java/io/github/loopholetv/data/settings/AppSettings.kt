@@ -31,6 +31,27 @@ const val AUTO_PAST_DAYS = -1
 fun effectivePastDays(setting: Int, maxCatchupDays: Int?): Int =
     if (setting == AUTO_PAST_DAYS) (maxCatchupDays ?: 0).coerceIn(0, 7) else setting
 
+/** Minutes the PIN stays entered; `0` is "until you leave Loophole". */
+val UNLOCK_CHOICES = listOf(5, 15, 30, 60, 0)
+
+/** Which parts of Settings ask for the PIN to open. */
+enum class SettingsLock { OFF, ALL, PLAYLISTS_EPG }
+
+/** The PIN (as a salted hash) and what it guards. */
+data class ParentalSettings(
+    val pinHash: String? = null,
+    val pinSalt: String? = null,
+    /** One of [UNLOCK_CHOICES]. */
+    val unlockMinutes: Int = 15,
+    val settingsLock: SettingsLock = SettingsLock.OFF,
+) {
+    val hasPin: Boolean get() = pinHash != null && pinSalt != null
+
+    /** Leaves out the hash and the salt. */
+    override fun toString(): String =
+        "ParentalSettings(hasPin=$hasPin, unlockMinutes=$unlockMinutes, settingsLock=$settingsLock)"
+}
+
 /** User-tunable settings. Interval value `0` means Off. */
 data class AppSettings(
     val playlistUpdateHours: Int = 24,
@@ -79,8 +100,9 @@ data class AppSettings(
     val askedNotifications: Boolean = false,
     /** The user's own TMDB key (a v3 API key or v4 read token); empty when none. Never shown or logged. */
     val tmdbKey: String = "",
+    val parental: ParentalSettings = ParentalSettings(),
 ) {
-    /** Leaves out the SMB password and the TMDB key. */
+    /** Leaves out the SMB password and the TMDB key; [parental] masks its own hash and salt. */
     override fun toString(): String =
         "AppSettings(playlistUpdateHours=$playlistUpdateHours, playlistUpdateOnStart=$playlistUpdateOnStart, " +
             "epgUpdateHours=$epgUpdateHours, epgUpdateOnStart=$epgUpdateOnStart, " +
@@ -92,7 +114,7 @@ data class AppSettings(
             "recordStorage=$recordStorage, smbHost=$smbHost, smbShare=$smbShare, smbFolder=$smbFolder, " +
             "smbUser=$smbUser, smbDomain=$smbDomain, nfsHost=$nfsHost, nfsExport=$nfsExport, nfsFolder=$nfsFolder, " +
             "usbTreeUri=$usbTreeUri, reminderLeadMin=$reminderLeadMin, reminderAutoSwitch=$reminderAutoSwitch, " +
-            "padBeforeMin=$padBeforeMin, padAfterMin=$padAfterMin, askedNotifications=$askedNotifications)"
+            "padBeforeMin=$padBeforeMin, padAfterMin=$padAfterMin, askedNotifications=$askedNotifications, parental=$parental)"
 
     companion object {
         val PAD_CHOICES = listOf(0, 1, 2, 5, 10, 15, 30)

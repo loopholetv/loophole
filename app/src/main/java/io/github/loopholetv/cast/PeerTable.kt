@@ -48,7 +48,7 @@ class PeerTable(
             }
             byId[a.id] = CastPeer(
                 a.id, a.name.takeCodePoints(MAX_NAME), host, a.port, a.status, a.accepts, a.castId,
-                a.token, a.castStartedAtMs, clock(), a.setup, a.rec,
+                a.token, a.castStartedAtMs, clock(), a.setup, a.rec, a.locked,
             )
             seqById[a.id] = a.seq
             publish()

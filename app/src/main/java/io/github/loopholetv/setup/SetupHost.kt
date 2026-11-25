@@ -2,6 +2,7 @@ package io.github.loopholetv.setup
 
 import com.squareup.moshi.JsonReader
 import com.squareup.moshi.JsonWriter
+import io.github.loopholetv.cast.CastAnnounce
 import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.cast.net.HttpRequest
 import io.github.loopholetv.cast.net.HttpResponse
@@ -16,6 +17,7 @@ import java.net.Inet6Address
 import java.net.InetAddress
 import java.security.SecureRandom
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -56,6 +58,10 @@ class SetupHost internal constructor(
     private val listener: Listener,
     /** Whether this TV has a playlist; one without any is asked for its setup in vain. */
     private val hasPlaylists: suspend () -> Boolean,
+    /** Whether this TV has a PIN, which then confirms a received setup before it replaces this TV's own. */
+    private val hasPin: suspend () -> Boolean = { false },
+    /** Whether the PIN is entered now; a TV that is, sends its setup without asking again. */
+    private val isUnlocked: () -> Boolean = { false },
     private val lifetimeMs: Long = SetupRequest.LIFETIME_MS,
     private val newCode: () -> String = { SetupCrypto.newCode() },
     private val newId: () -> String = ::newRequestId,
@@ -75,7 +81,16 @@ class SetupHost internal constructor(
         /** Another TV asked for this TV's setup: ask for the code it shows. */
         fun asked(slot: Slot.Sending)
 
-        /** The right code arrived; the import is starting. */
+        /** As [asked], but this TV has a PIN that isn't entered: it is asked for before the setup goes anywhere. */
+        fun askedPin(slot: Slot.Sending)
+
+        /**
+         * The right code arrived and this TV has a PIN: ask for it. [approvePin] lets the import go on;
+         * ending the copy refuses it.
+         */
+        fun askPin(slot: Slot.Receiving) {}
+
+        /** The right code arrived (and the PIN, if one was asked); the import is starting. */
         fun copying(slot: Slot.Receiving)
 
         /** The import committed and the other TV has its answer. */
@@ -95,8 +110,11 @@ class SetupHost internal constructor(
         class Receiving(peer: CastPeer, val request: SetupRequest, val offered: Boolean) : Slot(peer) {
             override val id: String get() = request.id
 
-            /** Set once the right code arrived; the import then can't be cancelled. */
+            /** Set once the right code arrived (and the PIN, if one was asked); the import then can't be cancelled. */
             var accepted = false
+
+            /** Waiting for this TV's PIN: completes true when it was right, false when the copy ended. */
+            var pin: CompletableDeferred<Boolean>? = null
             override fun toString() = "Receiving(offered=$offered, accepted=$accepted)"
         }
 
@@ -172,7 +190,10 @@ class SetupHost internal constructor(
 
     private fun release(s: Slot, reason: End, notify: Boolean) {
         slot = null
-        if (s is Slot.Receiving) s.request.cancel()
+        if (s is Slot.Receiving) {
+            s.request.cancel()
+            s.pin?.complete(false)
+        }
         s.id?.let { gone[it] = Gone(reason.wire, s.peer.host) }
         if (notify) listener.ended(s, reason)
     }
@@ -183,6 +204,12 @@ class SetupHost internal constructor(
         slot = null
         s.id?.let { gone[it] = Gone(USED, s.peer.host) }
         true
+    }
+
+    /** The PIN asked for [s] was right: its import goes on. False when the copy is no longer waiting for it. */
+    internal fun approvePin(s: Slot.Receiving): Boolean = synchronized(lock) {
+        if (slot !== s) return false
+        return s.pin?.complete(true) ?: false
     }
 
     /** Refuses offers and asks from [peer] (by its id) until the app restarts. */
@@ -239,10 +266,11 @@ class SetupHost internal constructor(
         val id = body.string("id")?.takeIf { ID.matches(it) } ?: return reply(res, Answer(400))
         // Read before the lock (it is a database query), but only answered once the ask is admitted.
         val has = hasPlaylists()
-        reply(res, synchronized(lock) { takeAsk(from, host, id, has) })
+        val pin = has && hasPin() && !isUnlocked()
+        reply(res, synchronized(lock) { takeAsk(from, host, id, has, pin) })
     }
 
-    private fun takeAsk(from: String, host: String, id: String, hasPlaylists: Boolean): Answer {
+    private fun takeAsk(from: String, host: String, id: String, hasPlaylists: Boolean, pin: Boolean): Answer {
         val peer = when (val a = admit(from, host)) {
             is Admit.No -> return Answer(a.code)
             is Admit.Ok -> a.peer
@@ -254,7 +282,7 @@ class SetupHost internal constructor(
         if (!hasPlaylists) return Answer(409, ERROR to NO_PLAYLISTS)
         val s = Slot.Sending(peer, id)
         slot = s
-        listener.asked(s)
+        if (pin) listener.askedPin(s) else listener.asked(s)
         return Answer(200)
     }
 
@@ -272,14 +300,17 @@ class SetupHost internal constructor(
 
     /**
      * An address throttled after wrong codes is refused first; then the request must come from a
-     * known TV, from its own address, and not one this TV blocked. The gap between requests from
-     * one address ([tooSoon]) is checked after the busy check, so a busy TV says so.
+     * known TV, from its own address, and not one this TV blocked. A TV announcing an older setup
+     * version is turned away next (404, which it shows as "on an older version"): it can't read this
+     * TV's setup nor send one this TV reads, so no code, PIN or export is started for it. The gap
+     * between requests from one address ([tooSoon]) is checked after the busy check, so a busy TV says so.
      */
     private fun admit(from: String, host: String): Admit {
         if (throttled(host)) return Admit.No(429)
         val peer = peerById(from) ?: return Admit.No(403)
         if (peer.host != host) return Admit.No(403)
         if (peer.id in blockedIds) return Admit.No(403)
+        if (peer.setup < CastAnnounce.SETUP_VERSION) return Admit.No(404)
         return Admit.Ok(peer)
     }
 
@@ -389,23 +420,49 @@ class SetupHost internal constructor(
                 synchronized(lock) { end(s, End.EXPIRED, notify = true) }
                 reply(res, Answer(410, ERROR to End.EXPIRED.wire))
             }
-            is SetupRequest.Outcome.Accepted -> {
-                val stillOurs = synchronized(lock) {
-                    // Cancelled here between the attempt and now: nothing is imported.
-                    (slot === s).also { ours ->
-                        if (ours) {
-                            s.accepted = true
-                            listener.copying(s)
-                        }
+            is SetupRequest.Outcome.Accepted -> accepted(s, id, outcome.plain, res)
+        }
+    }
+
+    /**
+     * The right code arrived. A TV with a PIN waits for it first: the sending TV's request stays open
+     * meanwhile, and the copy can still be cancelled or run out of time. Nothing is imported until then.
+     */
+    private suspend fun accepted(s: Slot.Receiving, id: String, plain: ByteArray, res: HttpResponse) {
+        var handedOn = false
+        try {
+            val pin = hasPin()
+            val ours = synchronized(lock) {
+                // Cancelled here between the attempt and now: nothing is imported.
+                (slot === s).also { ours ->
+                    if (ours && pin) {
+                        s.pin = CompletableDeferred()
+                        listener.askPin(s)
+                    } else if (ours) {
+                        begin(s)
                     }
                 }
-                if (!stillOurs) {
-                    outcome.plain.fill(0)
-                    return reply(res, Answer(410, ERROR to (synchronized(lock) { gone[id]?.reason } ?: End.CANCELLED.wire)))
-                }
-                withContext(NonCancellable) { importAccepted(s, id, outcome.plain, res) }
             }
+            if (!ours || (pin && !approved(s))) {
+                return reply(res, Answer(410, ERROR to (synchronized(lock) { gone[id]?.reason } ?: End.CANCELLED.wire)))
+            }
+            handedOn = true
+            withContext(NonCancellable) { importAccepted(s, id, plain, res) }
+        } finally {
+            if (!handedOn) plain.fill(0)
         }
+    }
+
+    /** True once the PIN was right and the copy is still this TV's; the import then starts. */
+    private suspend fun approved(s: Slot.Receiving): Boolean {
+        if (s.pin?.await() != true) return false
+        return synchronized(lock) { (slot === s).also { if (it) begin(s) } }
+    }
+
+    /** From here the import can't be cancelled. */
+    private fun begin(s: Slot.Receiving) {
+        s.accepted = true
+        listener.copying(s)
     }
 
     private suspend fun importAccepted(s: Slot.Receiving, id: String, plain: ByteArray, res: HttpResponse) {

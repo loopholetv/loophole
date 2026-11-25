@@ -13,6 +13,7 @@ internal class FakeEditActions : EditActions {
     private fun ChannelRef.s() = "$playlistId:$key"
 
     override suspend fun setHidden(ref: ChannelRef, hidden: Boolean) { calls += "setHidden(${ref.s()}, $hidden)" }
+    override suspend fun setLocked(ref: ChannelRef, locked: Boolean) { calls += "setLocked(${ref.s()}, $locked)" }
     override suspend fun rename(ref: ChannelRef, name: String?) { calls += "rename(${ref.s()}, $name)" }
     override suspend fun setLogo(ref: ChannelRef, url: String?) { calls += "setLogo(${ref.s()}, $url)" }
     override suspend fun setEpgOverride(ref: ChannelRef, epgId: String?) { calls += "setEpgOverride(${ref.s()}, $epgId)" }
@@ -26,6 +27,9 @@ internal class FakeEditActions : EditActions {
     }
     override suspend fun setGroupHidden(playlistId: Long, title: String, hidden: Boolean) {
         calls += "setGroupHidden($playlistId, $title, $hidden)"
+    }
+    override suspend fun setGroupLocked(playlistId: Long, title: String, locked: Boolean) {
+        calls += "setGroupLocked($playlistId, $title, $locked)"
     }
     override suspend fun renameGroup(playlistId: Long, title: String, name: String?) {
         calls += "renameGroup($playlistId, $title, $name)"

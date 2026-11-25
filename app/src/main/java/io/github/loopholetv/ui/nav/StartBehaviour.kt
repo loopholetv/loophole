@@ -10,7 +10,8 @@ data class StartPlayback(val channelId: Long, val scope: ChannelScope)
  * Null when the setting is off or there is no (surviving, visible) history; otherwise the
  * latest channel in the remembered scope, or in All channels when that scope no longer contains it.
  * [resolveScope] turns a saved scope into a usable one first (a legacy `"g:<title>"` group is
- * found by title), since `contains` is false for an unresolved group.
+ * found by title), since `contains` is false for an unresolved group. A channel that [isLocked] (and
+ * the PIN is not entered) opens the guide too.
  */
 suspend fun resolveStartPlayback(
     enabled: Boolean,
@@ -18,9 +19,12 @@ suspend fun resolveStartPlayback(
     lastScope: ChannelScope,
     contains: suspend (ChannelEntity, ChannelScope) -> Boolean,
     resolveScope: suspend (ChannelScope) -> ChannelScope = { it },
+    isLocked: suspend (ChannelEntity) -> Boolean = { false },
 ): StartPlayback? {
     if (!enabled) return null
     val channel = latest() ?: return null
+    // A locked channel is as good as gone: the guide opens instead.
+    if (isLocked(channel)) return null
     val resolved = resolveScope(lastScope)
     val scope = if (contains(channel, resolved)) resolved else ChannelScope.All
     return StartPlayback(channel.id, scope)

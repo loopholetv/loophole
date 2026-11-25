@@ -11,6 +11,7 @@ import io.github.loopholetv.cast.CastState
 import io.github.loopholetv.cast.StopReason
 import io.github.loopholetv.data.db.AppDatabase
 import io.github.loopholetv.data.db.ChannelEntity
+import io.github.loopholetv.data.db.ChannelPrefsEntity
 import io.github.loopholetv.data.db.PlaylistEntity
 import io.github.loopholetv.data.db.PlaylistType
 import io.github.loopholetv.data.db.RecordingEntity
@@ -188,7 +189,8 @@ class RecordingCoordinatorTest {
 
     /** The wake lock and service calls the coordinator makes, in order. */
     private class FakePlatform(val log: MutableList<String>) : RecordingServiceControl, StartWakeLock {
-        override fun started(id: Long, title: String) { log += "started $id" }
+        val titles = mutableListOf<String>()
+        override fun started(id: Long, title: String) { log += "started $id"; titles += title }
         override fun ended(id: Long) { log += "ended $id" }
         override fun hold(id: Long, timeoutMs: Long) { log += "hold $id" }
         override fun release(id: Long) { log += "release $id" }
@@ -209,6 +211,7 @@ class RecordingCoordinatorTest {
         val hostOf = mutableMapOf<Long, String>()
         val uses = StreamUses(playback, cast, runner, hostOfChannel = { hostOf[it] })
         var rearm: suspend () -> Unit = {}
+        var unlocked = false
         val handovers = mutableListOf<Handover>()
         val platformLog = mutableListOf<String>()
         val platform = FakePlatform(platformLog)
@@ -252,6 +255,7 @@ class RecordingCoordinatorTest {
                 rearm = { rearm() },
                 service = platform,
                 startLock = platform,
+                isUnlocked = { unlocked },
             )
             runner.runGate = { id, fromArchive -> coordinator.startBudgeted(id, fromArchive) }
             if (collectHandovers) test.backgroundScope.launch(UnconfinedTestDispatcher(test.testScheduler)) {
@@ -394,6 +398,40 @@ class RecordingCoordinatorTest {
         assertEquals(20, (e.coordinator.prompt.value as RecordPrompt.Warning).secondsLeft)
         assertEquals(0, e.begins(id))
         assertEquals(PlaybackState.Buffering(e.b.id), e.playback.state.value)
+    }
+
+    @Test fun warningSaysARecording() = test { e ->
+        e.playback.play(e.b)
+        val id = e.book(e.a)
+        e.db.channelPrefsDao().upsert(ChannelPrefsEntity(e.a.playlistId, e.a.key, locked = true))
+        e.alarms(id)
+        runCurrent()
+        val w = e.coordinator.prompt.value as RecordPrompt.Warning
+        assertEquals(RecordPrompt.Warning(id, "", "A recording", Use.PLAYER, 30), w)
+        assertFalse("Film4" in w.channel + w.title + w.toString().replace("Warning", ""))
+        assertFalse("The Thing" in w.toString())
+    }
+
+    @Test fun warningNamesTheProgrammeWhenUnlockedOrNotLocked() = test { e ->
+        e.playback.play(e.b)
+        val id = e.book(e.a)
+        e.db.channelPrefsDao().upsert(ChannelPrefsEntity(e.a.playlistId, e.a.key, locked = true))
+        e.unlocked = true
+        e.alarms(id)
+        runCurrent()
+        val w = e.coordinator.prompt.value as RecordPrompt.Warning
+        assertEquals("The Thing", w.title)
+        assertEquals("Film4", w.channel)
+    }
+
+    @Test fun bookedRecordingOfLockedChannelStillRecords() = test { e ->
+        val id = e.book(e.a)
+        e.db.channelPrefsDao().upsert(ChannelPrefsEntity(e.a.playlistId, e.a.key, locked = true))
+        e.alarms(id)
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(1, e.begins(id))
+        assertEquals(RecordingState.RECORDING, e.row(id).state)
     }
 
     @Test fun timeoutSwitches() = test { e ->
@@ -595,6 +633,40 @@ class RecordingCoordinatorTest {
         val kept = e.begins(id) == 0 && state == RecordingState.SKIPPED
         assertTrue("begins ${e.begins(id)}, state $state", switched != kept)
         assertNull(e.coordinator.prompt.value)
+    }
+
+    @Test fun previewNoticeNamesNothingForALockedChannel() = test { e ->
+        e.uses.setPreviewVisible(true)
+        e.playback.play(e.b)
+        val id = e.book(e.a)
+        e.db.channelPrefsDao().upsert(ChannelPrefsEntity(e.a.playlistId, e.a.key, locked = true))
+        e.alarms(id)
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals("", e.coordinator.previewTaken.value)
+    }
+
+    @Test fun startNotificationNamesNothingForALockedChannel() = test { e ->
+        val id = e.book(e.a, fromInMs = 0)
+        e.db.channelPrefsDao().upsert(ChannelPrefsEntity(e.a.playlistId, e.a.key, locked = true))
+        e.unlocked = true // the lock outlives an unlock period: the title stays hidden
+        e.coordinator.onAlarm(AlarmAction.START, id)
+        runCurrent()
+        assertEquals(listOf("A recording"), e.platform.titles)
+    }
+
+    @Test fun holdsStreamQuestionNamesNothingForALockedChannel() = test { e ->
+        val id = e.book(e.a, fromInMs = 0)
+        e.db.channelPrefsDao().upsert(ChannelPrefsEntity(e.a.playlistId, e.a.key, locked = true))
+        e.runner.begin(id)
+        val allowed = async { e.coordinator.beforeUserPlay(e.b) }
+        runCurrent()
+        val shown = e.coordinator.prompt.value as RecordPrompt.HoldsStream
+        assertTrue(shown.hidden)
+        assertFalse("The Thing" in shown.toString() || "Film4" in shown.toString())
+        e.coordinator.answer(id, PromptChoice.STOP_RECORDING)
+        runCurrent()
+        assertTrue(allowed.await())
     }
 
     // --- user plays while a recording holds the stream ---

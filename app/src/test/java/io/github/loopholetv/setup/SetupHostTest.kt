@@ -1,5 +1,6 @@
 package io.github.loopholetv.setup
 
+import io.github.loopholetv.cast.CastAnnounce
 import io.github.loopholetv.cast.CastPeer
 import io.github.loopholetv.cast.CastStatus
 import java.util.concurrent.TimeUnit
@@ -84,6 +85,18 @@ class SetupHostTest {
         assertEquals(403, offer(b, from = "far").code)
         assertEquals(SetupState.Idle, b.state)
         assertNull(b.controller.host.current())
+    }
+
+    @Test fun anOlderTvIsTurnedAwayBeforeAnything() {
+        val b = tv()
+        b.seesPeer("old", "Kitchen", 1, setup = CastAnnounce.SETUP_VERSION - 1)
+        // The answer a TV of another version reads as "on an older version" (the bundle couldn't be read either way).
+        assertEquals(404, offer(b, from = "old").code)
+        assertEquals(404, post(b, SetupHost.ASK, SetupWire.write("from" to "old", "id" to SetupHost.newRequestId())).code)
+        assertEquals(SetupState.Idle, b.state)
+        assertNull(b.controller.host.current())
+        // A TV on this version still gets in.
+        assertEquals(200, offer(b).code)
     }
 
     @Test fun malformedOfferIs400() {

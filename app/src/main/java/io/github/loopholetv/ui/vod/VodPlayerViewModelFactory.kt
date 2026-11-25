@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.loopholetv.LoopholeApp
+import io.github.loopholetv.data.db.isVodLocked
 import io.github.loopholetv.data.vod.VodRef
 
 /** Builds [VodPlayerViewModel] from the app container. */
@@ -23,6 +24,9 @@ internal fun vodPlayerViewModelFactory(ref: VodRef, startMs: Long): ViewModelPro
             nowMs = SystemClock::elapsedRealtime,
             beforePlay = c.recordingCoordinator::beforeUserPlayVod,
             prefetchNext = c.xtreamEpisodes::fetchForNext,
+            isLocked = { r ->
+                !c.parentalLock.isUnlocked && c.db.lockDao().isVodLocked(r.kind, r.playlistId, r.key)
+            },
         )
     }
 }

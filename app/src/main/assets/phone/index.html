@@ -136,6 +136,16 @@ button:disabled { cursor: default; opacity: .5; }
 .rename .btn { min-height: 40px; padding: 6px 12px; }
 .sentinel { height: 1px; }
 .hint { font-size: 14px; color: var(--muted); }
+
+#pinBox {
+  position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 0, 0, .7);
+}
+#pinForm {
+  width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface); border-radius: 14px; padding: 20px;
+}
+#pinInput { font-size: 32px; letter-spacing: 12px; text-align: center; }
 </style>
 </head>
 <body>
@@ -156,6 +166,18 @@ button:disabled { cursor: default; opacity: .5; }
       <button type="button" role="tab" id="tab-more" aria-controls="panel-more" aria-selected="false">More</button>
     </nav>
   </div>
+</div>
+
+<div id="pinBox" hidden>
+  <form id="pinForm" role="dialog" aria-modal="true" aria-labelledby="pinTitle" novalidate>
+    <h2 id="pinTitle">Enter PIN</h2>
+    <input class="input" id="pinInput" type="password" inputmode="numeric" autocomplete="off" maxlength="4" pattern="[0-9]*" aria-label="PIN" aria-describedby="pinMsg">
+    <p id="pinMsg" role="status"></p>
+    <div class="actions">
+      <button class="btn primary" type="submit" id="pinBtn">Unlock</button>
+      <button class="btn" type="button" id="pinCancel">Cancel</button>
+    </div>
+  </form>
 </div>
 
 <main id="pair" hidden>
@@ -372,10 +394,96 @@ button:disabled { cursor: default; opacity: .5; }
 
   /* ---------- The one way to talk to the TV ---------- */
 
-  function ApiError(status, code, text) {
+  function ApiError(status, code, text, data) {
     this.status = status;
     this.code = code;
     this.text = text;
+    this.data = data || null;
+  }
+
+  /* The PIN prompt: one at a time, shared by every request waiting for it. */
+  var pinPrompt = null;
+  var pinClose = null;
+
+  /** Asks for the PIN; resolves true once the TV accepted it, false when the prompt is cancelled. */
+  function askPin() {
+    if (pinPrompt) return pinPrompt;
+    pinPrompt = new Promise(function (resolve) {
+      var input = $("pinInput"), msg = $("pinMsg"), btn = $("pinBtn"), timer = null;
+
+      function stopWait() {
+        if (timer) clearInterval(timer);
+        timer = null;
+        btn.disabled = false;
+        input.disabled = false;
+      }
+
+      function close(ok) {
+        stopWait();
+        $("pinBox").hidden = true;
+        $("pinForm").onsubmit = null;
+        $("pinCancel").onclick = null;
+        input.value = "";
+        say(msg, "");
+        pinPrompt = null;
+        pinClose = null;
+        resolve(ok);
+      }
+
+      function wait(seconds) {
+        stopWait();
+        var left = Math.max(1, Number(seconds) || 30);
+        btn.disabled = true;
+        input.disabled = true;
+        say(msg, "Too many tries. Try again in " + left + " s", "error");
+        timer = setInterval(function () {
+          left -= 1;
+          if (left <= 0) {
+            stopWait();
+            say(msg, "");
+            input.focus();
+          } else {
+            say(msg, "Too many tries. Try again in " + left + " s", "error");
+          }
+        }, 1000);
+      }
+
+      async function submit(ev) {
+        ev.preventDefault();
+        var pin = input.value;
+        if (!/^[0-9]{4}$/.test(pin)) {
+          say(msg, "Wrong PIN", "error");
+          return;
+        }
+        btn.disabled = true;
+        try {
+          await api("POST", "/api/pin", { pin: pin });
+          close(true);
+        } catch (e) {
+          btn.disabled = false;
+          input.value = "";
+          if (e instanceof ApiError && e.status === 403) {
+            say(msg, "Wrong PIN", "error");
+          } else if (e instanceof ApiError && e.status === 429) {
+            wait(e.data && e.data.wait);
+          } else if (e instanceof ApiError && e.status === 401) {
+            close(false);
+          } else {
+            say(msg, "Something went wrong. Try again.", "error");
+            fail(e);
+          }
+        }
+        if (!input.disabled) input.focus();
+      }
+
+      pinClose = close;
+      $("pinForm").onsubmit = submit;
+      $("pinCancel").onclick = function () { close(false); };
+      say(msg, "");
+      $("pinBox").hidden = false;
+      input.focus();
+    });
+    return pinPrompt;
   }
 
   async function api(method, path, body) {
@@ -384,27 +492,34 @@ button:disabled { cursor: default; opacity: .5; }
       init.headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
     }
-    var res;
-    try {
-      res = await fetch(path, init);
-    } catch (e) {
-      throw new ApiError(0, "offline", "");
+    for (;;) {
+      var res;
+      try {
+        res = await fetch(path, init);
+      } catch (e) {
+        throw new ApiError(0, "offline", "");
+      }
+      var data = null;
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = null;
+      }
+      var code = data && typeof data.error === "string" ? data.error : "";
+      var text = data && typeof data.message === "string" ? data.message : "";
+      if (res.status === 401 && data && data.pin === true && path !== "/api/pin") {
+        // The TV wants its PIN first: ask, then send the same request again.
+        if (await askPin()) continue;
+        throw new ApiError(401, "pin", "");
+      }
+      if (res.status === 401) {
+        showPair(null);
+        throw new ApiError(401, code, "");
+      }
+      if (!res.ok) throw new ApiError(res.status, code, text, data);
+      $("banner").hidden = true;
+      return data;
     }
-    var data = null;
-    try {
-      data = await res.json();
-    } catch (e) {
-      data = null;
-    }
-    var code = data && typeof data.error === "string" ? data.error : "";
-    var text = data && typeof data.message === "string" ? data.message : "";
-    if (res.status === 401) {
-      showPair(null);
-      throw new ApiError(401, code, "");
-    }
-    if (!res.ok) throw new ApiError(res.status, code, text);
-    $("banner").hidden = true;
-    return data;
   }
 
   /**
@@ -452,6 +567,7 @@ button:disabled { cursor: default; opacity: .5; }
 
   /** The code screen; [status] is a fresh /api/status reply, or null to read one. */
   function showPair(status) {
+    if (pinClose) pinClose(false);
     stopJobs();
     state.form = null;
     $("plForm").hidden = true;

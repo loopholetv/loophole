@@ -37,6 +37,7 @@ import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import io.github.loopholetv.ui.common.okPress
+import io.github.loopholetv.ui.parental.Padlock
 import io.github.loopholetv.ui.theme.Tokens
 
 val POSTER_WIDTH = 120.dp
@@ -60,6 +61,8 @@ fun PosterCard(
     subtitle: String?,
     fraction: Float? = null,
     badge: String? = null,
+    /** The title has its own lock (and the PIN is entered): a padlock marks the card. */
+    locked: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -123,6 +126,9 @@ fun PosterCard(
             }
         }
         if (badge != null) QualityBadge(badge, Modifier.align(Alignment.TopEnd))
+        if (locked) {
+            Padlock(Modifier.align(Alignment.TopStart).padding(4.dp).background(Color(0xB3000000), BADGE_SHAPE).padding(2.dp))
+        }
     }
 }
 

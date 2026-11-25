@@ -90,10 +90,17 @@ fun AddPlaylistScreen(
     onCopyFromAnotherTv: (() -> Unit)? = null,
     /** First start only: add the playlist from a phone's browser instead. */
     onSetUpFromPhone: (() -> Unit)? = null,
+    /**
+     * Asked before a save that changes the address or login of an existing playlist; false (the PIN
+     * was cancelled) leaves the form as it is.
+     */
+    askBeforeSourceChange: suspend () -> Boolean = { true },
     // Keyed so an add form and an edit form never share one ViewModel, even in one back-stack entry.
     vm: AddPlaylistViewModel = viewModel(key = "playlist-form-${editId ?: "new"}", factory = AddPlaylistViewModel.factory(editId)),
 ) {
     val ui by vm.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val submit: () -> Unit = { scope.launch { if (!vm.changesSource() || askBeforeSourceChange()) vm.submit() } }
     LaunchedEffect(ui.phase) { if (ui.phase == Phase.Done) onDone() }
     if (onBack != null) BackHandler(onBack = onBack)
     // The TV's own picker when it has one, else Loophole's browser (its Back handler wins while shown).
@@ -103,7 +110,7 @@ fun AddPlaylistScreen(
     if (browsing) {
         FileBrowser(onPick = { vm.setFile(it); browsing = false }, onCancel = { browsing = false })
     } else {
-        AddPlaylistContent(ui, vm, chooseFile, onSkip, onCopyFromAnotherTv, onSetUpFromPhone)
+        AddPlaylistContent(ui, vm, chooseFile, submit, onSkip, onCopyFromAnotherTv, onSetUpFromPhone)
     }
 }
 
@@ -148,6 +155,7 @@ private fun AddPlaylistContent(
     ui: AddPlaylistUi,
     vm: AddPlaylistViewModel,
     chooseFile: () -> Unit,
+    submit: () -> Unit,
     onSkip: (() -> Unit)?,
     onCopyFromAnotherTv: (() -> Unit)?,
     onSetUpFromPhone: (() -> Unit)?,
@@ -160,7 +168,7 @@ private fun AddPlaylistContent(
     // (to a toggle/button) or IME Done closes the keyboard again.
     var typing by remember { mutableStateOf(false) }
     val stopTyping: () -> Unit = { typing = false; keyboard?.hide() }
-    val submitIme: () -> Unit = { stopTyping(); vm.submit() }
+    val submitIme: () -> Unit = { stopTyping(); submit() }
     val startTyping: () -> Unit = { typing = true; keyboard?.show() }
     // Back (or anything else) hiding the IME returns the fields to read-only so the next OK reopens it.
     val imeVisible = WindowInsets.isImeVisible
@@ -219,7 +227,7 @@ private fun AddPlaylistContent(
             }
             if (named) FormField(ctl, "Playlist name", ui.name, vm::setName, last = true)
             Spacer(Modifier.height(4.dp))
-            PillButton(if (ui.editing) "Save" else "Add playlist", selected = false, enabled = !ui.busy, onFocus = stopTyping) { vm.submit() }
+            PillButton(if (ui.editing) "Save" else "Add playlist", selected = false, enabled = !ui.busy, onFocus = stopTyping) { submit() }
             onSetUpFromPhone?.let { PillButton("Set up from your phone", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }
             onCopyFromAnotherTv?.let { PillButton("Copy from another TV", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }
             onSkip?.let { PillButton("Skip for now", selected = false, enabled = !ui.busy, onFocus = stopTyping, onClick = it) }

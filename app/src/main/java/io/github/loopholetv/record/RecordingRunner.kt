@@ -118,6 +118,7 @@ class RecordingRunner(
     private val pause: suspend (Long) -> Unit = { delay(it) },
 ) : RecordingRuns {
     private val dao = db.recordDao()
+    private val lockDao = db.lockDao()
     private val playlists = db.playlistDao()
     private val running = MutableStateFlow<Map<Long, ActiveRecording>>(emptyMap())
     private val jobs = ConcurrentHashMap<Long, Job>()
@@ -247,7 +248,7 @@ class RecordingRunner(
             // A RECORDING row nobody runs (after a restart) is picked up where it was.
             if (row == null || (row.state != RecordingState.SCHEDULED && row.state != RecordingState.RECORDING)) return
             run = Run(row.state == RecordingState.RECORDING)
-            service.started(id, row.title)
+            service.started(id, lockDao.notificationTitle(row))
             announced = true
             end = body(row, run, fromArchive)
         } catch (e: CancellationException) {
